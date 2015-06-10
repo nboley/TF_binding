@@ -5,6 +5,8 @@ import math
 import numpy
 from scipy.optimize import brute, bisect
 
+from collections import defaultdict
+
 T = 300
 R = 1.987e-3 # in kCal
 #R = 8.314e-3 # in kJ
@@ -92,13 +94,16 @@ class Motif():
                 RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
             yield offset + len(self)/2, max(score, RC_score)
 
-    
     def __init__(self, text):
         # load the motif data
-        lines = text.split("\n")
-        
-        self.name = lines[0].split()[0][1:]
+        lines = text.strip().split("\n")
+        if lines[0][0] == '>': lines[0] = lines[0][1:]
+        self.name = lines[0].split()[0]
         self.factor = self.name.split("_")[0]
+        
+        self.lines = lines
+        self.meta_data_line = lines[0]
+
         self.length = len(lines)-1
 
         self.consensus_energy = 0.0
@@ -203,15 +208,50 @@ def build_wiggles_for_all_peaks(fasta_fname, proc_queue, binding_model):
 
     return
 
-def load_all_motifs(fp):
+def iter_motifs(fp):
     fp.seek(0)
     raw_motifs = fp.read().split(">")
     motifs = defaultdict(list)
     for motif_str in raw_motifs:
+        #yield motif_str.split("\n")[0]
         if len(motif_str) == 0: continue
-        factor, consensus_energy, motif_data = load_motif(motif_str)
-        motifs[factor].append( [consensus_energy, motif_data] )
-    return motifs
+        yield Motif(motif_str)
+    return 
 
 def main():
-    pass
+    # missing 'TBP', 'TAF1', 'BCL11A'
+    my_motifs = set(['CTCF', 'POU2F2', 'BATF', 'IRF4', 'REST', 'SPI1',
+                     'MYC', 'NFKB', 'PAX5', 'TATA', 'TCF12', 'YY1'])
+    print sorted(my_motifs)
+    obs_factors = set()
+    grpd_motifs = defaultdict(list)
+    with open(sys.argv[1]) as fp:
+        for motif in iter_motifs(fp):
+            obs_factors.add(motif.factor)
+            if motif.factor.upper() not in my_motifs:
+                continue
+            grpd_motifs[motif.factor].append(motif)
+
+    #
+    for factor, motifs in sorted(grpd_motifs.items()):
+        if any(m.meta_data_line.find('jolma') != -1 for m in motifs):
+            motifs = [m for m in motifs if m.meta_data_line.find('jolma') != -1]
+            for motif in motifs: motif.name += "_selex"
+            grpd_motifs[factor] = motifs
+            #print factor, 'SELEX'
+        elif any(m.meta_data_line.find('bulyk') != -1 for m in motifs):
+            motifs = [m for m in motifs if m.meta_data_line.find('bulyk') != -1]
+            for motif in motifs: motif.name += "_bulyk"
+            grpd_motifs[factor] = motifs
+            #print factor, 'BULYK'
+
+        print factor, len([m.name for m in motifs])
+
+    # choose a motif randomly
+    for factor, motifs in sorted(grpd_motifs.items()):
+        motif = motifs[0]
+        with open("%s.motif.txt" % motif.name, "w") as ofp:
+            ofp.write(">" + "\n".join(motif.lines) + "\n")
+
+if __name__ == '__main__':
+    main()
