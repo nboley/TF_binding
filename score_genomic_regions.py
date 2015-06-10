@@ -8,7 +8,6 @@ import cPickle as pickle
 from collections import defaultdict
 from itertools import chain
 
-from scipy.optimize import brute
 from scipy.stats import spearmanr, rankdata
 
 import numpy
@@ -32,262 +31,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
 
-T = 300
-R = 1.987-3 # in kCal
-R = 8.314e-3
+from DNABindingProteins import ChIPSeqReads
 
-REG_LEN = 100000
-
-base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
-RC_base_map = {'A': 3, 'C': 2, 'G': 1, 'T': 0}
+from motif_tools import estimate_unbnd_conc_in_region, Motif, logistic, R, T
 
 NTHREADS = 1
 PLOT = False
 MAX_N_PEAKS = 100000
 
-MAX_ENERGY_WIGGLE = 7
-
-def logit(x):
-    return math.log(x) - math.log(1-x)
-
-def logistic(x):
-    try: e_x = math.exp(x)
-    except: e_x = numpy.exp(x)
-    return e_x/(1+e_x)
-
-def build_ChIPseq_unpaired_reads_fragment_coverage_array( 
-        reads, chrm, strand, start, stop, frag_len, binding_site_size ):
-    assert stop >= start
-    full_region_len = stop - start + 1
-    cvg = numpy.zeros(full_region_len)
-    for rd, strand in reads.iter_reads_and_strand(chrm, start, stop):
-        if strand == '+': 
-            rd_start = rd.pos # + binding_site_size
-            rd_stop = rd.pos + frag_len # + binding_site_size
-        elif strand == '-': 
-            rd_start = rd.aend - frag_len
-            rd_stop = rd.aend
-        else:
-            assert False
-        cvg[max(0, rd_start-start):max(0, rd_stop-start)] += (
-            1.0/(rd_stop-rd_start+1))
-
-    return cvg
-
-class ChIPSeqReads(Reads):
-    def __repr__(self):
-        paired = 'paired' if self.reads_are_paired else 'unpaired'
-        return "<ChIPSeqReads.%s.%i instance>" % (paired, self.frag_len)
-
-        
-    def init(self, 
-             reverse_read_strand=None,  reads_are_stranded=None,
-             pairs_are_opp_strand=None, reads_are_paired=None,
-             frag_len_dist=None):        
-        assert self.is_indexed()
-
-        factor = os.path.basename(self.filename).split('.')[2]
-        BSID = os.path.basename(self.filename).split('.')[3]
-        self.factor = factor
-        self.BSID = BSID
-        self.id = "%s.%s" % (self.factor, self.BSID)
-        
-        reads_are_stranded = True
-        
-        if frag_len_dist == None:
-            frag_len_dist = build_normal_density(
-                fl_min=100, fl_max=200, mean=150, sd=25)
-        self.frag_len_dist = frag_len_dist
-        self.frag_len = int(frag_len_dist.mean_fragment_length())
-        
-        read_type_attributes = determine_read_type(self)
-        
-        # set whether the reads are paired or not
-        if reads_are_paired in ('auto', None):
-            if 'paired' in read_type_attributes:
-                reads_are_paired = True 
-                assert 'unpaired' in read_type_attributes
-            else:
-                reads_are_paired = False
-        
-        if pairs_are_opp_strand in ('auto', None):
-            if reads_are_paired or 'same_strand' in read_type_attributes:
-                pairs_are_opp_strand = False
-            else:
-                pairs_are_opp_strand = True
-        
-        reverse_read_strand = None
-        
-        Reads.init(self, reads_are_paired, pairs_are_opp_strand, 
-                         reads_are_stranded, reverse_read_strand )
-
-        # we save these for fast reloads
-        self._init_kwargs = {
-            'reverse_read_strand': reverse_read_strand, 
-            'reads_are_stranded': reads_are_stranded, 
-            'pairs_are_opp_strand': pairs_are_opp_strand, 
-            'reads_are_paired': reads_are_paired
-        }
-        
-        return self
-
-    pass
-
-class Motif():
-    def __len__(self):
-        return self.length
-
-    def iter_pwm_score(self, seq):
-        seq = seq.upper()
-        for offset in xrange(len(seq) - len(self)):
-            subseq = seq[offset:offset+len(self)]
-            assert len(self) == len(subseq)
-            score = 0.0
-            RC_score = 0.0
-            if 'N' in subseq: 
-                yield offset + len(self)/2, 0.25*len(self)
-                continue
-            for i, base in enumerate(subseq):
-                score += self.pwm[i][base_map[base]]
-                RC_score += self.pwm[len(self)-i-1][RC_base_map[base]]
-            yield offset + len(self)/2, max(score, RC_score)
-
-    def iter_seq_score(self, seq):
-        seq = seq.upper()
-        for offset in xrange(len(seq) - len(self)):
-            subseq = seq[offset:offset+len(self)]
-            assert len(self) == len(subseq)
-            score = self.consensus_energy
-            RC_score = self.consensus_energy
-            if 'N' in subseq:
-                yield offset + len(self)/2, self.mean_energy
-                continue
-            for i, base in enumerate(subseq):
-                score += self.motif_data[i][base_map[base]]
-                RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
-            yield offset + len(self)/2, max(score, RC_score)
-
-    
-    def __init__(self, fp):
-        # load the motif data
-        lines = fp.read().strip().split("\n")
-        
-        self.name = lines[0].split()[0][1:]
-        self.factor = self.name.split("_")[0]
-        self.length = len(lines)-1
-
-        self.consensus_energy = 0.0
-        self.motif_data = numpy.zeros((self.length, 4), dtype=float)
-        
-        self.pwm = numpy.zeros((self.length, 4), dtype=float)
-        
-        for i, line in enumerate(lines[1:]):
-            row = numpy.array([logit(1e-3/2 + (1-1e-3)*float(x)) 
-                               for x in line.split()[1:]])
-            max_val = row.max()
-            self.consensus_energy += max_val
-            row -= max_val
-            self.motif_data[i, :] = row
-
-            pwm_row = numpy.array([
-                float(x) for x in line.split()[1:]])
-            self.pwm[i, :] = pwm_row
-        
-        # reset the consensus energy so that the strongest binder
-        # has a binding occupancy of 0.999 at chemical affinity 1
-        self.consensus_energy = logit(0.999)
-        
-        # calculate the mean binding energy
-        self.mean_energy = sum(row.sum()/4 for row in self.motif_data) 
-        
-        
-        scaled_mean_energy = self.mean_energy
-        while logistic(self.consensus_energy*R*T)/logistic(
-                self.consensus_energy*R*T + scaled_mean_energy*R*T) > 1e12:
-            scaled_mean_energy *= 0.95
-        self.motif_data /= (self.mean_energy/scaled_mean_energy)
-        self.mean_energy = scaled_mean_energy
-        
-        #print >> sys.stderr,  "Consensus Occupancy:", logistic(
-        #    self.consensus_energy*R*T)
-        #print >> sys.stderr,  "Mean Occupancy:", logistic(
-        #    self.consensus_energy*R*T + scaled_mean_energy*R*T)
-
-        # change the units into KJ 
-        self.consensus_energy *= (R*T)
-        self.motif_data *= (R*T)
-
-        #print >> sys.stderr,  self.factor
-        #print >> sys.stderr,  self.consensus_energy
-        #print >> sys.stderr, logistic(self.consensus_energy)
-        #print >> sys.stderr, self.mean_energy
-        #print >> sys.stderr, logistic(self.mean_energy)
-        #print >> sys.stderr, self.motif_data
-
-        return
-
-def load_all_motifs(fp):
-    fp.seek(0)
-    raw_motifs = fp.read().split(">")
-    motifs = defaultdict(list)
-    for motif_str in raw_motifs:
-        if len(motif_str) == 0: continue
-        factor, consensus_energy, motif_data = load_motif(motif_str)
-        motifs[factor].append( [consensus_energy, motif_data] )
-    return motifs
-
-def load_and_process_motifs():
-    with open(sys.argv[1]) as fp:
-        factors_and_motifs = load_all_motifs(fp)
-    for factor, motifs in factors_and_motifs.items():
-        for cons_energy, motif in motifs:
-            mean_energy = sum(row.sum()/4 for row in motif) 
-            mean_occ = logistic(mean_energy/(R*T))
-            cons_occ = logistic(cons_energy/(R*T))
-            ratio = cons_occ/mean_occ
-            print "%e" % ratio, factor, cons_energy, cons_occ, mean_energy, mean_occ, ratio
-
-def build_wig(fasta, motif, region):
-    chrm, start, stop, summit = region
-    
-    output = []
-
-    print >> sys.stderr, "Processing %s:%i-%i\t(%i/%i)" % (
-        chrm, start, stop, regions.qsize(), n_regions)
-    seq = fasta.fetch(chrm, start, stop)
-    max_score = -1e9
-    best_pos = -1
-    lines = []
-    for pos, score in score_seq(seq, motif):
-        score = logistic(score)
-        if score > max_score:
-            max_score = score
-            best_pos = pos
-        output.append( "%s\t%i\t%i\t%.2f\n" % (
-            chrm, start + pos, start + pos + 1, score) )
-    
-    summit_line = "%i\t%i\t%.2f\t%.2f\n" % (
-        best_pos, summit, 
-        best_pos/float(stop-start), summit/float(stop-start))
-
-    return output, summit_line
-
-def build_wig_worker(fasta_fname, regions, motif):
-    fasta = FastaFile(fasta_fname)
-    n_regions = regions.qsize()
-    output = []
-    output_summits = []
-    while not regions.empty():
-        try: region = regions.get(timeout=0.1)
-        except Queue.Empty: return
-        region_output, summit = build_wig(fasta, motif, region)
-        output.extend( region_output )
-        output_summits.append(summit)
-    
-    ofp.write("".join(output))
-    of_summits.write("".join(output))
-    
-    return
+MAX_ENERGY_WIGGLE = -math.log(1e-12)
 
 class Peaks(list):
     pass
@@ -306,28 +58,6 @@ def load_narrow_peaks(fname):
             peaks.append((chrm, start, stop, summit))
             #proc_queue.put((chrm, start+summit-50, start+summit+50, summit))
     return peaks
-
-def process_all_peaks(fasta_fname, proc_queue, binding_model):
-    pids = []
-    for i in xrange(24):
-        pid = os.fork()
-        if pid == 0:
-            build_wig_worker()
-            os._exit(0)
-        else:
-            pids.append(pid)
-    for pid in pids:
-        os.wait(pid, 0)
-
-    return
-
-def get_region_data( peak, motif, fasta, 
-                     chipseq_reads, atacseq_reads,
-                     frag_len):
-    #atacseq_cov[atacseq_cov < (0.10*atacseq_cov.max())] = 0.0
-
-
-    return rd_cov, smooth_rd_cov, atacseq_cov, scores, pwm_scores
 
 def load_peak_region(fasta, contig, start, stop, 
                      atacseq_reads, histone_mark_reads,
@@ -375,7 +105,10 @@ class PeakRegion(object):
         self.motifs = {} 
         self.pwm_cov = {}
         self.score_cov = {}
-
+    
+    def __len__(self):
+        return self.stop - self.start
+    
     @staticmethod
     def build_str(contig, start, stop, chipseq_factors, motif_names):
         rv = []
@@ -430,14 +163,12 @@ class PeakRegion(object):
         else:
             reads = [chipseq_reads,]
         for chipseq_reads in reads:
-            rd_cov = build_ChIPseq_unpaired_reads_fragment_coverage_array(
-                chipseq_reads, self.contig, '.', self.start, self.stop, 1, 15)
+            rd_cov = chipseq_reads.build_unpaired_reads_fragment_coverage_array(
+                self.contig, '.', self.start, self.stop, 1, 15)
             self.chipseq_cov[chipseq_reads.factor][chipseq_reads.BSID] = rd_cov
 
-            smooth_rd_cov =build_ChIPseq_unpaired_reads_fragment_coverage_array(
-                chipseq_reads,
-                self.contig, '.', self.start, self.stop, 
-                chipseq_reads.frag_len, 15)
+            smooth_rd_cov = chipseq_reads.build_unpaired_reads_fragment_coverage_array(
+                self.contig, '.', self.start, self.stop, 15)
             self.smooth_chipseq_cov[chipseq_reads.factor][chipseq_reads.BSID]=( 
                 smooth_rd_cov/(smooth_rd_cov.sum()+1e-6))
         return
@@ -445,48 +176,16 @@ class PeakRegion(object):
     def estimate_unbnd_conc_in_region(self, motif_name):
         motif = self.motifs[motif_name]
         score_cov = self.score_cov[motif_name]
-        trimmed_atacseq_cov = self.atacseq_cov[len(motif)+1:]
-        atacseq_weights = trimmed_atacseq_cov/trimmed_atacseq_cov.max()
-        rd_cov = numpy.zeros(len(atacseq_weights), dtype=float)
+        atacseq_cov = self.atacseq_cov
+        rd_cov = numpy.zeros(len(self)+1, dtype=float)
         for bsid, cov in self.chipseq_cov[motif.factor].iteritems():
-            rd_cov += cov[len(motif)+1:]
-        
+            rd_cov += cov
         frag_len = 125
-        sm_window = numpy.ones(frag_len, dtype=float)/frag_len
-        sm_window = numpy.bartlett(2*frag_len)
-        sm_window = sm_window/sm_window.sum()
-
-        def build_occ(log_tf_conc):
-            raw_occ = logistic(log_tf_conc + score_cov/(R*T))
-            occ = raw_occ*atacseq_weights
-            smoothed_occ = numpy.convolve(sm_window, occ/occ.sum(), mode='same')
-
-            return raw_occ, occ, smoothed_occ
-
-        def calc_lhd(log_tf_conc):
-            raw_occ, occ, smoothed_occ = build_occ(log_tf_conc)
-            diff = (100*smoothed_occ - 100*rd_cov/rd_cov.sum())**2
-            lhd = -(numpy.log(smoothed_occ + 1e-12)*rd_cov).sum()
-            #print log_tf_conc, diff.sum()
-            return lhd
-
-        res = brute(calc_lhd, ranges=(
-            slice(-MAX_ENERGY_WIGGLE, 0.1, MAX_ENERGY_WIGGLE),))[0]
-        log_tf_conc = max(-MAX_ENERGY_WIGGLE, min(MAX_ENERGY_WIGGLE, res))
-        #raw_occ, occ, smoothed_occ = build_occ(log_tf_conc)
-        #diff = (smoothed_occ - rd_cov/rd_cov.sum())**2
-
-        #genome_occ_ratio = logistic((log_tf_conc+motif.consensus_energy)/(R*T))/logistic(
-        #    (log_tf_conc + motif.consensus_energy + motif.mean_energy)/(R*T))
-        #region_occ_ratio = logistic((log_tf_conc+motif.consensus_energy)/(R*T))/raw_occ.mean()
-
-        #print >> sys.stderr,  "Region Av Occ:", raw_occ.mean()
-        #print >> sys.stderr,  "Consensus Occ:", \
-        #    logistic(log_tf_conc+motif.consensus_energy/(R*T)), \
-        #    log_tf_conc+motif.consensus_energy/(R*T)
-        #assert False
+            
+        log_tf_conc = estimate_unbnd_conc_in_region(
+            motif, score_cov, atacseq_cov, rd_cov,
+            frag_len, MAX_ENERGY_WIGGLE)
         return log_tf_conc
-
 
     @staticmethod
     def iter_upper_rank_means(scores, percentiles):
@@ -557,13 +256,19 @@ class PeakRegion(object):
                 # find the raw occupancy that provies the best correpondence
                 # between the signals, and then try and predict these 
                 # sequentially
-
                 unbnd_conc = self.estimate_unbnd_conc_in_region(motif_name)
+                #print self.score_cov[motif_name].mean(), unbnd_conc
+
+                #print unbnd_conc
+                #unbnd_conc = 0.0
                 raw_occ = logistic(
                     unbnd_conc + self.score_cov[motif_name]/(R*T))
                 occ = raw_occ*atacseq_weights
                 header.append('%s_weighted_occ' % motif_name)
                 rv.append(occ.mean())
+
+                header.append('%s_unbnd_conc' % motif_name)
+                rv.append(unbnd_conc)
 
 
                 #for percentile, score in self.iter_upper_rank_means(
@@ -726,7 +431,7 @@ def parse_arguments():
     # load the motif data
     motifs = defaultdict(list)
     for fp in args.motifs:
-        motif = Motif(fp)
+        motif = Motif(fp.read().strip())
         motifs[motif.factor].append(motif)
     motifs = dict(motifs)
     
