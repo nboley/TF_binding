@@ -2,7 +2,7 @@ import os
 
 import numpy
 
-from grit.files.reads import Reads, MergedReads, determine_read_type
+from grit.files.reads import Reads, MergedReads, determine_read_pair_params
 from grit.frag_len import build_normal_density
 
 class ChIPSeqReads(Reads):
@@ -39,11 +39,15 @@ class ChIPSeqReads(Reads):
              frag_len_dist=None):        
         assert self.is_indexed()
 
-        factor = os.path.basename(self.filename).split('.')[2]
-        BSID = os.path.basename(self.filename).split('.')[3]
-        self.factor = factor
-        self.BSID = BSID
-        self.id = "%s.%s" % (self.factor, self.BSID)
+        "ChIPSeq.GM12878.CTCF.BSID-ENCBS195XMM.REPID-1_1.EXPID-ENCSR000DRZ.bam"
+        data = os.path.basename(self.filename).split('.')
+        self.biosample = data[1] 
+        self.factor = data[2]
+        self.bsid = data[3].split("-")[1]
+        self.experiment_id = data[5].split("-")[1]
+        self.repid = data[4].split("-")[1]
+
+        self.id = "%s.%s.%s" % (self.factor, self.bsid, self.repid)
         
         reads_are_stranded = True
         
@@ -53,18 +57,18 @@ class ChIPSeqReads(Reads):
         self.frag_len_dist = frag_len_dist
         self.frag_len = int(frag_len_dist.mean_fragment_length())
         
-        read_type_attributes = determine_read_type(self)
+        read_pair_params = determine_read_pair_params(self)
         
         # set whether the reads are paired or not
         if reads_are_paired in ('auto', None):
-            if 'paired' in read_type_attributes:
+            if 'paired' in read_pair_params:
                 reads_are_paired = True 
-                assert 'unpaired' in read_type_attributes
+                assert 'unpaired' in read_pair_params
             else:
                 reads_are_paired = False
         
         if pairs_are_opp_strand in ('auto', None):
-            if reads_are_paired or 'same_strand' in read_type_attributes:
+            if reads_are_paired or ('same_strand' in read_pair_params):
                 pairs_are_opp_strand = False
             else:
                 pairs_are_opp_strand = True

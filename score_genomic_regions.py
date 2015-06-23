@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import os, sys
 import time
 
@@ -19,7 +21,7 @@ import Queue
 
 import gzip
 
-from grit.files.reads import Reads, MergedReads, determine_read_type
+from grit.files.reads import Reads, MergedReads
 from grit.lib.multiprocessing_utils import fork_and_wait, ProcessSafeOPStream
 from grit.frag_len import build_normal_density
 
@@ -37,9 +39,12 @@ from motif_tools import estimate_unbnd_conc_in_region, Motif, logistic, R, T
 
 NTHREADS = 1
 PLOT = False
-MAX_N_PEAKS = 100000
+MAX_N_PEAKS = 10000
 
 MAX_ENERGY_WIGGLE = -math.log(1e-12)
+
+class ATACSeqReads(Reads):
+    pass
 
 class Peaks(list):
     pass
@@ -115,7 +120,7 @@ class PeakRegion(object):
         rv.append("%s_%i_%i" % (contig, start, stop))
         rv.append("-".join(sorted(chipseq_factors)))
         rv.append("-".join(sorted(motif_names)))
-        return ".".join(rv)
+        return str(hash(".".join(rv)))
 
     @staticmethod
     def build_pickle_fname(contig, start, stop, chipseq_factors, motif_names):
@@ -165,11 +170,11 @@ class PeakRegion(object):
         for chipseq_reads in reads:
             rd_cov = chipseq_reads.build_unpaired_reads_fragment_coverage_array(
                 self.contig, '.', self.start, self.stop, 1, 15)
-            self.chipseq_cov[chipseq_reads.factor][chipseq_reads.BSID] = rd_cov
+            self.chipseq_cov[chipseq_reads.factor][chipseq_reads.id] = rd_cov
 
             smooth_rd_cov = chipseq_reads.build_unpaired_reads_fragment_coverage_array(
                 self.contig, '.', self.start, self.stop, 15)
-            self.smooth_chipseq_cov[chipseq_reads.factor][chipseq_reads.BSID]=( 
+            self.smooth_chipseq_cov[chipseq_reads.factor][chipseq_reads.id]=( 
                 smooth_rd_cov/(smooth_rd_cov.sum()+1e-6))
         return
 
@@ -187,6 +192,15 @@ class PeakRegion(object):
             frag_len, MAX_ENERGY_WIGGLE)
         return log_tf_conc
 
+    def get_scores_atac_and_chipseq(self, motif_name):
+        motif = self.motifs[motif_name]
+        score_cov = self.score_cov[motif_name]
+        atacseq_cov = self.atacseq_cov
+        rd_cov = numpy.zeros(len(self)+1, dtype=float)
+        for bsid, cov in self.chipseq_cov[motif.factor].iteritems():
+            rd_cov += cov
+        return score_cov, atacseq_cov, rd_cov
+
     @staticmethod
     def iter_upper_rank_means(scores, percentiles):
         sorted_scores = numpy.sort(scores)[::-1]
@@ -194,9 +208,24 @@ class PeakRegion(object):
             yield percentile, float(sorted_scores[
                 :int(percentile*len(sorted_scores))+1].mean())
 
-    def calc_summary_stats(self):
-        log_tf_conc = 0.0
+    def calc_occupancy_scores(self, factor, motif, tf_concs=[1e-6,]):
+        mean_rvs = []
+        max_rvs = []
 
+        trimmed_atacseq_cov = self.atacseq_cov[len(motif)+1:]
+        atacseq_weights = trimmed_atacseq_cov/trimmed_atacseq_cov.max()
+
+        for tf_conc in tf_concs:
+            log_tf_conc = numpy.log(tf_conc)
+
+            raw_occ = logistic(
+                log_tf_conc - self.score_cov[motif.name]/(R*T))
+            occ = raw_occ*atacseq_weights
+            mean_rv.append(occ.mean())
+            max_rv.append(occ.max())
+        return mean_rv, max_rvs
+    
+    def calc_summary_stats(self):
         header = []
         rv = []
         
@@ -206,6 +235,9 @@ class PeakRegion(object):
 
         header.append('ATAC_mean')        
         rv.append(self.atacseq_cov.mean())
+
+        header.append('ATAC_max')        
+        rv.append(self.atacseq_cov.max())
 
         # find all factors with motif and chip-seq data
         factors = sorted(set(motif.factor for name, motif 
@@ -225,8 +257,9 @@ class PeakRegion(object):
 
                 header.append('%s_mean_score' % motif_name)
                 rv.append(self.score_cov[motif_name].mean())
-                #header.append('%s_max_score' % motif_name)
-                #rv.append(self.score_cov[motif_name].max())
+
+                header.append('%s_max_score' % motif_name)
+                rv.append(self.score_cov[motif_name].min())
                 #for percentile, score in self.iter_upper_rank_means(
                 #        self.score_cov[motif_name], percentiles):
                 #    header.append('%s_q_%.2f_score' % (motif_name, percentile))
@@ -234,6 +267,7 @@ class PeakRegion(object):
 
                 trimmed_atacseq_cov = self.atacseq_cov[len(motif)+1:]
                 atacseq_weights = trimmed_atacseq_cov/trimmed_atacseq_cov.max()
+                #1000, trimmed_atacseq_cov.max())
                 
                 w_pwm_scores = self.pwm_cov[motif_name]*atacseq_weights
                 header.append('%s_mean_w_pwm_score' % motif_name)
@@ -245,13 +279,32 @@ class PeakRegion(object):
                     
                 #header.append('%s_max_w_pwm_score' % motif_name)
                 #rv.append(w_pwm_scores.max())
-                
+
+                """
+                for tf_conc in [1e-30, 1e-20, 1e-15, 1e-10, 1e-7, 1e-5, 1e-2, 1e-1, 
+                                1, 1e2, 1e5, 1e7, 1e10, 1e15, 1e20, 1e30 ]:
+                    log_tf_conc = numpy.log(tf_conc)
+
+                    raw_occ = logistic(
+                        log_tf_conc - self.score_cov[motif.name]/(R*T))
+                    occ = raw_occ*atacseq_weights
+                    header.append('%s_%e_mean_occ' % (motif_name, tf_conc))
+                    rv.append(occ.mean())
+
+                    #header.append('%s_%e_max_occ' % (motif_name, tf_conc))
+                    #rv.append(occ.max())
+                """
+                log_tf_conc = numpy.log(1e5)
                 raw_occ = logistic(
-                    log_tf_conc + self.score_cov[motif_name]/(R*T))
+                    log_tf_conc - self.score_cov[motif_name]/(R*T))
                 occ = raw_occ*atacseq_weights
                 header.append('%s_mean_occ' % motif_name)
                 rv.append(occ.mean())
 
+                header.append('%s_max_occ' % motif_name)
+                rv.append(occ.max())
+
+                """
                 # XXX
                 # find the raw occupancy that provies the best correpondence
                 # between the signals, and then try and predict these 
@@ -269,7 +322,7 @@ class PeakRegion(object):
 
                 header.append('%s_unbnd_conc' % motif_name)
                 rv.append(unbnd_conc)
-
+                """
 
                 #for percentile, score in self.iter_upper_rank_means(
                 #        occ, percentiles):
@@ -280,6 +333,39 @@ class PeakRegion(object):
                 #rv.append(occ.max())
 
         return header, rv
+
+def OLD():
+    """Just a place to store code temporarily""" 
+    pass
+    """
+    for region in chipseq_peaks:
+        peak = PeakRegion(fasta, region[0], region[1], region[2])
+        peak.add_motif(motif)
+        peak.add_atacseq_cov(atacseq_reads)
+        peak.add_chipseq_experiment(motif.factor, chipseq_reads, frag_len)
+        ps = pickle.dumps(peak)
+        print len(ps)
+        print peak.calc_summary_stats()
+        assert False
+    """
+
+    """
+    sm_window = numpy.ones(frag_len, dtype=float)/frag_len
+    sm_window = numpy.bartlett(2*frag_len)
+    sm_window = sm_window/sm_window.sum()
+
+    # make plots
+    for peak in chipseq_peaks:
+        peak = (peak[0], peak[1]-2*frag_len, peak[2]+2*frag_len)
+        try: 
+            estimate_unbnd_conc_in_region(
+                peak, motif, fasta, 
+                chipseq_reads, atacseq_reads, 
+                frag_len, sm_window)
+        except:
+            print "ERROR"
+    """ 
+
 
 def calculate_enrichment(
         peak, motif, fasta, 
@@ -380,10 +466,213 @@ def load_chipseq_reads(all_ChIP_seq_reads):
     
     return dict(factor_grpd_reads)
 
+def load_summary_stats(fname):
+    data = SummaryResults(pd.read_table(fname))
+    for factor in data.get_factors_and_column_indices().iterkeys():
+        if PLOT:
+            #data.scatter_plot(factor)
+            #plt.savefig('%s.%s.scatter.png' % (fname, factor))
+            #plt.close()
+
+            data.rank_plot(factor)
+            plt.savefig("%s.%s.rankcor.png" % (fname, factor))
+            plt.close()
+            print "FINISHED ", "%s.%s.rankcor.png" % (fname, factor)
+
+
+def collect_and_write_peak_summary_stats(
+        peaks, motifs, fasta, 
+        chipseq_reads, 
+        atacseq_reads, histone_mark_reads, 
+        frag_len, ofname):
+    proc_queue = multiprocessing.Queue()
+    for pk in peaks: proc_queue.put(pk)
+
+    # process a single peak so that we know what to name the columns
+    region = proc_queue.get()
+    peak = load_peak_region(
+        fasta, 
+        region[0], max(0, region[1]-2*frag_len), region[2]+2*frag_len,
+        atacseq_reads, histone_mark_reads,
+        motifs, 
+        chipseq_reads,
+        frag_len)
+    header, vals = peak.calc_summary_stats()
+
+    ofp = ProcessSafeOPStream(open(ofname, "w"))
+    args = [proc_queue, ofp, motifs, fasta, 
+            chipseq_reads, atacseq_reads, histone_mark_reads, frag_len]
+
+    ofp.write("\t".join(header) + "\n")
+    ofp.write("\t".join(map(str, vals)) + "\n")
+
+    fork_and_wait(NTHREADS, process_peaks_worker, args)
+    # let the printing catch up
+    time.sleep(0.1)
+    ofp.close()
+
+def collect_and_write_peak_summary_stats(
+        peaks, motifs, fasta, 
+        chipseq_reads, 
+        atacseq_reads, histone_mark_reads, 
+        frag_len, ofname):
+    proc_queue = multiprocessing.Queue()
+    for pk in peaks: proc_queue.put(pk)
+
+    # process a single peak so that we know what to name the columns
+    region = proc_queue.get()
+    peak = load_peak_region(
+        fasta, 
+        region[0], max(0, region[1]-2*frag_len), region[2]+2*frag_len,
+        atacseq_reads, histone_mark_reads,
+        motifs, 
+        chipseq_reads,
+        frag_len)
+    header, vals = peak.calc_summary_stats()
+
+    ofp = ProcessSafeOPStream(open(ofname, "w"))
+    args = [proc_queue, ofp, motifs, fasta, 
+            chipseq_reads, atacseq_reads, histone_mark_reads, frag_len]
+
+    ofp.write("\t".join(header) + "\n")
+    ofp.write("\t".join(map(str, vals)) + "\n")
+
+    fork_and_wait(NTHREADS, process_peaks_worker, args)
+    # let the printing catch up
+    time.sleep(0.1)
+    ofp.close()
+
+def plot_predicted_vs_observed_pks(obs_score, pred_score, ofname):
+    plt.figure()
+    heatmap, xedges, yedges = numpy.histogram2d(
+        rankdata(-obs_score, method='ordinal'), 
+        rankdata(pred_score, method='ordinal'), 
+        bins=20)
+    heatmap, xedges, yedges = numpy.histogram2d(
+        numpy.clip(-numpy.log(1+obs_score), -0.1, 0),
+        numpy.clip(numpy.log(1+pred_score), 0, 0.1), 
+        bins=100)
+    #heatmap, xedges, yedges = numpy.histogram2d(
+    #    numpy.clip(-numpy.log(1+data['ATAC_mean']), -0.1, 0),
+    #    numpy.clip(numpy.log(y), 0, 0.1), 
+    #    bins=100)
+
+    #heatmap, xedges, yedges = numpy.histogram2d(
+    #    rankdata(-data['ATAC_mean'], method='average'), 
+    #    rankdata(obs_score, method='average'), 
+    #    bins=20)
+    extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+    plt.clf()
+    plt.imshow(heatmap, extent=extent)
+    #plt.scatter(rankdata(obs_score, method='ordinal'), 
+    #            rankdata(pred_score, method='ordinal'))
+    plt.savefig(ofname)
+    plt.close()
+    return
+
+def predict_tf_binding(summary_stats):
+    from sklearn.tree import DecisionTreeRegressor
+    from sklearn.ensemble import AdaBoostRegressor, GradientBoostingRegressor, RandomForestRegressor
+    from sklearn import cross_validation, linear_model
+    #rng = numpy.random.RandomState(1)
+    #clf_1 = DecisionTreeRegressor(max_depth=20)
+    #clf_1 = RandomForestRegressor(n_estimators=100)
+    #clf_1 = AdaBoostRegressor(
+    #    DecisionTreeRegressor(max_depth=10),
+    #    n_estimators=1000, random_state=rng, loss='square')
+    #clf_1 = linear_model.LinearRegression()
+    clf_1 = GradientBoostingRegressor(loss='lad', n_estimators=250)
+    """
+    weighted_occ_columns =  ['BATF_known1_weighted_occ', 
+                             'BCL11A_disc2_weighted_occ',
+                             'BCL11A_disc4_weighted_occ', 
+                             'IRF4_2_weighted_occ', 
+                             'REST_known1_weighted_occ', 
+                             'SPI1_known4_weighted_occ']
+
+    mean_occ_columns =  ['BATF_known1_mean_occ', 
+                    'BCL11A_disc2_mean_occ',
+                    'BCL11A_disc4_mean_occ', 
+                    'IRF4_2_mean_occ', 
+                    'REST_known1_mean_occ', 
+                    'SPI1_known4_mean_occ']
+    
+    unbnd_tf_columns = [ 'BATF_known1_unbnd_conc', 
+                         'BCL11A_disc2_unbnd_conc',
+                         'BCL11A_disc4_unbnd_conc', 
+                         'IRF4_2_unbnd_conc', 
+                         'REST_known1_unbnd_conc', 
+                         'SPI1_known4_unbnd_conc']
+    """
+    #occ_columns = weighted_occ_columns
+    #for col in occ_columns:
+    #    summary_stats["OCC_ADJ_" + col ] = summary_stats[col]*summary_stats['ATAC_mean']
+    #print summary_stats.head()
+    #return
+    #print summary_stats.columns
+
+    #print summary_stats.corr(method='spearman')
+    
+    X = summary_stats[['ATAC_mean',] + [
+        x for x in summary_stats.columns if 
+        x.endswith('mean_occ') 
+        #or x.endswith('mean_score')
+        #or x.endswith('max_score')
+        or x.endswith('max_occ')
+    ] ]
+
+    #X = summary_stats[[ 
+    #    x for x in summary_stats.columns if 
+    #    x.endswith('mean_occ') 
+    #    #or x.endswith('mean_score')
+    #] ]
+    
+    test_indices = numpy.array(range(0,len(X), 5))
+    train_indices = numpy.array(sorted(set(xrange(len(X))) - set(test_indices)))
+    # group chipseq experiments by factor
+    BS1_factors = sorted(c for c in summary_stats.columns 
+                         if c.endswith("mean_ChIPseq_cov")
+                         and '1_1' in c)
+    BS2_factors = sorted(c for c in summary_stats.columns 
+                         if c.endswith("mean_ChIPseq_cov")
+                         and '2_1' in c)
+
+    for factor in zip(BS1_factors, BS2_factors):
+        factor_name = factor[0].split("_")[0]
+        for col in X.columns:
+            #if not col.startswith(factor_name): continue
+            print "Marginal Corr:", factor_name, col, \
+                spearmanr(X[col], summary_stats[factor[0]])[0], \
+                spearmanr(X[col], summary_stats[factor[1]])[0]
+
+    #assert False
+    for bs1_col, bs2_col in zip(BS1_factors, BS2_factors):
+        y1 = summary_stats[bs1_col][train_indices]
+        clf_1.fit(X.loc[train_indices,:], numpy.log(y1+1))
+        y1_hat = clf_1.predict(X.loc[test_indices,:])
+        #print clf_1.feature_importances_
+        #print clf_1.coef_
+        y2 = summary_stats[bs2_col][train_indices]
+        clf_1.fit(X.loc[train_indices,:], numpy.log(y2+1))
+        y2_hat = clf_1.predict(X.loc[test_indices,:])
+        #print clf_1.feature_importances_
+        #print clf_1.coef_
+
+        #print ( bs1_col, spearmanr(y1, y2)[0], 
+        #        spearmanr(summary_stats.loc[test_indices,bs1_col], y2_hat)[0], 
+        #        spearmanr(summary_stats.loc[test_indices,bs2_col], y1_hat)[0] )
+        print ( bs1_col, spearmanr(y1, y2)[0], 
+                spearmanr(numpy.log(summary_stats.loc[test_indices,bs1_col]+1), y2_hat)[0], 
+                spearmanr(numpy.log(summary_stats.loc[test_indices,bs2_col]+1), y1_hat)[0] )
+
+    return
+
+    pass
+
 def parse_arguments():
     import argparse
     parser = argparse.ArgumentParser(
-        description='Estimate unbound tf concentration in a region.')
+        description='Estimate tf binding from sequence and chromatin accessibility data.')
 
     parser.add_argument( '--fasta', type=file, required=True,
         help='Fasta containing genome sequence.')
@@ -423,7 +712,7 @@ def parse_arguments():
 
     fasta = FastaFile(args.fasta.name)
 
-    atacseq_reads = Reads(args.ATAC_seq_reads.name).init(
+    atacseq_reads = ATACSeqReads(args.ATAC_seq_reads.name).init(
         True, True, False, False)
 
     peaks = load_narrow_peaks(args.peaks.name)
@@ -449,185 +738,87 @@ def parse_arguments():
             peaks, frag_len )
 
 
-def load_summary_stats(fname):
-    data = SummaryResults(pd.read_table(fname))
-    for factor in data.get_factors_and_column_indices().iterkeys():
-        if PLOT:
-            #data.scatter_plot(factor)
-            #plt.savefig('%s.%s.scatter.png' % (fname, factor))
-            #plt.close()
+def find_optimal_GFE(motif, pks, chipseq_scores, atacseq_signal):
+    res = []
+    max_len = max(len(pk) for pk in pks)
+    scores = numpy.zeros((len(pks), max_len+1))
 
-            data.rank_plot(factor)
-            plt.savefig("%s.%s.rankcor.png" % (fname, factor))
-            plt.close()
-            print "FINISHED ", "%s.%s.rankcor.png" % (fname, factor)
+    for GFE in numpy.arange(-20, 10, 1.0):
+        motif.build_occupancy_weights(4, GFE)
+        for pk_i, pk in enumerate(pks):
+            score_cov = numpy.array(
+                [score for pos, score in motif.iter_seq_score(pk.seq)])
+            scores[pk_i, len(motif)+1:] = score_cov
+        res.append((
+            spearmanr((logistic(-scores/(R*T))*atacseq_signal).mean(1), chipseq_scores)[0],
+            GFE))
+        print motif.name, GFE, res[-1]
+    max_cor = max(x[0] for x in res)
+    print motif.name, [x[1] for x in res if x[0] == max_cor][0], max_cor
+    print >> sys.stderr, motif.name, [x[1] for x in res if x[0] == max_cor][0], max_cor
 
-def OLD():
-    """Just a place to store code temporarily""" 
-    pass
-    """
-    for region in chipseq_peaks:
-        peak = PeakRegion(fasta, region[0], region[1], region[2])
-        peak.add_motif(motif)
-        peak.add_atacseq_cov(atacseq_reads)
-        peak.add_chipseq_experiment(motif.factor, chipseq_reads, frag_len)
-        ps = pickle.dumps(peak)
-        print len(ps)
-        print peak.calc_summary_stats()
-        assert False
-    """
-
-    """
-    sm_window = numpy.ones(frag_len, dtype=float)/frag_len
-    sm_window = numpy.bartlett(2*frag_len)
-    sm_window = sm_window/sm_window.sum()
-
-    # make plots
-    for peak in chipseq_peaks:
-        peak = (peak[0], peak[1]-2*frag_len, peak[2]+2*frag_len)
-        try: 
-            estimate_unbnd_conc_in_region(
-                peak, motif, fasta, 
-                chipseq_reads, atacseq_reads, 
-                frag_len, sm_window)
-        except:
-            print "ERROR"
-    """ 
+    return (motif.name, [x[1] for x in res if x[0] == max_cor][0], max_cor)
 
 def main():
     ( ofname, motifs, fasta, 
       chipseq_reads, atacseq_reads, 
       histone_mark_reads,
-      chipseq_peaks, 
+      peaks, 
       frag_len ) = parse_arguments()
+
+    pk_size = 100
+    num_pks = 500
+    pks = []
+    for i, (contig, start, stop, summit) in enumerate(peaks):
+        if i >= num_pks: break
+        if i%10 == 0: print i
+        if start+summit < pk_size: continue
+        pk = load_peak_region(fasta, 
+                              contig, start+summit-pk_size, start+summit+pk_size,
+                              atacseq_reads, histone_mark_reads,
+                              motifs, chipseq_reads, 150)
+        pks.append(pk)
+    
+    max_len = max(len(pk) for pk in pks)
+    print "Max Length: ", max_len
+    atacseq_signal = numpy.zeros((num_pks, max_len+1))
+    for pk_i, pk in enumerate(pks):
+        atacseq_signal[pk_i,:] = pk.atacseq_cov
+    
+    pids = []
+    for factor, motifs in motifs.items():
+        chipseq_signal = numpy.zeros((num_pks, max_len+1))
+        for pk_i, pk in enumerate(pks):
+            for bsid, cov in pk.chipseq_cov[factor].iteritems():
+                chipseq_signal[pk_i,:] += cov
+        chipseq_scores = chipseq_signal.mean(1)
+        
+        for motif in motifs:
+            pid = os.fork()
+            if pid == 0:
+                res = find_optimal_GFE(motif, pks, chipseq_scores, atacseq_signal)
+                print "="*10, res
+                print >> sys.stderr, "="*10, res
+                os._exit(0)
+            else:
+                pids.append(pid)
+    
+    for pid in pids:
+        os.waitpid(pid, 0)
+    
+    return
     
     if True:
-        proc_queue = multiprocessing.Queue()
-        for pk in chipseq_peaks: proc_queue.put(pk)
-
-        ofp = ProcessSafeOPStream(open(ofname, "w"))
-        args = [proc_queue, ofp, motifs, fasta, 
-                chipseq_reads, atacseq_reads, histone_mark_reads, frag_len]
-
-        region = proc_queue.get()
-        peak = load_peak_region(
-            fasta, 
-            region[0], max(0, region[1]-2*frag_len), region[2]+2*frag_len,
-                              
-            atacseq_reads, histone_mark_reads,
-            motifs, 
-            chipseq_reads,
-            frag_len)
-        header, vals = peak.calc_summary_stats()
-
-        ofp.write("\t".join(header) + "\n")
-        ofp.write("\t".join(map(str, vals)) + "\n")
-
-        fork_and_wait(NTHREADS, process_peaks_worker, args)
-        # let the printing catch up
-        time.sleep(0.1)
-        ofp.close()
-    
-    #load_summary_stats(ofname)
+        collect_and_write_peak_summary_stats(
+            peaks, motifs, fasta, 
+            chipseq_reads, 
+            atacseq_reads, histone_mark_reads, 
+            frag_len, ofname)
 
     data = SummaryResults(pd.read_table(ofname))
     print "Finished loading data"
-    from sklearn.tree import DecisionTreeRegressor
-    from sklearn.ensemble import AdaBoostRegressor, GradientBoostingRegressor, RandomForestRegressor
-    from sklearn import cross_validation, linear_model
-    #rng = numpy.random.RandomState(1)
-    #clf_1 = DecisionTreeRegressor(max_depth=20)
-    #clf_1 = RandomForestRegressor(n_estimators=100)
-    #clf_1 = AdaBoostRegressor(
-    #    DecisionTreeRegressor(max_depth=10),
-    #    n_estimators=1000, random_state=rng, loss='square')
-    #clf_1 = linear_model.LinearRegression()
-    clf_1 = GradientBoostingRegressor(loss='lad', n_estimators=100)
-    """
-    weighted_occ_columns =  ['BATF_known1_weighted_occ', 
-                             'BCL11A_disc2_weighted_occ',
-                             'BCL11A_disc4_weighted_occ', 
-                             'IRF4_2_weighted_occ', 
-                             'REST_known1_weighted_occ', 
-                             'SPI1_known4_weighted_occ']
+    predict_tf_binding(data)
 
-    mean_occ_columns =  ['BATF_known1_mean_occ', 
-                    'BCL11A_disc2_mean_occ',
-                    'BCL11A_disc4_mean_occ', 
-                    'IRF4_2_mean_occ', 
-                    'REST_known1_mean_occ', 
-                    'SPI1_known4_mean_occ']
-    
-    unbnd_tf_columns = [ 'BATF_known1_unbnd_conc', 
-                         'BCL11A_disc2_unbnd_conc',
-                         'BCL11A_disc4_unbnd_conc', 
-                         'IRF4_2_unbnd_conc', 
-                         'REST_known1_unbnd_conc', 
-                         'SPI1_known4_unbnd_conc']
-    """
-    #occ_columns = weighted_occ_columns
-    #for col in occ_columns:
-    #    data["OCC_ADJ_" + col ] = data[col]*data['ATAC_mean']
-    #print data.head()
-    #return
-    #print data.columns
-
-    X = data[['ATAC_mean',] + [
-        x for x in data.columns if 
-        x.endswith('mean_occ') 
-        or x.endswith('weighted_occ')
-    ] ]
-    test_indices = numpy.array(range(0,len(X), 5))
-    train_indices = numpy.array(sorted(set(xrange(len(X))) - set(test_indices)))
-    # group chipseq experiments by factor
-    BS1_factors = sorted(c for c in data.columns 
-                         if c.endswith("mean_ChIPseq_cov")
-                         and 'BS1' in c)
-    BS2_factors = sorted(c for c in data.columns 
-                         if c.endswith("mean_ChIPseq_cov")
-                         and 'BS2' in c)
-    
-    for bs1_col, bs2_col in zip(BS1_factors, BS2_factors):
-        y1 = data[bs1_col][train_indices]
-        clf_1.fit(X.loc[train_indices,:], y1)
-        y1_hat = clf_1.predict(X.loc[test_indices,:])
-        #print clf_1.feature_importances_
-
-        y2 = data[bs2_col][train_indices]
-        clf_1.fit(X.loc[train_indices,:], y2)
-        y2_hat = clf_1.predict(X.loc[test_indices,:])
-        #print clf_1.feature_importances_
-
-        print ( bs1_col, spearmanr(y1, y2)[0], 
-                spearmanr(data.loc[test_indices,bs1_col], y1_hat)[0], 
-                spearmanr(data.loc[test_indices,bs2_col], y2_hat)[0] )
-    return
-    plt.figure()
-    heatmap, xedges, yedges = numpy.histogram2d(
-        rankdata(-y_test, method='ordinal'), 
-        rankdata(y_hat, method='ordinal'), 
-        bins=20)
-    heatmap, xedges, yedges = numpy.histogram2d(
-        numpy.clip(-numpy.log(1+y_test), -0.1, 0),
-        numpy.clip(numpy.log(1+y_hat), 0, 0.1), 
-        bins=100)
-    #heatmap, xedges, yedges = numpy.histogram2d(
-    #    numpy.clip(-numpy.log(1+data['ATAC_mean']), -0.1, 0),
-    #    numpy.clip(numpy.log(y), 0, 0.1), 
-    #    bins=100)
-
-    #heatmap, xedges, yedges = numpy.histogram2d(
-    #    rankdata(-data['ATAC_mean'], method='average'), 
-    #    rankdata(y, method='average'), 
-    #    bins=20)
-    extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
-    plt.clf()
-    plt.imshow(heatmap, extent=extent)
-    #plt.scatter(rankdata(y, method='ordinal'), rankdata(y_hat, method='ordinal'))
-    plt.savefig("test.png")
-    plt.close()
-    print spearmanr(y_test, y_hat)
-    #print data.head()
 
 if __name__ == '__main__':
     main()

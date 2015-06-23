@@ -8,7 +8,7 @@ from scipy.optimize import brute, bisect
 from collections import defaultdict
 
 T = 300
-R = 1.987e-3 # in kCal
+R = 1.987e-3 # in kCal/mol*K
 #R = 8.314e-3 # in kJ
 
 REG_LEN = 100000
@@ -59,7 +59,6 @@ def estimate_unbnd_conc_in_region(
                       
     return -log_tf_conc
 
-
 class Motif():
     def __len__(self):
         return self.length
@@ -94,6 +93,48 @@ class Motif():
                 RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
             yield offset + len(self)/2, max(score, RC_score)
 
+    def build_occupancy_weights(self, log10_occupancy_ratio, consensus_energy):
+        for i, line in enumerate(self.lines[1:]):
+            row = numpy.array([-logit(1e-3/2 + (1-1e-3)*float(x)) 
+                               for x in line.split()[1:]])
+            min_val = row.min()
+            self.consensus_energy += min_val
+            row -= min_val
+            self.motif_data[i, :] = row
+
+        # reset the consensus energy to the desired value
+        self.consensus_energy = consensus_energy/(R*T)
+        self.log10_occupancy_ratio = log10_occupancy_ratio
+        consensus_occupancy = logistic(-self.consensus_energy)
+
+        mean_energy_diff = sum(row.sum()/4 for row in self.motif_data) 
+        self.mean_energy = self.consensus_energy + mean_energy_diff
+        
+        def f(scale):
+            mean_occ = 1e-100 + logistic(
+                -self.consensus_energy - mean_energy_diff/scale)
+            rv = (
+                math.log10(consensus_occupancy) 
+                - math.log10(mean_occ) 
+                - log10_occupancy_ratio )
+            #print math.log10(mean_occ), math.log10(consensus_occupancy) 
+            return rv
+        res = bisect(f, 0.1, 1e12)
+        #res = 1.0
+        #print "Scale:", res
+        self.mean_energy = self.consensus_energy + mean_energy_diff/res
+        self.motif_data = self.motif_data/res
+
+        # change the units
+        self.consensus_energy *= (R*T)
+        self.mean_energy *= (R*T)
+        self.motif_data *= (R*T)
+
+        #print "Conc:", self.consensus_energy, logistic(-self.consensus_energy/(R*T))
+        #print "Mean:", self.mean_energy, logistic(-self.mean_energy/(R*T))
+        #print self.motif_data
+        #assert False
+
     def __init__(self, text):
         # load the motif data
         lines = text.strip().split("\n")
@@ -112,38 +153,11 @@ class Motif():
         self.pwm = numpy.zeros((self.length, 4), dtype=float)
         
         for i, line in enumerate(lines[1:]):
-            row = numpy.array([logit(1e-3/2 + (1-1e-3)*float(x)) 
-                               for x in line.split()[1:]])
-            max_val = row.max()
-            self.consensus_energy += max_val
-            row -= max_val
-            self.motif_data[i, :] = row
-
             pwm_row = numpy.array([
                 float(x) for x in line.split()[1:]])
             self.pwm[i, :] = pwm_row
         
-        # reset the consensus energy so that the strongest binder
-        # has a binding occupancy of 0.999 at chemical affinity 1
-        self.consensus_energy = 12.0/(R*T) #logit(consensus_occupancy)
-        consensus_occupancy = logistic(self.consensus_energy)
-        
-        # calculate the mean binding energy
-        mean_energy_diff = sum(row.sum()/4 for row in self.motif_data) 
-        def f(scale):
-            mean_occ = 1e-100 + logistic(
-                self.consensus_energy + mean_energy_diff/scale)
-            rv = math.log10(consensus_occupancy) - math.log10(mean_occ) - 6
-            return rv
-        res = bisect(f, 1e-1, 1e6)
-        self.mean_energy = self.consensus_energy + mean_energy_diff/res
-        self.motif_data = self.motif_data/res
-        
-        # change the units
-        self.consensus_energy *= (R*T)
-        self.mean_energy *= (R*T)
-        self.motif_data *= (R*T)
-
+        self.build_occupancy_weights(6, -10)
         #print >> sys.stderr, self.factor
         #print >> sys.stderr, "Cons Energy:", self.consensus_energy
         #print >> sys.stderr, "Cons Occ:", logistic(self.consensus_energy/(R*T))
@@ -217,41 +231,3 @@ def iter_motifs(fp):
         if len(motif_str) == 0: continue
         yield Motif(motif_str)
     return 
-
-def main():
-    # missing 'TBP', 'TAF1', 'BCL11A'
-    my_motifs = set(['CTCF', 'POU2F2', 'BATF', 'IRF4', 'REST', 'SPI1',
-                     'MYC', 'NFKB', 'PAX5', 'TATA', 'TCF12', 'YY1'])
-    print sorted(my_motifs)
-    obs_factors = set()
-    grpd_motifs = defaultdict(list)
-    with open(sys.argv[1]) as fp:
-        for motif in iter_motifs(fp):
-            obs_factors.add(motif.factor)
-            if motif.factor.upper() not in my_motifs:
-                continue
-            grpd_motifs[motif.factor].append(motif)
-
-    #
-    for factor, motifs in sorted(grpd_motifs.items()):
-        if any(m.meta_data_line.find('jolma') != -1 for m in motifs):
-            motifs = [m for m in motifs if m.meta_data_line.find('jolma') != -1]
-            for motif in motifs: motif.name += "_selex"
-            grpd_motifs[factor] = motifs
-            #print factor, 'SELEX'
-        elif any(m.meta_data_line.find('bulyk') != -1 for m in motifs):
-            motifs = [m for m in motifs if m.meta_data_line.find('bulyk') != -1]
-            for motif in motifs: motif.name += "_bulyk"
-            grpd_motifs[factor] = motifs
-            #print factor, 'BULYK'
-
-        print factor, len([m.name for m in motifs])
-
-    # choose a motif randomly
-    for factor, motifs in sorted(grpd_motifs.items()):
-        motif = motifs[0]
-        with open("%s.motif.txt" % motif.name, "w") as ofp:
-            ofp.write(">" + "\n".join(motif.lines) + "\n")
-
-if __name__ == '__main__':
-    main()

@@ -29,11 +29,9 @@ def parse_arguments():
     
     args = parser.parse_args()
     assert not (args.list_factors and args.list_samples), \
-            "Must choose either list-factors or list-samples"
+            "Can not set both --list-factors and --list-samples"
 
     return args
-
-
 
 def main():
     args = parse_arguments()
