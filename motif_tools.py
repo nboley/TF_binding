@@ -71,12 +71,13 @@ class Motif():
             score = 0.0
             RC_score = 0.0
             if 'N' in subseq: 
-                yield offset + len(self)/2, 0.25*len(self)
+                yield offset + len(self)/2, False, 0.25*len(self)
                 continue
             for i, base in enumerate(subseq):
                 score += self.pwm[i][base_map[base]]
                 RC_score += self.pwm[len(self)-i-1][RC_base_map[base]]
-            yield offset + len(self)/2, max(score, RC_score)
+            RC = True if RC_score > score else False 
+            yield offset, RC, max(score, RC_score)
 
     def iter_seq_score(self, seq):
         seq = seq.upper()
@@ -91,7 +92,8 @@ class Motif():
             for i, base in enumerate(subseq):
                 score += self.motif_data[i][base_map[base]]
                 RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
-            yield offset + len(self)/2, max(score, RC_score)
+            RC = True if RC_score > score else False 
+            yield offset, RC, max(score, RC_score)
 
     def build_occupancy_weights(self, log10_occupancy_ratio, consensus_energy):
         for i, line in enumerate(self.lines[1:]):
@@ -157,7 +159,7 @@ class Motif():
                 float(x) for x in line.split()[1:]])
             self.pwm[i, :] = pwm_row
         
-        self.build_occupancy_weights(6, -10)
+        self.build_occupancy_weights(6, -7)
         #print >> sys.stderr, self.factor
         #print >> sys.stderr, "Cons Energy:", self.consensus_energy
         #print >> sys.stderr, "Cons Occ:", logistic(self.consensus_energy/(R*T))
