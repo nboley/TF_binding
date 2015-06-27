@@ -65,7 +65,7 @@ class Motif():
 
     def iter_pwm_score(self, seq):
         seq = seq.upper()
-        for offset in xrange(len(seq) - len(self)):
+        for offset in xrange(len(seq) - len(self)+1):
             subseq = seq[offset:offset+len(self)]
             assert len(self) == len(subseq)
             score = 0.0
@@ -80,8 +80,8 @@ class Motif():
             yield offset, RC, max(score, RC_score)
 
     def iter_seq_score(self, seq):
-        seq = seq.upper()
-        for offset in xrange(len(seq) - len(self)):
+        #seq = seq.upper()
+        for offset in xrange(len(seq) - len(self)+1):
             subseq = seq[offset:offset+len(self)]
             assert len(self) == len(subseq)
             score = self.consensus_energy
@@ -90,11 +90,25 @@ class Motif():
                 yield offset + len(self)/2, self.mean_energy
                 continue
             for i, base in enumerate(subseq):
-                score += self.motif_data[i][base_map[base]]
-                RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
+                score += self.motif_data[i][base]
+                RC_score += self.motif_data[len(self)-i-1][3-base]
+                #score += self.motif_data[i][base_map[base]]
+                #RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
             RC = True if RC_score > score else False 
-            yield offset, RC, max(score, RC_score)
+            #yield offset, RC, max(score, RC_score)
+            yield offset, False, score
 
+    def score_seq(self, seq):
+        try: assert len(seq) >= len(self)
+        except: 
+            print seq
+            raise
+        return min(x[2] for x in self.iter_seq_score(seq))
+    
+    def est_occ(self, unbnd_tf_conc, seq):
+        score = self.score_seq(seq)
+        return logistic(unbnd_tf_conc - score)
+    
     def build_occupancy_weights(self, log10_occupancy_ratio, consensus_energy):
         for i, line in enumerate(self.lines[1:]):
             row = numpy.array([-logit(1e-3/2 + (1-1e-3)*float(x)) 
@@ -137,6 +151,14 @@ class Motif():
         #print self.motif_data
         #assert False
 
+    @property
+    def min_energy(self):
+        return self.consensus_energy + sum(x.min() for x in self.motif_data)
+
+    @property
+    def max_energy(self):
+        return self.consensus_energy + sum(x.max() for x in self.motif_data)
+
     def __init__(self, text):
         # load the motif data
         lines = text.strip().split("\n")
@@ -159,7 +181,7 @@ class Motif():
                 float(x) for x in line.split()[1:]])
             self.pwm[i, :] = pwm_row
         
-        self.build_occupancy_weights(6, -7)
+        self.build_occupancy_weights(6, -10)
         #print >> sys.stderr, self.factor
         #print >> sys.stderr, "Cons Energy:", self.consensus_energy
         #print >> sys.stderr, "Cons Occ:", logistic(self.consensus_energy/(R*T))
