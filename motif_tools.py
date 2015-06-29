@@ -95,7 +95,7 @@ class Motif():
                 #score += self.motif_data[i][base_map[base]]
                 #RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
             RC = True if RC_score > score else False 
-            #yield offset, RC, max(score, RC_score)
+            yield offset, RC, max(score, RC_score)
             yield offset, False, score
 
     def score_seq(self, seq):
