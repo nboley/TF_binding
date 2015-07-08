@@ -20,9 +20,10 @@ def logit(x):
     return math.log(x) - math.log(1-x)
 
 def logistic(x):
-    try: e_x = math.exp(x)
-    except: e_x = numpy.exp(x)
-    return e_x/(1+e_x)
+    try: e_x = math.exp(-x)
+    except: e_x = numpy.exp(-x)
+    return 1/(1+e_x)
+    #return e_x/(1+e_x)
 
 def estimate_unbnd_conc_in_region(
         motif, score_cov, atacseq_cov, chipseq_rd_cov,
@@ -59,6 +60,31 @@ def estimate_unbnd_conc_in_region(
                       
     return -log_tf_conc
 
+class EnergyArray(numpy.ndarray):
+    def calc_gfe(self, coded_subseq):
+        return self[coded_subseq].sum()
+
+    def calc_base_contributions(self):
+        base_contribs = numpy.zeros(((len(self)-1)/3, 4))
+        base_contribs[:,1:4] = self[1:].reshape(((len(self)-1)/3,3))
+        return base_contribs
+    
+    def calc_min_energy(self):
+        base_contribs = self.calc_base_contributions()
+        return base_contribs.min(1).sum() + self[0]
+
+    def calc_max_energy(self):
+        base_contribs = self.calc_base_contributions()
+        return base_contribs.max(1).sum() + self[0]
+
+    @property
+    def motif_len(self):
+        return (len(self)-1)/3
+
+    def consensus_seq(self):
+        base_contribs = self.calc_base_contributions()
+        return "".join( 'ACGT'[x] for x in numpy.argmin(base_contribs, axis=1) )
+
 class Motif():
     def __len__(self):
         return self.length
@@ -80,7 +106,6 @@ class Motif():
             yield offset, RC, max(score, RC_score)
 
     def iter_seq_score(self, seq):
-        #seq = seq.upper()
         for offset in xrange(len(seq) - len(self)+1):
             subseq = seq[offset:offset+len(self)]
             assert len(self) == len(subseq)
@@ -94,8 +119,10 @@ class Motif():
                 RC_score += self.motif_data[len(self)-i-1][3-base]
                 #score += self.motif_data[i][base_map[base]]
                 #RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
+            assert self.consensus_energy-1e-6 <= score <= self.max_energy+1e-6
+            assert self.consensus_energy-1e-6 <= RC_score <= self.max_energy+1e-6
             RC = True if RC_score > score else False 
-            yield offset, RC, max(score, RC_score)
+            #yield offset, RC, max(score, RC_score)
             yield offset, False, score
 
     def score_seq(self, seq):
@@ -107,7 +134,7 @@ class Motif():
     
     def est_occ(self, unbnd_tf_conc, seq):
         score = self.score_seq(seq)
-        return logistic(unbnd_tf_conc - score)
+        return logistic((unbnd_tf_conc - score)/(R*T))
     
     def build_occupancy_weights(self, log10_occupancy_ratio, consensus_energy):
         for i, line in enumerate(self.lines[1:]):
@@ -157,7 +184,17 @@ class Motif():
 
     @property
     def max_energy(self):
-        return self.consensus_energy + sum(x.max() for x in self.motif_data)
+        return self.consensus_energy + self.motif_data.max(1).sum()
+
+    def build_energy_array(self):
+        ref_energy = self.consensus_energy
+        energies = numpy.zeros(1 + 3*len(self), dtype=float)
+        for i, base_energies in enumerate(self.motif_data):
+            for j, base_energy in enumerate(base_energies[1:]):
+                energies[1+3*i+j] = base_energy - base_energies[0]
+            ref_energy += base_energies[0]
+        energies[0] = ref_energy
+        return energies.view(EnergyArray)
 
     def __init__(self, text):
         # load the motif data
