@@ -42,7 +42,7 @@ def load_and_code_text_file(fname, motif):
         #coded_seq = np.array([base_map[base] for base in seq.upper()])
         for offset in xrange(0, seq_len-len(motif)+1):
             subseq = seq[offset:offset+len(motif)].upper()
-            coded_subseq = [0,] + [
+            coded_subseq = [
                 1 + pos*3 + base_map[base] - 1 
                 for pos, base in enumerate(subseq)
                 if base != 'A']
@@ -230,20 +230,21 @@ def calc_rnd_log_lhd(coded_seqs, energy_array, rnd, log_unbnd_conc):
     for i, subseqs in enumerate(coded_seqs):
         scored_seqs[i] = max(energy_array[subseq].sum() for subseq in subseqs)
         
-    numerator = rnd*np.log(logistic(log_unbnd_conc+scored_seqs/(R*T))).sum()
+    numerator = rnd*np.log(logistic((log_unbnd_conc-scored_seqs)/(R*T))).sum()
     
     energies, partition_fn = est_partition_fn(energy_array)
     expected_cnts = (4**energy_array.motif_len)*partition_fn
-    occupancies = logistic(log_unbnd_conc+energies/(R*T))**rnd
+    occupancies = logistic((log_unbnd_conc-energies)/(R*T))**rnd
     denom_occupancies = expected_cnts*occupancies
     denom = np.log(denom_occupancies.sum())
     #print "====", numerator, len(coded_seqs)*denom, 
     return numerator - len(coded_seqs)*denom
 
+
 def calc_l2_loss(coded_seqs, energy_array, rnd, log_unbnd_conc):
     # build the partition function
     energy_grid, partition_fn = est_partition_fn(
-        energy_array, n_bins=int(math.sqrt(len(coded_seqs))))
+        energy_array, n_bins=50*int(math.sqrt(len(coded_seqs))))
     expected_occupancies = logistic((log_unbnd_conc-energy_grid)/(R*T))**(rnd+1)
     expected_occupancies = expected_occupancies/expected_occupancies.sum()
     expected_cnts = expected_occupancies*len(coded_seqs)
@@ -282,24 +283,7 @@ def sim_seqs(ofname, n_seq, motif, log_chem_pot, rnd):
     fp.close()
     return
 
-def main():
-    motif = load_motifs(sys.argv[1]).values()[0][0]
-    energy_array = motif.build_energy_array()
-    log_chem_pot = -8
-    rnd = 2
-    
-    ofname = "test.rnd%i.cp%.2e.txt" % (rnd, log_chem_pot)
-    #sim_seqs(ofname, 1000, motif, log_chem_pot, rnd) 
-    seqs = load_and_code_text_file(ofname, motif)
-    # sys.argv[2]
-    print "Finished Simulations"
-    #return
-
-    print energy_array.consensus_seq()
-    print energy_array.calc_min_energy()
-    print energy_array[0]
-    print energy_array.calc_base_contributions()
-
+def opt_l2_loss():
     def f(x, log_chem_pot):
         #x = np.clip(x, -20, 10)
         #x_w_en = np.array([energy_array[0],] + x.tolist()).view(EnergyArray)
@@ -331,17 +315,58 @@ def main():
     #        options={'disp': True},
     #        method='powell') # Nelder-Mead
     return
+
+
+def calc_log_lhd():
+    pass
+
+def main():
+    motif = load_motifs(sys.argv[1]).values()[0][0]
+    energy_array = motif.build_energy_array()
+    log_chem_pot = -8
+    rnd = 1
     
+    ofname = "test.rnd%i.cp%.2e.txt" % (rnd, log_chem_pot)
+    #sim_seqs(ofname, 1000, motif, log_chem_pot, rnd) 
+    seqs = load_and_code_text_file(ofname, motif)
+    # sys.argv[2]
+    print "Finished Simulations"
+    #return
+
+    print energy_array.consensus_seq()
+    print energy_array[0]
+    print energy_array.calc_min_energy()
+    print energy_array.calc_base_contributions()
+    
+    log_chem_pot = -8
+    all_A_energy = energy_array[0]
     def f(x):
-        x = x.view(EnergyArray)
-        rv = calc_rnd_log_lhd(seqs, x, 1, log_chem_pot)
-        print x.consensus_seq()
-        print x.calc_base_contributions()
-        print rv
-        print
+        x_w_en = np.insert(x,0,all_A_energy).view(EnergyArray)
+        rv = calc_rnd_log_lhd(seqs, x_w_en, rnd, log_chem_pot)
+
+        if VERBOSE:
+            print x_w_en.consensus_seq()
+            print x_w_en[0]
+            print x_w_en.calc_min_energy()
+            print x_w_en.calc_base_contributions()
+            print rv
+            print
         return -rv
+
+    x0 = np.array([random.random() for i in xrange(len(energy_array))])[1:]    
+    # user a slow buty safe algorithm to find a starting point
+    #res = minimize(f, x0, tol=1e-2,
+    #               options={'disp': True, 'maxiter': 5000}
+    #               , method='Powell') #'Nelder-Mead')
+    #print "Finished finding a starting point" 
+    res = minimize(f, x0, tol=1e-12,
+                   options={'disp': True, 'maxiter': 50000},
+                   bounds=[(-6,6) for i in xrange(len(x0))])
+    global VERBOSE
+    VERBOSE = True
+    f(res.x)
     
-    print minimize(f, energy_array, options={'disp': True}, method='Nelder-Mead')
+    f(energy_array[1:])
     return
     #for chem_potential in np.linspace(-30, 20, 20):
     #    print chem_potential, calc_rnd_log_lhd(
