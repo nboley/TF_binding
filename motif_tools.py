@@ -60,26 +60,28 @@ def estimate_unbnd_conc_in_region(
                       
     return -log_tf_conc
 
-class EnergyArray(numpy.ndarray):
-    def calc_gfe(self, coded_subseq):
+class DeltaDeltaGArray(numpy.ndarray):
+    def calc_ddg(self, coded_subseq):
+        """Calculate delta delta G for coded_subseq.
+        """
         return self[coded_subseq].sum()
 
     def calc_base_contributions(self):
-        base_contribs = numpy.zeros(((len(self)-1)/3, 4))
-        base_contribs[:,1:4] = self[1:].reshape(((len(self)-1)/3,3))
+        base_contribs = numpy.zeros((len(self)/3, 4))
+        base_contribs[:,1:4] = self.reshape((len(self)/3,3))
         return base_contribs
     
-    def calc_min_energy(self):
+    def calc_min_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()
-        return base_contribs.min(1).sum() + self[0]
+        return ref_energy + base_contribs.min(1).sum()
 
-    def calc_max_energy(self):
+    def calc_max_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()
-        return base_contribs.max(1).sum() + self[0]
+        return ref_energy + base_contribs.max(1).sum()
 
     @property
     def motif_len(self):
-        return (len(self)-1)/3
+        return len(self)/3
 
     def consensus_seq(self):
         base_contribs = self.calc_base_contributions()
@@ -186,15 +188,14 @@ class Motif():
     def max_energy(self):
         return self.consensus_energy + self.motif_data.max(1).sum()
 
-    def build_energy_array(self):
+    def build_ddg_array(self):
         ref_energy = self.consensus_energy
-        energies = numpy.zeros(1 + 3*len(self), dtype=float)
+        energies = numpy.zeros(3*len(self), dtype=float)
         for i, base_energies in enumerate(self.motif_data):
             for j, base_energy in enumerate(base_energies[1:]):
-                energies[1+3*i+j] = base_energy - base_energies[0]
+                energies[3*i+j] = base_energy - base_energies[0]
             ref_energy += base_energies[0]
-        energies[0] = ref_energy
-        return energies.view(EnergyArray)
+        return ref_energy, energies.view(DeltaDeltaGArray)
 
     def __init__(self, text):
         # load the motif data
