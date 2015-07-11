@@ -1,17 +1,17 @@
 import os, sys
 import math
-from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray
+from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray, logit
 
 from itertools import product, izip
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from scipy.optimize import minimize, leastsq
+from scipy.optimize import minimize, leastsq, bisect
 
 import random
 
-VERBOSE = True
+VERBOSE = False
 
 base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 
@@ -263,33 +263,10 @@ def calc_log_lhd(rnds_and_coded_seqs,
     lhd = 0.0
     for rnd_num, rnd_denom, rnd_seq_ddgs in izip(
             numerators, denominators, rnds_and_seq_ddgs):
-        print rnd_num, len(rnd_seq_ddgs), rnd_denom
+        #print rnd_num, len(rnd_seq_ddgs), rnd_denom
         lhd += rnd_num - len(rnd_seq_ddgs)*rnd_denom
     
     return lhd
-
-
-def calc_l2_loss(coded_seqs, energy_array, rnd, log_unbnd_conc):
-    # build the partition function
-    energy_grid, partition_fn = est_partition_fn(
-        energy_array, n_bins=50*int(math.sqrt(len(coded_seqs))))
-    expected_occupancies = logistic((log_unbnd_conc-energy_grid)/(R*T))**(rnd+1)
-    expected_occupancies = expected_occupancies/expected_occupancies.sum()
-    expected_cnts = expected_occupancies*len(coded_seqs)
-    
-    # score and bin the sequences
-    scored_seqs = np.zeros(len(coded_seqs), dtype=float)
-    for i, subseqs in enumerate(coded_seqs):
-        scored_seqs[i] = min(energy_array[subseq].sum() for subseq in subseqs)
-    binned_seq_scores = bin_energies_from_grid(
-        scored_seqs, energy_grid)
-    
-    #print energy_grid
-    #print expected_cnts
-    #print binned_seq_scores
-    # return the loss
-    return expected_cnts - binned_seq_scores
-    return ((expected_cnts - binned_seq_scores)**2).sum()
 
 def iter_simulated_seqs(motif, chem_pots):
     cnt = 0
@@ -313,53 +290,20 @@ def sim_seqs(ofname, n_seq, motif, chem_pots):
     fp.close()
     return
 
-def opt_l2_loss():
-    def f(x, log_chem_pot):
-        #x = np.clip(x, -20, 10)
-        #x_w_en = np.array([energy_array[0],] + x.tolist()).view(EnergyArray)
-        x_w_en = x.view(EnergyArray)
-        rv = calc_l2_loss(seqs, x_w_en, rnd, log_chem_pot)
-        if VERBOSE:
-            print x_w_en.consensus_seq()
-            print x_w_en[0]
-            print x_w_en.calc_min_energy(ref_energy)
-            print x_w_en.calc_base_contributions()
-            print (rv**2).sum()
-            print
-        return rv
-
-    log_chem_pot = -2
-    x0 = np.array([random.random() for i in xrange(len(energy_array))])
-    #x0 = energy_array
-    fit_array, fit_cov, info, mesg, status = leastsq(
-        f, x0, args=(log_chem_pot,), 
-        full_output=True, factor=0.1, maxfev=1000*len(x0)) # 10*
-    fit_array = fit_array.view(EnergyArray)
-    print fit_array.consensus_seq()
-    print fit_array.calc_min_energy(ref_energy)
-    print fit_array[0]
-    print fit_array.calc_base_contributions()
-    print "Conv Status: ", mesg
-    #print info
-    #leastsq(f, energy_array, 
-    #        options={'disp': True},
-    #        method='powell') # Nelder-Mead
-    return
-
-def main():
+def test():
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
 
-    chem_pots = [-10, -10]
+    chem_pots = [-6, -7, -8, -9]
     rnds_and_seqs = []
-    sim_sizes = [0, 100]
+    sim_sizes = [100, 100, 100, 100]
     for rnd, (sim_size, chem_pot) in enumerate(
             zip(sim_sizes, chem_pots), start=1):
         if sim_size == 0:
             rnds_and_seqs.append([])
         else:
             ofname = "test.rnd%i.cp%.2e.txt" % (rnd, chem_pot)
-            sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
+            #sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
             rnds_and_seqs.append( load_and_code_text_file(ofname, motif) )
     # sys.argv[2]
     print "Finished Simulations"
@@ -370,16 +314,15 @@ def main():
     print ddg_array.calc_min_energy(ref_energy)
     print ddg_array.calc_base_contributions()
 
-    print calc_rnd_log_lhd(
-        rnds_and_seqs[-1], ref_energy, ddg_array, len(chem_pots), chem_pots[-1])
+    #print calc_rnd_log_lhd(
+    #    rnds_and_seqs[-1], ref_energy, ddg_array, len(chem_pots), chem_pots[-1])
     print calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, chem_pots)
-    return
     
     log_chem_pot = -8
     def f(x):
         x = x.view(DeltaDeltaGArray)
-        rv = calc_rnd_log_lhd(seqs, ref_energy, x, rnd, log_chem_pot)
-
+        #rv = calc_rnd_log_lhd(seqs, ref_energy, x, rnd, log_chem_pot)
+        rv = calc_log_lhd(rnds_and_seqs, ref_energy, x, chem_pots)
         if VERBOSE:
             print x.consensus_seq()
             print ref_energy
@@ -404,78 +347,152 @@ def main():
     
     f(ddg_array)
     return
-    #for chem_potential in np.linspace(-30, 20, 20):
-    #    print chem_potential, calc_rnd_log_lhd(
-    #        seqs, energy_array, 4, chem_potential)
 
-    #print energy_array[1:].reshape(((len(energy_array)-1)/3,3))
-    return
-    consensus_energy = motif.consensus_energy
-    energy_mat = motif.motif_data
-    x2, est_scores = est_partition_fn(energy_mat, 1000)
-    print est_scores.sum()
-    return
+def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
+    if VERBOSE:
+        print ddg_array.consensus_seq()
+        print ref_energy
+        print ddg_array.calc_min_energy(ref_energy)
+        print ddg_array.calc_base_contributions()
+
+        print calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, chem_pots)
+
+    def f(x):
+        x = x.view(DeltaDeltaGArray)
+        #rv = calc_rnd_log_lhd(seqs, ref_energy, x, rnd, log_chem_pot)
+        rv = calc_log_lhd(rnds_and_seqs, ref_energy, x, chem_pots)
+        if VERBOSE:
+            print x.consensus_seq()
+            print ref_energy
+            print x.calc_min_energy(ref_energy)
+            print x.calc_base_contributions()
+            print rv
+            print
+        return -rv
+
+    x0 = ddg_array #np.array([random.random() for i in xrange(len(ddg_array))])
+    # user a slow buty safe algorithm to find a starting point
+    #res = minimize(f, x0, tol=1e-2,
+    #               options={'disp': True, 'maxiter': 5000}
+    #               , method='Powell') #'Nelder-Mead')
+    #print "Finished finding a starting point" 
+    res = minimize(f, x0, tol=1e-6,
+                   options={'disp': False, 'maxiter': 50000},
+                   bounds=[(-6,6) for i in xrange(len(x0))])
+    #global VERBOSE
+    #VERBOSE = True
+    #f(res.x)    
+    #f(ddg_array)
+    #VERBOSE = False
+    return res.x.view(DeltaDeltaGArray)
+
+def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
+    if VERBOSE:
+        print ddg_array.consensus_seq()
+        print ref_energy
+        print ddg_array.calc_min_energy(ref_energy)
+        print ddg_array.calc_base_contributions()
+        print calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, chem_pots)
+
+    def f(x):
+        #rv = calc_rnd_log_lhd(seqs, ref_energy, x, rnd, log_chem_pot)
+        rv = calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, x)
+        if VERBOSE:
+            print rv, x
+        return -rv
+
+    x0 = chem_pots 
+    res = minimize(f, x0, tol=1e-6,
+                   options={'disp': False, 'maxiter': 50000},
+                   bounds=[(-30,0) for i in xrange(len(x0))])
+    return res.x
+
+def est_chem_potential(
+        ddg_array, ref_energy, 
+        dna_conc, prot_conc, 
+        prev_rnd_chem_affinities=[]):
+    """Estimate chemical affinity for round 1.
     
-    seqs = load_and_convert_text_file(sys.argv[2])
-    energy_mat = motif.motif_data.copy()
-    energy_mat[0,:] += motif.consensus_energy
-    print energy_mat
-    #assert False
-    energies = score_seqs(energy_mat, seqs)
-    min_energy = sum(min(x) for x in energy_mat)
-    max_energy = sum(max(x) for x in energy_mat)
-    x, binned_scores = bin_energies(energies, min_energy, max_energy, 1000)
-    print "Binned Scores Sum", binned_scores.sum()
-    x2, est_scores = est_partition_fn(energy_mat, 1000)
-    print "Exp Scores Sum", binned_scores.sum()
-
-    print x
-    print x2
-    return
-    for chem_potential in np.linspace(-30, 20, 20):
-        obs_occ = logistic(chem_potential-x/(R*T))*binned_scores
-        n_obs_occ = obs_occ/obs_occ.sum()
-        exp_occ = logistic(chem_potential-x2/(R*T))*est_scores
-        n_exp_occ = exp_occ/exp_occ.sum()
-        print "%.2f" % chem_potential, np.abs(n_obs_occ - n_exp_occ).sum()
-    return
     """
+    min_log_frac_bnd = -100 
+    log_prot_conc = math.log(prot_conc)
+
+    energies, partition_fn = est_partition_fn(ref_energy, ddg_array)
+    for prev_ca in prev_rnd_chem_affinities:
+        occ = logistic(prev_ca-(ref_energy+energies)/(R*T))
+        partition_fn = partition_fn*occ
+        partition_fn = partition_fn/partition_fn.sum()
+
+    # [TF]_0 = [TF]_e + [TF:s]_e
+    # [TF]_0 - meanocc(s)*[s]_0 = [TF]
+    def f(log_frac_unbnd):
+        occ = logistic(log_prot_conc+log_frac_unbnd-(ref_energy+energies)/(R*T))
+        mean_occ = (occ*partition_fn).sum()
+        return math.exp(log_frac_unbnd+log_prot_conc) - dna_conc*mean_occ
+
+    if f(min_log_frac_bnd) > 0: return log_prot_conc + min_log_frac_bnd
+    if f(0.0) < 0: return log_prot_conc
+    return log_prot_conc + bisect(f, min_log_frac_bnd, 0)
+
+def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc, num_rnds):
+    chem_affinities = []
+    for rnd in xrange(num_rnds):
+        chem_affinity = est_chem_potential(
+            ddg_array, ref_energy, dna_conc, prot_conc, chem_affinities)
+        chem_affinities.append(chem_affinity)
+    return chem_affinities
+
+def simulations():
+    chem_pots = [-6, -7, -8, -9]
+    rnds_and_seqs = []
+    sim_sizes = [100, 100, 100, 100]
+    for rnd, (sim_size, chem_pot) in enumerate(
+            zip(sim_sizes, chem_pots), start=1):
+        if sim_size == 0:
+            rnds_and_seqs.append([])
+        else:
+            ofname = "test_BCD_rnd%i.txt" % rnd
+            sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
+            rnds_and_seqs.append( load_and_code_text_file(ofname, motif) )
+    # sys.argv[2]
+    print "Finished Simulations"
     return
-    x2, smart_hist_est = est_partition_fn(motif, 10000)
-    weighted_ests = []
+    #return
 
-    """
-    x2, smart_hist_est = est_partition_fn(motif, 10000)
-    x, hist_est = est_partition_fn_by_brute_force(motif, 10000)
+def main():
+    motif = load_motifs(sys.argv[1]).values()[0][0]
+    ref_energy, ddg_array = motif.build_ddg_array()
 
-    weighted_ests = []
-    chem_potential = -8.0
-    for rnd in range(0,5):
-        weighted_est = (logistic(chem_potential-x)**rnd)*hist_est
-        print "Brute Occ:", weighted_est.sum(), 
-        weighted_est /= weighted_est.sum()
-        print (x*weighted_est).sum()
-        weighted_ests.extend((x, weighted_est))
-
-        #smt_weighted_est = build_occs(smart_hist_est, x2, rnd, chem_potential)
-        smt_weighted_est = (logistic(chem_potential-x)**rnd)*smart_hist_est
-        print "Smart Occ:",  smt_weighted_est.sum(),
-        smt_weighted_est /= smt_weighted_est.sum()
-        print (x2*smt_weighted_est).sum()
-        weighted_ests.extend((x2, smt_weighted_est))
-
-        #plt.scatter(weighted_est, smt_weighted_est)
-        #plt.show()
-
-        print "Motif Mean Energy", motif.mean_energy
-        print 
-    #plt.plot(*weighted_ests)
-    #plt.show()
-
-    pass
-
-    #seqs = load_text_file(sys.argv[2])
-    #for log_tf_conc in range(10):
-    #    print log_tf_conc, calc_log_lhd(seqs, motif, log_tf_conc)
+    # 50-100 1e-9 G DNA
+    # DNA sequence: TCCATCACGAATGATACGGCGACCACCGAACACTCTTTCCCTACACGACGCTCTTCCGATCTAAAATNNNNNNNNNNNNNNNNNNNNCGTCGTATGCCGTCTTCTGCTTGCCGACTCCG
+    # DNA is ~ 1.02e-12 g/oligo * 119 oligos
+    # molar protein:DNA ratio: 1:25
+    # volume: 5.0e-5 L 
+    dna_conc = 1.02e-12*119*7.5e-8/5.0e-5
+    prot_conc = dna_conc/25
     
+    motif = load_motifs(sys.argv[1]).values()[0][0]
+    ref_energy, ddg_array = motif.build_ddg_array()
+
+    rnds_and_seqs = []
+    for fname in sorted(sys.argv[2:],
+                        key=lambda x: int(x.split("_")[-1].split(".")[0])):
+        rnds_and_seqs.append( load_and_code_text_file(fname, motif) )
+
+    for i in xrange(10):
+        chem_pots = estimate_chem_pots_lhd(
+            rnds_and_seqs, ddg_array, ref_energy, np.array([-5, -6, -7, -8]))
+        print chem_pots
+        ddg_array = estimate_ddg_matrix(
+            rnds_and_seqs, ddg_array, ref_energy, chem_pots)
+        print calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, chem_pots)
+    return
+    chem_pots = est_chem_potentials(
+        ddg_array, ref_energy, 
+        dna_conc, prot_conc, 
+        len(rnds_and_seqs))
+    print chem_pots
+
+    return
+
 main()
