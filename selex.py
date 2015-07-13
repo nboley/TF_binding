@@ -11,43 +11,65 @@ from scipy.optimize import minimize, leastsq, bisect
 
 import random
 
+import gzip
+
 VERBOSE = False
 
-base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+def base_map(base):
+    if base == 'N':
+        base = random.choice('ACGT')
+    return base_map_dict[base]
 
 def generate_random_sequences( num, seq_len, bind_site_len  ):
     seqs = numpy.random.randint( 0, 4, num*seq_len ).reshape(num, seq_len)
     return parse_sequence_list( seqs, bind_site_len )
 
-def load_text_file(fname):
+def code_sequence(seq, motif):
+    # store all binding sites (subseqs and reverse complements of length 
+    # motif )
+    coded_bss = []
+    #coded_seq = np.array([base_map[base] for base in seq.upper()])
+    for offset in xrange(0, len(seq)-len(motif)+1):
+        subseq = seq[offset:offset+len(motif)].upper()
+        # forward sequence
+        coded_subseq = [
+            pos*3 + (base_map(base) - 1) 
+            for pos, base in enumerate(subseq)
+            if base != 'A']
+        coded_bss.append(np.array(coded_subseq, dtype=int))
+        # reverse complement
+        #coded_subseq = [
+        #    pos*3 + (2 - base_map(base)) 
+        #    for pos, base in enumerate(reversed(subseq))
+        #    if base != 'T']
+        #coded_bss.append(np.array(coded_subseq, dtype=int))
+
+    return coded_bss
+
+def load_text_file(fp):
     seqs = []
-    with open(fname) as fp:
-        for line in fp:
+    for line in fp:
+        seqs.append(line.strip().upper())
+    return seqs
+
+def load_fastq(fp):
+    seqs = []
+    for i, line in enumerate(fp):
+        if i%4 == 1:
             seqs.append(line.strip().upper())
     return seqs
 
-def load_and_code_text_file(fname, motif):
+def code_seqs(seqs, motif):
     """Load SELEX data and encode all the subsequences. 
 
     """
-    seqs = load_text_file(fname)
     # find the sequence length
     seq_len = len(seqs[0])
     assert all( seq_len == len(seq) for seq in seqs )
     coded_seqs = []
     for i, seq in enumerate(seqs):
-        # store all binding sites (subseqs and reverse complements of length 
-        # motif )
-        coded_bss = []
-        #coded_seq = np.array([base_map[base] for base in seq.upper()])
-        for offset in xrange(0, seq_len-len(motif)+1):
-            subseq = seq[offset:offset+len(motif)].upper()
-            coded_subseq = [
-                pos*3 + (base_map[base] - 1) 
-                for pos, base in enumerate(subseq)
-                if base != 'A']
-            coded_bss.append(np.array(coded_subseq))
-        coded_seqs.append(coded_bss)
+        coded_seqs.append(code_sequence(seq, motif))
     return coded_seqs
 
 
@@ -404,7 +426,7 @@ def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
     x0 = chem_pots 
     res = minimize(f, x0, tol=1e-6,
                    options={'disp': False, 'maxiter': 50000},
-                   bounds=[(-30,0) for i in xrange(len(x0))])
+                   bounds=[(-30,30) for i in xrange(len(x0))])
     return res.x
 
 def est_chem_potential(
@@ -442,7 +464,7 @@ def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc, num_rnds):
         chem_affinities.append(chem_affinity)
     return chem_affinities
 
-def simulations():
+def simulations(motif):
     chem_pots = [-6, -7, -8, -9]
     rnds_and_seqs = []
     sim_sizes = [100, 100, 100, 100]
@@ -451,9 +473,8 @@ def simulations():
         if sim_size == 0:
             rnds_and_seqs.append([])
         else:
-            ofname = "test_BCD_rnd%i.txt" % rnd
+            ofname = "test_%s_rnd_%i.txt" % (motif.name, rnd)
             sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
-            rnds_and_seqs.append( load_and_code_text_file(ofname, motif) )
     # sys.argv[2]
     print "Finished Simulations"
     return
@@ -462,6 +483,8 @@ def simulations():
 def main():
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
+    #simulations(motif)
+    #return
 
     # 50-100 1e-9 G DNA
     # DNA sequence: TCCATCACGAATGATACGGCGACCACCGAACACTCTTTCCCTACACGACGCTCTTCCGATCTAAAATNNNNNNNNNNNNNNNNNNNNCGTCGTATGCCGTCTTCTGCTTGCCGACTCCG
@@ -473,19 +496,32 @@ def main():
     
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
-
+    print "Finished loading motif"
+    
     rnds_and_seqs = []
     for fname in sorted(sys.argv[2:],
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
-        rnds_and_seqs.append( load_and_code_text_file(fname, motif) )
+        with open(fname) as fp:
+            #coded_seqs = code_seqs(load_fastq(fp), motif)
+            coded_seqs = code_seqs(load_text_file(fp), motif)
+            rnds_and_seqs.append( coded_seqs )
+    print "Finished loading sequences"
 
+    print ref_energy
+    #ref_energy = 10
     for i in xrange(10):
         chem_pots = estimate_chem_pots_lhd(
-            rnds_and_seqs, ddg_array, ref_energy, np.array([-5, -6, -7, -8]))
-        print chem_pots
+            rnds_and_seqs, ddg_array, ref_energy, np.array([-12]*len(rnds_and_seqs)))
+        print "Chem Pots:", chem_pots
         ddg_array = estimate_ddg_matrix(
             rnds_and_seqs, ddg_array, ref_energy, chem_pots)
-        print calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, chem_pots)
+        print ddg_array.consensus_seq()
+        print ref_energy
+        print ddg_array.calc_min_energy(ref_energy)
+        print ddg_array.calc_base_contributions()
+        print "Lhd: ", calc_log_lhd(
+            rnds_and_seqs, ref_energy, ddg_array, chem_pots)
+        
     return
     chem_pots = est_chem_potentials(
         ddg_array, ref_energy, 
