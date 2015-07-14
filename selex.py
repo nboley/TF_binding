@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import theano
+import theano.tensor as TT
 
 from scipy.optimize import minimize, leastsq, bisect
 
@@ -85,6 +86,7 @@ def code_seqs_as_matrix(seqs, motif):
     for i, seq in enumerate(seqs):
         coded_subseqs = code_sequence(seq, motif)
         coded_seqs[i,coded_subseqs[0]] = 1
+    return coded_seqs
     return theano.shared(coded_seqs, theano.config.floatX)
 
 def bin_energies(energies, min_energy, max_energy, n_bins=1000):
@@ -494,26 +496,34 @@ def main():
             #coded_seqs = code_seqs(load_fastq(fp), motif)
             coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
             rnds_and_seqs.append( coded_seqs )
-    print rnds_and_seqs[-1]
     print "Finished loading sequences"
 
-    a = rnds_and_seqs[-1]
-    b = theano.tensor.fvector()
-    c = theano.tensor.dot(a, b)
-    f = theano.function([b], c)
-    print f(ddg_array)
+    sym_coded_seqs = TT.matrix('sym_coded_seqs')
+    x = TT.vector('x')
+    c = TT.scalar('c')
+    s = (-TT.log(1.0 + TT.exp(-(c + theano.shared(coded_seqs).dot(x))/(R*T)))).sum()
+    #s = -TT.log(1.0 + TT.exp(-(c + e)/(R*T)))
+    #f = theano.function([sym_coded_seqs, x, c], s) # coded_seqs.dot(x)
+    f = theano.function([x, c], s) # coded_seqs.dot(x)
+    print f.maker.fgraph.toposort()
+    #return
+    if np.any([isinstance(x.op, TT.Elemwise) for x in f.maker.fgraph.toposort()]):
+        print 'Used the cpu'
+    else:
+        print 'Used the gpu'
+    #return
+    for i in xrange(10000):
+        #f(coded_seqs.dot(ddg_array), 0)
+        f(ddg_array, 0)
+        #np.log(logistic((0.0+coded_seqs.dot(ddg_array))/(R*T))).sum()
     return
-    print rnds_and_seqs[-1].dot(ddg_array)
-    print f(rnds_and_seqs[-1], ddg_array)
-    return
-    print f
-    print f(np.random.uniform())
-    return
-
-    
-    print ref_energy
+    #    print f(ddg_array, ref_energy)
+    #    #energies = coded_seqs.dot(ddg_array)
+    #    #print logistic(energies)
+    #    #f(ddg_array)
+    #return
     x = ddg_array
-    x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
+    #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
     #ref_energy = 10
     for i in xrange(10):
         chem_pots = estimate_chem_pots_lhd(
