@@ -7,6 +7,8 @@ from itertools import product, izip
 import numpy as np
 import matplotlib.pyplot as plt
 
+import theano
+
 from scipy.optimize import minimize, leastsq, bisect
 
 import random
@@ -72,6 +74,18 @@ def code_seqs(seqs, motif):
         coded_seqs.append(code_sequence(seq, motif))
     return coded_seqs
 
+def code_seqs_as_matrix(seqs, motif):
+    """Load SELEX data and encode all the subsequences. 
+
+    """
+    # find the sequence length
+    seq_len = len(seqs[0])
+    assert all( seq_len == len(seq) for seq in seqs )
+    coded_seqs = np.zeros((len(seqs), len(motif)*3), dtype='float32')
+    for i, seq in enumerate(seqs):
+        coded_subseqs = code_sequence(seq, motif)
+        coded_seqs[i,coded_subseqs[0]] = 1
+    return theano.shared(coded_seqs, theano.config.floatX)
 
 def bin_energies(energies, min_energy, max_energy, n_bins=1000):
     energy_range = max_energy - min_energy + 1e-12
@@ -110,13 +124,6 @@ def bin_energies_from_grid(energies, energy_grid):
 
     return hist_est #/n_seqs
 
-
-def score_seqs(energy_mat, coded_seqs):
-    rv = np.zeros(len(coded_seqs), dtype=float)
-    for seq_i, seq in enumerate(coded_seqs):
-        rv[seq_i] = sum(energy_mat[i, base] for i, base in enumerate(seq))
-    return rv
-
 def est_partition_fn_by_sampling(motif, n_bins=1000, n_samples=1000000):
     energy_range = (motif.max_energy - motif.min_energy) + 1e-6
     hist_est = np.zeros(n_bins)
@@ -146,7 +153,7 @@ def est_partition_fn_orig(energy_matrix, n_bins=1000):
     step_size = (max_energy-min_energy+1e-6)/(n_bins-energy_matrix.shape[0])
     
     # build the polynomial for each base
-    poly_sum = np.zeros(n_bins+1, dtype=float)
+    poly_sum = np.zeros(n_bins+1, dtype='float32')
     # for each bae, add to the polynomial
     for base_i, base_energies in enumerate(energy_matrix):
         min_base_energy = base_energies.min()
@@ -179,7 +186,7 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=1000):
     step_size = (max_energy-min_energy+1e-6)/(n_bins-ddg_array.motif_len)
     
     # build the polynomial for each base
-    poly_sum = np.zeros(n_bins+1, dtype=float)
+    poly_sum = np.zeros(n_bins+1, dtype='float32')
     # for each bae, add to the polynomial
     for base_i, base_energies in enumerate(
             ddg_array.calc_base_contributions()):
@@ -230,22 +237,6 @@ def cmp_to_brute():
     plt.show()
     return
 
-def calc_rnd_log_lhd(coded_seqs, ref_energy, ddg_array, rnd, log_unbnd_conc):
-    seq_ddgs = np.zeros(len(coded_seqs), dtype=float)
-    for i, subseqs in enumerate(coded_seqs):
-        seq_ddgs[i] = max(ddg_array[subseq].sum() for subseq in subseqs)
-        
-    numerator = rnd*np.log(
-        logistic((log_unbnd_conc-ref_energy-seq_ddgs)/(R*T))).sum()
-    
-    energies, partition_fn = est_partition_fn(ref_energy, ddg_array)
-    expected_cnts = (4**ddg_array.motif_len)*partition_fn
-    occupancies = logistic((log_unbnd_conc-energies)/(R*T))**rnd
-    denom_occupancies = expected_cnts*occupancies
-    denom = np.log(denom_occupancies.sum())
-    #print "====", numerator, len(coded_seqs)*denom, 
-    return numerator - len(coded_seqs)*denom
-
 def calc_log_lhd(rnds_and_coded_seqs, 
                  ref_energy, 
                  ddg_array, 
@@ -255,10 +246,7 @@ def calc_log_lhd(rnds_and_coded_seqs,
     # score all of the sequences
     rnds_and_seq_ddgs = []
     for rnd, coded_seqs in enumerate(rnds_and_coded_seqs):
-        seq_ddgs = np.zeros(len(coded_seqs), dtype=float)
-        for i, subseqs in enumerate(coded_seqs):
-            seq_ddgs[i] = max(ddg_array[subseq].sum() for subseq in subseqs)
-        rnds_and_seq_ddgs.append(seq_ddgs)
+        rnds_and_seq_ddgs.append( coded_seqs.dot(ddg_array) )
     
     # the occupancies of each rnd are a function of the chemical affinity of 
     # the round in which there were sequenced and each previous round. We loop
@@ -276,7 +264,7 @@ def calc_log_lhd(rnds_and_coded_seqs,
     # calculate the expected bin counts in each energy level for round 0
     energies, partition_fn = est_partition_fn(ref_energy, ddg_array)
     expected_cnts = (4**ddg_array.motif_len)*partition_fn
-    curr_occupancies = np.ones(len(energies), dtype=float)
+    curr_occupancies = np.ones(len(energies), dtype='float32')
     denominators = []
     for rnd, chem_affinity in enumerate(rnds_and_chem_affinities):
         curr_occupancies *= logistic((chem_affinity-energies)/(R*T))
@@ -480,6 +468,7 @@ def simulations(motif):
     return
     #return
 
+    
 def main():
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
@@ -503,24 +492,41 @@ def main():
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
         with open(fname) as fp:
             #coded_seqs = code_seqs(load_fastq(fp), motif)
-            coded_seqs = code_seqs(load_text_file(fp), motif)
+            coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
             rnds_and_seqs.append( coded_seqs )
+    print rnds_and_seqs[-1]
     print "Finished loading sequences"
 
+    a = rnds_and_seqs[-1]
+    b = theano.tensor.fvector()
+    c = theano.tensor.dot(a, b)
+    f = theano.function([b], c)
+    print f(ddg_array)
+    return
+    print rnds_and_seqs[-1].dot(ddg_array)
+    print f(rnds_and_seqs[-1], ddg_array)
+    return
+    print f
+    print f(np.random.uniform())
+    return
+
+    
     print ref_energy
+    x = ddg_array
+    x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
     #ref_energy = 10
     for i in xrange(10):
         chem_pots = estimate_chem_pots_lhd(
-            rnds_and_seqs, ddg_array, ref_energy, np.array([-12]*len(rnds_and_seqs)))
+            rnds_and_seqs, x, ref_energy, np.array([-12]*len(rnds_and_seqs)))
         print "Chem Pots:", chem_pots
-        ddg_array = estimate_ddg_matrix(
-            rnds_and_seqs, ddg_array, ref_energy, chem_pots)
-        print ddg_array.consensus_seq()
+        x = estimate_ddg_matrix(
+            rnds_and_seqs, x, ref_energy, chem_pots)
+        print x.consensus_seq()
         print ref_energy
-        print ddg_array.calc_min_energy(ref_energy)
-        print ddg_array.calc_base_contributions()
+        print x.calc_min_energy(ref_energy)
+        print x.calc_base_contributions()
         print "Lhd: ", calc_log_lhd(
-            rnds_and_seqs, ref_energy, ddg_array, chem_pots)
+            rnds_and_seqs, ref_energy, x, chem_pots)
         
     return
     chem_pots = est_chem_potentials(
