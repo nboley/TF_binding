@@ -89,98 +89,6 @@ def code_seqs_as_matrix(seqs, motif):
     return coded_seqs
     return theano.shared(coded_seqs, theano.config.floatX)
 
-def bin_energies(energies, min_energy, max_energy, n_bins=1000):
-    energy_range = max_energy - min_energy + 1e-12
-    step_size = energy_range/(n_bins-1)
-    hist_est = np.zeros(n_bins)
-    n_seqs = 0
-    for energy in energies:
-        mean_bin = (energy-min_energy)/step_size
-        lower_bin = int(mean_bin)
-        upper_bin = int(np.ceil(mean_bin))
-        a = upper_bin - mean_bin
-        assert 0 <= lower_bin <= upper_bin <= n_bins
-        hist_est[lower_bin] += a
-        hist_est[upper_bin] += 1-a
-        n_seqs += 1
-
-    x = np.linspace(min_energy, step_size*len(hist_est), len(hist_est));    
-    return x, hist_est/n_seqs
-
-def bin_energies_from_grid(energies, energy_grid):
-    n_bins = len(energy_grid)
-    min_energy = energy_grid[0]
-    max_energy = energy_grid[-1]
-    step_size = (max_energy - min_energy)/n_bins
-    hist_est = np.zeros(n_bins)
-    n_seqs = 0
-    for energy in energies:
-        mean_bin = (energy-min_energy)/step_size
-        lower_bin = int(mean_bin)
-        upper_bin = int(np.ceil(mean_bin))
-        a = upper_bin - mean_bin
-        assert 0 <= lower_bin <= upper_bin <= n_bins
-        hist_est[lower_bin] += a
-        hist_est[upper_bin] += 1-a
-        n_seqs += 1
-
-    return hist_est #/n_seqs
-
-def est_partition_fn_by_sampling(motif, n_bins=1000, n_samples=1000000):
-    energy_range = (motif.max_energy - motif.min_energy) + 1e-6
-    hist_est = np.zeros(n_bins)
-    for i in xrange(n_samples):
-        if i%10000 == 0: print i, n_samples
-        seq = np.random.randint(4, size=len(motif))
-        shifted_energy = motif.score_seq(seq)-motif.consensus_energy
-        bin = int(n_bins*shifted_energy/energy_range)
-        assert 0 <= bin < n_bins
-        hist_est[bin] += 1
-
-    step_size = energy_range/n_bins
-    x = np.arange(motif.min_energy, motif.max_energy + 1e-6, step_size);
-    return x, hist_est
-
-def est_partition_fn_by_brute_force(motif, n_bins=1000):
-    def iter_seqs():
-        for i, seq in enumerate(product(*[(0,1,2,3)]*len(motif))):
-            if i%10000 == 0: print i, 4**len(motif)
-            yield motif.score_seq(seq)
-    return bin_energies(iter_seqs(), motif.min_energy, motif.max_energy, n_bins)
-
-def est_partition_fn_orig(energy_matrix, n_bins=1000):
-    # reset the motif data so that the minimum value in each column is 0
-    min_energy = sum(min(x) for x in energy_matrix)
-    max_energy = sum(max(x) for x in energy_matrix)
-    step_size = (max_energy-min_energy+1e-6)/(n_bins-energy_matrix.shape[0])
-    
-    # build the polynomial for each base
-    poly_sum = np.zeros(n_bins+1, dtype='float32')
-    # for each bae, add to the polynomial
-    for base_i, base_energies in enumerate(energy_matrix):
-        min_base_energy = base_energies.min()
-        new_poly = np.zeros(
-            1+np.ceil((base_energies.max()-min_base_energy)/step_size))
-        
-        for base_energy in base_energies:
-            mean_bin = (base_energy-min_base_energy)/step_size
-            lower_bin = int(mean_bin)
-            upper_bin = int(np.ceil(mean_bin))
-            a = mean_bin - upper_bin
-            new_poly[lower_bin] += 0.25*a
-            new_poly[upper_bin] += 0.25*(1-a)
-
-        if base_i == 0:
-            poly_sum[:len(new_poly)] = new_poly
-        else:
-            poly_sum = np.convolve(poly_sum, new_poly)
-    
-    assert n_bins+1 >= poly_sum.nonzero()[0].max()    
-    poly_sum = poly_sum[:n_bins+1]
-    
-    x = np.linspace(0, max_energy, step_size);
-    return x, poly_sum
-
 def est_partition_fn(ref_energy, ddg_array, n_bins=1000):
     # reset the motif data so that the minimum value in each column is 0
     min_energy = ddg_array.calc_min_energy(ref_energy)
@@ -217,28 +125,6 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=1000):
     assert len(x) == n_bins
     return x, poly_sum
 
-
-#def build_occs(energy_pdf, energies, rnd, chem_potential):
-#    occ = logistic(chem_potential-energies)
-#    occ_cumsum = occupancies.cumsum()**2
-#    occ[:-1] = occ_cumsum[1:] - occ_cumsum[:-1]
-#    # make sure this still sums to 1
-#    occ[-1] += 1- occ.sum()
-#    for i in xrange(rnd):
-#        # raise occ to a power, which is equivalen
-#        new_energies = occ*energies
-#        pass
-#    return occ*energies
-
-def cmp_to_brute():
-    motif = load_motifs(sys.argv[1]).values()[0][0]
-    ref_energy, ddg_array = motif.build_ddg_array()
-    x, part_fn = est_partition_fn(energy_array, 256)
-    x2, part_fn_brute = est_partition_fn_by_brute_force(motif, 1000)
-    plt.plot(*[x, part_fn, x2, part_fn_brute])
-    plt.show()
-    return
-
 def calc_log_lhd_factory(rnds_and_coded_seqs):
     """
     sym_x = TT.vector('x')
@@ -246,7 +132,8 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
     """
     sym_e = TT.vector('e')
     sym_c = TT.scalar('c')
-    f = theano.function([e, c], (-TT.log(1.0 + TT.exp(-(c + e)/(R*T)))).sum())
+    f = theano.function([sym_e, sym_c], (
+        -TT.log(1.0 + TT.exp(-(sym_c + sym_e)/(R*T)))).sum())
 
     """
     print f.maker.fgraph.toposort()
@@ -271,13 +158,14 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         numerators = []
         for sequencing_rnd, seq_ddgs in enumerate(rnds_and_seq_ddgs):
             chem_affinity = rnds_and_chem_affinities[0]
-            #numerator = np.log(logistic((chem_affinity-ref_energy-seq_ddgs)/(R*T))).sum()
-            numerator = f(chem_affinity-ref_energy, seq_ddgs)
+            numerator = np.log(logistic((chem_affinity-ref_energy-seq_ddgs)/(R*T))).sum()
+            #numerator = f(chem_affinity-ref_energy, seq_ddgs)
             for rnd in xrange(1, sequencing_rnd+1):
-                #numerator += np.log(
-                #    logistic((rnds_and_chem_affinities[rnd]-ref_energy-seq_ddgs)/(R*T))).sum()
-                numerator += f(rnds_and_chem_affinities[rnd]-ref_energy-seq_ddgs)/(R*T))).sum()
-                numerators.append(numerator)
+                numerator += np.log(
+                    logistic((rnds_and_chem_affinities[rnd]-ref_energy-seq_ddgs)/(R*T))).sum()
+                #numerator += f(
+                #    rnds_and_chem_affinities[rnd]-ref_energy, seq_ddgs).sum()
+                #numerators.append(numerator)
 
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
@@ -409,7 +297,7 @@ def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
         return -rv
 
     x0 = chem_pots 
-    res = minimize(f, x0, tol=1e-12, xtol=1e-12,
+    res = minimize(f, x0, tol=1e-12, 
                    options={'disp': False, 'maxiter': 50000},
                    bounds=[(-30,30) for i in xrange(len(x0))])
     return res.x
@@ -495,9 +383,9 @@ def main():
 
     x = ddg_array
     x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    chem_pots = np.array([-5]*len(rnds_and_seqs))        
+    chem_pots = np.array([-8]*len(rnds_and_seqs))        
     #ref_energy = 10
-    for i in xrange(1):
+    for i in xrange(10):
         #chem_pots = estimate_chem_pots_lhd(
         #    rnds_and_seqs, x, ref_energy, np.array([-12]*len(rnds_and_seqs)))
         print "Chem Pots:", chem_pots
