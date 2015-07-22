@@ -117,6 +117,7 @@ class Motif():
                 yield offset + len(self)/2, self.mean_energy
                 continue
             for i, base in enumerate(subseq):
+                if isinstance(subseq, str): base = base_map[base]
                 score += self.motif_data[i][base]
                 RC_score += self.motif_data[len(self)-i-1][3-base]
                 #score += self.motif_data[i][base_map[base]]
@@ -305,7 +306,7 @@ def load_motifs(fname, motif_list=None):
             if motif_list != None and motif.factor.upper() not in motif_list:
                 continue
             grpd_motifs[motif.factor].append(motif)
-
+    
     for factor, motifs in sorted(grpd_motifs.items()):
         if any(m.meta_data_line.find('jolma') != -1 for m in motifs):
             motifs = [m for m in motifs if m.meta_data_line.find('jolma') != -1]
@@ -317,6 +318,5 @@ def load_motifs(fname, motif_list=None):
             for motif in motifs: motif.name += "_bulyk"
             grpd_motifs[factor] = motifs
             #print factor, 'BULYK'
-
-        #print factor, len([m.name for m in motifs])
+    
     return grpd_motifs
