@@ -124,7 +124,7 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=5000):
     part_fn = poly_sum[:n_bins]
 
     min_cdf = 1 - (1 - part_fn.cumsum())**20
-    min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,])
+    min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,], dtype='float32')
 
     x = np.linspace(min_energy, min_energy+step_size*len(part_fn), len(part_fn));
     assert len(x) == n_bins
@@ -265,7 +265,7 @@ def test():
             print
         return -rv
 
-    x0 = np.array([random.random() for i in xrange(len(ddg_array))])
+    x0 = np.array([random.random() for i in xrange(len(ddg_array))], dtype='float32')
     # user a slow buty safe algorithm to find a starting point
     #res = minimize(f, x0, tol=1e-2,
     #               options={'disp': True, 'maxiter': 5000}
@@ -406,10 +406,10 @@ def main():
 
     x = ddg_array
     #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    chem_pots = np.array([-6]*len(rnds_and_seqs))        
+    chem_pots = np.array([-6]*len(rnds_and_seqs), dtype='float32')
     #chem_pots = np.array([-6, -7, -8, -9])        
     #ref_energy = 10
-    for i in xrange(10):
+    for i in xrange(1):
         print "Chem Pots:", chem_pots
         x, lhd = estimate_ddg_matrix(
             rnds_and_seqs, x, ref_energy, chem_pots)
