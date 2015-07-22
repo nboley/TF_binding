@@ -104,7 +104,8 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=5000):
             ddg_array.calc_base_contributions()):
         min_base_energy = base_energies.min()
         new_poly = np.zeros(
-            1+np.ceil((base_energies.max()-min_base_energy)/step_size))
+            1+np.ceil((base_energies.max()-min_base_energy)/step_size),
+            dtype='float32')
         
         for base_energy in base_energies:
             mean_bin = (base_energy-min_base_energy)/step_size
@@ -166,7 +167,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         for sequencing_rnd, seq_ddgs in enumerate(rnds_and_seq_ddgs):
             chem_affinity = rnds_and_chem_affinities[0]
             #numerator = np.log(logistic((chem_affinity-ref_energy-seq_ddgs)/(R*T))).sum()
-            numerator = f(seq_ddgs, chem_affinity-ref_energy)
+            numerator = f(seq_ddgs, (chem_affinity-ref_energy).astype('float32'))
             for rnd in xrange(1, sequencing_rnd+1):
                 #numerator += np.log(
                 #    logistic((rnds_and_chem_affinities[rnd]-ref_energy-seq_ddgs)/(R*T))).sum()
@@ -285,7 +286,7 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     
     def f(x):
-        x = x.view(DeltaDeltaGArray)
+        x = x.astype('float32').view(DeltaDeltaGArray)
         rv = calc_log_lhd(ref_energy, x, chem_pots)
 
         print x.consensus_seq()
@@ -398,9 +399,9 @@ def main():
     rnds_and_seqs = []
     for fname in sorted(sys.argv[2:],
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
-        with gzip.open(fname) as fp:
-            coded_seqs = code_seqs_as_matrix(load_fastq(fp), motif)
-            #coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
+        with open(fname) as fp:
+            #coded_seqs = code_seqs_as_matrix(load_fastq(fp), motif)
+            coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
             rnds_and_seqs.append( coded_seqs )
     print "Finished loading sequences"
 
