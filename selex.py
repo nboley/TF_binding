@@ -42,11 +42,11 @@ def code_sequence(seq, motif):
             if base != 'A']
         coded_bss.append(np.array(coded_subseq, dtype=int))
         # reverse complement
-        #coded_subseq = [
-        #    pos*3 + (2 - base_map(base)) 
-        #    for pos, base in enumerate(reversed(subseq))
-        #    if base != 'T']
-        #coded_bss.append(np.array(coded_subseq, dtype=int))
+        coded_subseq = [
+            pos*3 + (2 - base_map(base)) 
+            for pos, base in enumerate(reversed(subseq))
+            if base != 'T']
+        coded_bss.append(np.array(coded_subseq, dtype=int))
 
     return coded_bss
 
@@ -89,7 +89,7 @@ def code_seqs_as_matrix(seqs, motif):
     return coded_seqs
     return theano.shared(coded_seqs, theano.config.floatX)
 
-def est_partition_fn(ref_energy, ddg_array, n_bins=1000):
+def est_partition_fn(ref_energy, ddg_array, n_bins=500):
     # reset the motif data so that the minimum value in each column is 0
     min_energy = ddg_array.calc_min_energy(ref_energy)
     max_energy = ddg_array.calc_max_energy(ref_energy)
@@ -119,11 +119,14 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=1000):
             poly_sum = np.convolve(poly_sum, new_poly)
     
     assert n_bins+1 >= poly_sum.nonzero()[0].max()    
-    poly_sum = poly_sum[:n_bins]
-    
-    x = np.linspace(min_energy, min_energy+step_size*len(poly_sum), len(poly_sum));
+    part_fn = poly_sum[:n_bins]
+
+    min_cdf = 1 - (1 - part_fn.cumsum())**2
+    min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,])
+
+    x = np.linspace(min_energy, min_energy+step_size*len(part_fn), len(part_fn));
     assert len(x) == n_bins
-    return x, poly_sum
+    return x, min_pdf
 
 def calc_log_lhd_factory(rnds_and_coded_seqs):
     """
@@ -298,14 +301,13 @@ def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
         print calc_log_lhd(ref_energy, ddg_array, chem_pots)
 
     def f(x):
-        #rv = calc_rnd_log_lhd(seqs, ref_energy, x, rnd, log_chem_pot)
         rv = calc_log_lhd(ref_energy, ddg_array, x)
         if VERBOSE:
             print rv, x
         return -rv
 
     x0 = chem_pots 
-    res = minimize(f, x0, tol=1e-12, 
+    res = minimize(f, x0, tol=1e-12, method='Nelder-Mead',
                    options={'disp': False, 'maxiter': 50000},
                    bounds=[(-30,0) for i in xrange(len(x0))])
     return res.x
@@ -383,15 +385,15 @@ def main():
     rnds_and_seqs = []
     for fname in sorted(sys.argv[2:],
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
-        with open(fname) as fp:
-            #coded_seqs = code_seqs(load_fastq(fp), motif)
-            coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
+        with gzip.open(fname) as fp:
+            coded_seqs = code_seqs(load_fastq(fp), motif)
+            #coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
             rnds_and_seqs.append( coded_seqs )
     print "Finished loading sequences"
 
     x = ddg_array
     x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    chem_pots = np.array([-5]*len(rnds_and_seqs))        
+    chem_pots = np.array([-9]*len(rnds_and_seqs))        
     #chem_pots = np.array([-6, -7, -8, -9])        
     #ref_energy = 10
     for i in xrange(10):
@@ -404,7 +406,7 @@ def main():
         print x.calc_base_contributions()
         print lhd
         chem_pots = estimate_chem_pots_lhd(
-            rnds_and_seqs, x, ref_energy, np.array([-12]*len(rnds_and_seqs)))
+            rnds_and_seqs, x, ref_energy, chem_pots)
 
         #print "Lhd: ", calc_log_lhd(
         #    rnds_and_seqs, ref_energy, x, chem_pots)
