@@ -79,17 +79,19 @@ def code_seqs_as_matrix(seqs, motif):
     """Load SELEX data and encode all the subsequences. 
 
     """
+    subseq0 = code_sequence(seqs[0], motif)
     # find the sequence length
     seq_len = len(seqs[0])
     assert all( seq_len == len(seq) for seq in seqs )
-    coded_seqs = np.zeros((len(seqs), len(motif)*3), dtype='float32')
+    coded_seqs = [ np.zeros((len(seqs), len(motif)*3), dtype='float32')
+                   for i in xrange(len(subseq0)) ]
     for i, seq in enumerate(seqs):
-        coded_subseqs = code_sequence(seq, motif)
-        coded_seqs[i,coded_subseqs[0]] = 1
+        for j, subseq in enumerate(code_sequence(seq, motif)):
+            coded_seqs[j][i,subseq] = 1
     return coded_seqs
     return theano.shared(coded_seqs, theano.config.floatX)
 
-def est_partition_fn(ref_energy, ddg_array, n_bins=500):
+def est_partition_fn(ref_energy, ddg_array, n_bins=5000):
     # reset the motif data so that the minimum value in each column is 0
     min_energy = ddg_array.calc_min_energy(ref_energy)
     max_energy = ddg_array.calc_max_energy(ref_energy)
@@ -121,7 +123,7 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=500):
     assert n_bins+1 >= poly_sum.nonzero()[0].max()    
     part_fn = poly_sum[:n_bins]
 
-    min_cdf = 1 - (1 - part_fn.cumsum())**2
+    min_cdf = 1 - (1 - part_fn.cumsum())**20
     min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,])
 
     x = np.linspace(min_energy, min_energy+step_size*len(part_fn), len(part_fn));
@@ -153,7 +155,10 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         # score all of the sequences
         rnds_and_seq_ddgs = []
         for rnd, coded_seqs in enumerate(rnds_and_coded_seqs):
-            rnds_and_seq_ddgs.append( coded_seqs.dot(ddg_array) )
+            rnd_energies = np.vstack(
+                [coded_subseqs.dot(ddg_array)
+                 for coded_subseqs in coded_seqs]).min(0)
+            rnds_and_seq_ddgs.append( rnd_energies )
         # the occupancies of each rnd are a function of the chemical affinity of
         # the round in which there were sequenced and each previous round. We 
         # loop through each sequenced round, and calculate the numerator of the log lhd 
@@ -282,10 +287,18 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
     def f(x):
         x = x.view(DeltaDeltaGArray)
         rv = calc_log_lhd(ref_energy, x, chem_pots)
+
+        print x.consensus_seq()
+        print ref_energy
+        print x.calc_min_energy(ref_energy)
+        print x.calc_base_contributions()
+        print rv
+
+        
         return -rv
 
     x0 = ddg_array
-    res = minimize(f, x0, tol=1e-12, 
+    res = minimize(f, x0, tol=1e-12, method='COBYLA',
                    options={'disp': False, 'maxiter': 50000},
                    bounds=[(-6,6) for i in xrange(len(x0))])
     return res.x.view(DeltaDeltaGArray), -f(res.x)
@@ -307,7 +320,7 @@ def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
         return -rv
 
     x0 = chem_pots 
-    res = minimize(f, x0, tol=1e-12, method='Nelder-Mead',
+    res = minimize(f, x0, tol=1e-12, method='COBYLA',
                    options={'disp': False, 'maxiter': 50000},
                    bounds=[(-30,0) for i in xrange(len(x0))])
     return res.x
@@ -386,14 +399,14 @@ def main():
     for fname in sorted(sys.argv[2:],
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
         with gzip.open(fname) as fp:
-            coded_seqs = code_seqs(load_fastq(fp), motif)
+            coded_seqs = code_seqs_as_matrix(load_fastq(fp), motif)
             #coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
             rnds_and_seqs.append( coded_seqs )
     print "Finished loading sequences"
 
     x = ddg_array
-    x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    chem_pots = np.array([-9]*len(rnds_and_seqs))        
+    #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
+    chem_pots = np.array([-6]*len(rnds_and_seqs))        
     #chem_pots = np.array([-6, -7, -8, -9])        
     #ref_energy = 10
     for i in xrange(10):
@@ -405,8 +418,8 @@ def main():
         print x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print lhd
-        chem_pots = estimate_chem_pots_lhd(
-            rnds_and_seqs, x, ref_energy, chem_pots)
+        #chem_pots = estimate_chem_pots_lhd(
+        #    rnds_and_seqs, x, ref_energy, chem_pots)
 
         #print "Lhd: ", calc_log_lhd(
         #    rnds_and_seqs, ref_energy, x, chem_pots)
