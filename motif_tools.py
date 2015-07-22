@@ -124,9 +124,9 @@ class Motif():
                 #RC_score += self.motif_data[len(self)-i-1][RC_base_map[base]]
             assert self.consensus_energy-1e-6 <= score <= self.max_energy+1e-6
             assert self.consensus_energy-1e-6 <= RC_score <= self.max_energy+1e-6
-            RC = True if RC_score > score else False 
-            #yield offset, RC, max(score, RC_score)
-            yield offset, False, score
+            RC = True if RC_score < score else False 
+            yield offset, RC, min(score, RC_score)
+            #yield offset, False, score
 
     def score_seq(self, seq):
         try: assert len(seq) >= len(self)
