@@ -95,7 +95,7 @@ def code_seqs_as_matrix(seqs, motif):
     return coded_seqs
     return theano.shared(coded_seqs, theano.config.floatX)
 
-def est_partition_fn(ref_energy, ddg_array, n_bins=5000):
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=5000):
     # reset the motif data so that the minimum value in each column is 0
     min_energy = ddg_array.calc_min_energy(ref_energy)
     max_energy = ddg_array.calc_max_energy(ref_energy)
@@ -128,7 +128,7 @@ def est_partition_fn(ref_energy, ddg_array, n_bins=5000):
     assert n_bins+1 >= poly_sum.nonzero()[0].max()    
     part_fn = poly_sum[:n_bins]
 
-    min_cdf = 1 - (1 - part_fn.cumsum())**20
+    min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
     min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,], dtype='float32')
 
     x = np.linspace(min_energy, min_energy+step_size*len(part_fn), len(part_fn));
@@ -152,6 +152,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
     else:
         print 'Used the gpu'
     """
+    n_bind_sites = len(rnds_and_coded_seqs[0])
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      rnds_and_chem_affinities):
@@ -181,7 +182,8 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
 
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
-        energies, partition_fn = est_partition_fn(ref_energy, ddg_array)
+        energies, partition_fn = est_partition_fn(
+            ref_energy, ddg_array, n_bind_sites)
         expected_cnts = (4**ddg_array.motif_len)*partition_fn
         curr_occupancies = np.ones(len(energies), dtype='float32')
         denominators = []
@@ -190,16 +192,8 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
             denominators.append( np.log((expected_cnts*curr_occupancies).sum()))
 
         lhd = 0.0
-        """
-        print "+"*40
-        print numerators
-        print denominators
-        print rnds_and_seq_ddgs
-        print "="*40
-        """
         for rnd_num, rnd_denom, rnd_seq_ddgs in izip(
                 numerators, denominators, rnds_and_seq_ddgs):
-            #print rnd_num, len(rnd_seq_ddgs), rnd_denom
             lhd += rnd_num - len(rnd_seq_ddgs)*rnd_denom
 
         return lhd
@@ -288,12 +282,13 @@ def test():
 
 def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
-    
+    n_bind_sites = len(rnds_and_seqs[0])
     def f(x):
         ref_energy = x[0]
         x = x[1:].astype('float32').view(DeltaDeltaGArray)
         chem_pots = est_chem_potentials(
-            x, ref_energy, dna_conc, prot_conc, len(rnds_and_seqs))
+            x, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, x, chem_pots)
 
         print x.consensus_seq()
@@ -350,8 +345,10 @@ def est_chem_potential(
     rv = bisect(f, min_u, max_u, xtol=1e-8)
     return rv
 
-def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc, num_rnds):
-    energy_grid, partition_fn = est_partition_fn(ref_energy, ddg_array)
+def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc,
+                        n_bind_sites, num_rnds):
+    energy_grid, partition_fn = est_partition_fn(
+        ref_energy, ddg_array, n_bind_sites)
     chem_pots = []
     for rnd in xrange(num_rnds):
         chem_pot = est_chem_potential(
@@ -363,7 +360,7 @@ def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc, num_rnds):
     return np.array(chem_pots, dtype='float32')
 
 def simulations(motif):
-    sim_sizes = [100, 100, 100, 100]
+    sim_sizes = [100, 100]
 
     n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
     dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
@@ -371,8 +368,7 @@ def simulations(motif):
 
     ref_energy, ddg_array = motif.build_ddg_array()
     chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, dna_conc, prot_conc, len(sim_sizes))
-
+        ddg_array, ref_energy, dna_conc, prot_conc, 2, len(sim_sizes))
     rnds_and_seqs = []
     for rnd, (sim_size, chem_pot) in enumerate(
             zip(sim_sizes, chem_pots), start=1):
@@ -383,6 +379,9 @@ def simulations(motif):
             sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
     # sys.argv[2]
     print "Finished Simulations"
+    print "Ref Energy:", ref_energy
+    print "Chem Pots:", chem_pots
+    print ddg_array
     return
     #return
 
@@ -417,8 +416,9 @@ def main():
 
     x = ddg_array
     #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
+    n_bind_sites = len(rnds_and_seqs[0])
     chem_pots = est_chem_potentials(
-        x, ref_energy, dna_conc, prot_conc, len(rnds_and_seqs))
+        x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(rnds_and_seqs))
     print "Chem Pots:", chem_pots
     #raw_input()
     ref_energy, x, lhd = estimate_ddg_matrix(
@@ -428,30 +428,6 @@ def main():
     print x.calc_min_energy(ref_energy)
     print x.calc_base_contributions()
     print lhd
-    return
-
-
-    for i in xrange(12):
-        chem_pots = est_chem_potentials(
-            x, ref_energy, dna_conc, prot_conc, len(rnds_and_seqs))
-        print "Chem Pots:", chem_pots
-        #raw_input()
-        x, lhd = estimate_ddg_matrix(
-            rnds_and_seqs, x, ref_energy, chem_pots, ftol=10**(-i))
-        print x.consensus_seq()
-        print ref_energy
-        print x.calc_min_energy(ref_energy)
-        print x.calc_base_contributions()
-        print lhd
-
-        
-    return
-    chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, 
-        dna_conc, prot_conc, 
-        len(rnds_and_seqs))
-    print chem_pots
-
     return
 
 main()
