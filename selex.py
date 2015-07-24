@@ -18,6 +18,10 @@ import gzip
 
 VERBOSE = False
 
+n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
+dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
+prot_conc = dna_conc/25 # mol/L
+
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 def base_map(base):
     if base == 'N':
@@ -172,7 +176,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
                 #numerator += np.log(
                 #    logistic((rnds_and_chem_affinities[rnd]-ref_energy-seq_ddgs)/(R*T))).sum()
                 numerator += f(
-                    seq_ddgs, rnds_and_chem_affinities[rnd]-ref_energy).sum()
+                    seq_ddgs, (rnds_and_chem_affinities[rnd]-ref_energy).astype('float32')).sum()
             numerators.append(numerator)
 
         # now calculate the denominator (the normalizing factor for each round)
@@ -282,15 +286,19 @@ def test():
     f(ddg_array)
     return
 
-def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
+def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     
     def f(x):
-        x = x.astype('float32').view(DeltaDeltaGArray)
+        ref_energy = x[0]
+        x = x[1:].astype('float32').view(DeltaDeltaGArray)
+        chem_pots = est_chem_potentials(
+            x, ref_energy, dna_conc, prot_conc, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, x, chem_pots)
 
         print x.consensus_seq()
         print ref_energy
+        print chem_pots
         print x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print rv
@@ -298,11 +306,11 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
         
         return -rv
 
-    x0 = ddg_array
-    res = minimize(f, x0, tol=1e-12, method='COBYLA',
-                   options={'disp': False, 'maxiter': 50000},
+    x0 = np.hstack((ref_energy, ddg_array))
+    res = minimize(f, x0, tol=ftol, method='COBYLA',
+                   options={'disp': False, 'maxiter': 10000},
                    bounds=[(-6,6) for i in xrange(len(x0))])
-    return res.x.view(DeltaDeltaGArray), -f(res.x)
+    return res.x[0], res.x[1:].view(DeltaDeltaGArray), -f(res.x)
 
 def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
@@ -327,44 +335,45 @@ def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
     return res.x
 
 def est_chem_potential(
-        ddg_array, ref_energy, 
-        dna_conc, prot_conc, 
-        prev_rnd_chem_affinities=[]):
+        energy_grid, partition_fn, 
+        dna_conc, prot_conc ):
     """Estimate chemical affinity for round 1.
     
+    [TF] - [TF]_0 - \sum{all seq}{ [s_i]_0[TF](1/{[TF]+exp(delta_g)}) = 0  
+    exp{u} - [TF]_0 - \sum{i}{ 1/(1+exp(G_i)exp(-)
     """
-    min_log_frac_bnd = -100 
-    log_prot_conc = math.log(prot_conc)
-
-    energies, partition_fn = est_partition_fn(ref_energy, ddg_array)
-    for prev_ca in prev_rnd_chem_affinities:
-        occ = logistic(prev_ca-(ref_energy+energies)/(R*T))
-        partition_fn = partition_fn*occ
-        partition_fn = partition_fn/partition_fn.sum()
-
-    # [TF]_0 = [TF]_e + [TF:s]_e
-    # [TF]_0 - meanocc(s)*[s]_0 = [TF]
-    def f(log_frac_unbnd):
-        occ = logistic(log_prot_conc+log_frac_unbnd-(ref_energy+energies)/(R*T))
-        mean_occ = (occ*partition_fn).sum()
-        return math.exp(log_frac_unbnd+log_prot_conc) - dna_conc*mean_occ
-
-    if f(min_log_frac_bnd) > 0: return log_prot_conc + min_log_frac_bnd
-    if f(0.0) < 0: return log_prot_conc
-    return log_prot_conc + bisect(f, min_log_frac_bnd, 0)
+    def f(u):
+        sum_terms = dna_conc*partition_fn/(1+np.exp(energy_grid-u))
+        return prot_conc - math.exp(u) - sum_terms.sum()
+    min_u = -100
+    max_u = math.log(prot_conc)
+    rv = bisect(f, min_u, max_u, xtol=1e-8)
+    return rv
 
 def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc, num_rnds):
-    chem_affinities = []
+    energy_grid, partition_fn = est_partition_fn(ref_energy, ddg_array)
+    chem_pots = []
     for rnd in xrange(num_rnds):
-        chem_affinity = est_chem_potential(
-            ddg_array, ref_energy, dna_conc, prot_conc, chem_affinities)
-        chem_affinities.append(chem_affinity)
-    return chem_affinities
+        chem_pot = est_chem_potential(
+            energy_grid, partition_fn,
+            dna_conc, prot_conc )
+        chem_pots.append(chem_pot)
+        partition_fn *= logistic((chem_pot-energy_grid)/(R*T))
+        partition_fn = partition_fn/partition_fn.sum()
+    return np.array(chem_pots, dtype='float32')
 
 def simulations(motif):
-    chem_pots = [-6, -7, -8, -9]
-    rnds_and_seqs = []
     sim_sizes = [100, 100, 100, 100]
+
+    n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
+    dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
+    prot_conc = dna_conc/25 # mol/L
+
+    ref_energy, ddg_array = motif.build_ddg_array()
+    chem_pots = est_chem_potentials(
+        ddg_array, ref_energy, dna_conc, prot_conc, len(sim_sizes))
+
+    rnds_and_seqs = []
     for rnd, (sim_size, chem_pot) in enumerate(
             zip(sim_sizes, chem_pots), start=1):
         if sim_size == 0:
@@ -384,14 +393,15 @@ def main():
     #simulations(motif)
     #return
 
-    # 50-100 1e-9 G DNA
+    # 50-100 1e-9 g DNA
     # DNA sequence: TCCATCACGAATGATACGGCGACCACCGAACACTCTTTCCCTACACGACGCTCTTCCGATCTAAAATNNNNNNNNNNNNNNNNNNNNCGTCGTATGCCGTCTTCTGCTTGCCGACTCCG
     # DNA is ~ 1.02e-12 g/oligo * 119 oligos
     # molar protein:DNA ratio: 1:25
     # volume: 5.0e-5 L 
-    dna_conc = 1.02e-12*119*7.5e-8/5.0e-5
-    prot_conc = dna_conc/25
-    
+    n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
+    dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
+    prot_conc = dna_conc/25 # mol/L
+
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
     print "Finished loading motif"
@@ -399,31 +409,41 @@ def main():
     rnds_and_seqs = []
     for fname in sorted(sys.argv[2:],
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
-        with open(fname) as fp:
-            #coded_seqs = code_seqs_as_matrix(load_fastq(fp), motif)
-            coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
+        with gzip.open(fname) as fp:
+            coded_seqs = code_seqs_as_matrix(load_fastq(fp), motif)
+            #coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
             rnds_and_seqs.append( coded_seqs )
     print "Finished loading sequences"
 
     x = ddg_array
     #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    chem_pots = np.array([-6]*len(rnds_and_seqs), dtype='float32')
-    #chem_pots = np.array([-6, -7, -8, -9])        
-    #ref_energy = 10
-    for i in xrange(1):
+    chem_pots = est_chem_potentials(
+        x, ref_energy, dna_conc, prot_conc, len(rnds_and_seqs))
+    print "Chem Pots:", chem_pots
+    #raw_input()
+    ref_energy, x, lhd = estimate_ddg_matrix(
+        rnds_and_seqs, x, ref_energy, chem_pots)
+    print x.consensus_seq()
+    print ref_energy
+    print x.calc_min_energy(ref_energy)
+    print x.calc_base_contributions()
+    print lhd
+    return
+
+
+    for i in xrange(12):
+        chem_pots = est_chem_potentials(
+            x, ref_energy, dna_conc, prot_conc, len(rnds_and_seqs))
         print "Chem Pots:", chem_pots
+        #raw_input()
         x, lhd = estimate_ddg_matrix(
-            rnds_and_seqs, x, ref_energy, chem_pots)
+            rnds_and_seqs, x, ref_energy, chem_pots, ftol=10**(-i))
         print x.consensus_seq()
         print ref_energy
         print x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print lhd
-        #chem_pots = estimate_chem_pots_lhd(
-        #    rnds_and_seqs, x, ref_energy, chem_pots)
 
-        #print "Lhd: ", calc_log_lhd(
-        #    rnds_and_seqs, ref_energy, x, chem_pots)
         
     return
     chem_pots = est_chem_potentials(
