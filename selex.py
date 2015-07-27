@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 import theano
 import theano.tensor as TT
 
-from scipy.optimize import minimize, leastsq, bisect
+from scipy.optimize import minimize, leastsq, bisect, minimize_scalar
+from scipy.signal import fftconvolve
 
 import random
 
@@ -18,9 +19,55 @@ import gzip
 
 VERBOSE = False
 
-n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
+"""
+SELEX and massively parallel sequencing  
+Sequence of the DNA ligand is described in Supplemental Table S3. The ligands 
+contain all the sequence features necessary for direct sequencing using an 
+Illumina Genome Analyzer. The ligands were synthesized from two single-stranded 
+primers (Supplemental Table S3) using Taq polymerase. The 256 barcodes used 
+consist of all possible 4-bp identifier sequences and a 1-bp 'checksum' 
+nucleotide, which allows identification of most mutated sequences. The products 
+bearing different barcodes can be mixed and later identified based on the unique
+sequence barcodes.  
+  
+For SELEX, 50-100 ng of barcoded DNA fragments was added to the TF or 
+DBD-containing wells in 50 uL of binding buffer containing 150-500 ng of 
+poly(dI/dC)-oligonucleotide (Amersham 27-7875-01[discontinued] or Sigma 
+P4929-25UN) competitor. The resulting molar protein-to-DNA and 
+protein-to-binding site ratios are on the order of 1:25 and 1:15,000, 
+respectively. The plate was sealed and mixtures were left to compete for 2 h 
+in gentle shaking at room temperature. Unbound oligomers were cleared away from 
+the plates by five rapid washes with 100-300 uL of ice-cold binding buffer. 
+After the last washing step, the residual moisture was cleared by centrifuging 
+the plate inverted on top of paper towels at 500g for 30 sec. The bound DNA was 
+eluted into 50 uL of TE buffer (10 mM Tris-Cl at pH 8.0 containing 1 mM EDTA) 
+by heating for 25 min to 85C, and the TE buffer was aspirated directly from 
+the hot plate into a fresh 96-well storage plate.  
+  
+The efficiency of the SELEX was initially evaluated by real-time quantitative 
+PCR (qPCR) on a Roche light cycler using the SYBR-green-based system and 
+calculating the differences in eluted oligomer amount by crossing-point 
+analysis. Seven microliters of eluate was amplified using PCR (19-25 cycles), 
+and the products were used in subsequent cycles of SELEX. Nesting primers 
+(Supplemental Table S3) moving at least 2 bp inward in each cycle were used to 
+prevent amplification of contaminating products. For sequencing, approximately 
+similar amounts of DNA from each sample were mixed to generate a multiplexed 
+sample for sequencing. 
+"""
+
+#n_dna_seq = 7.5e-8/(1.02e-12*119) # molecules  - g/( g/oligo * oligo/molecule)
+#dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
+#prot_conc = dna_conc/25 # mol/L
+
+# 50-100 1e-9 g DNA
+# DNA sequence: TCCATCACGAATGATACGGCGACCACCGAACACTCTTTCCCTACACGACGCTCTTCCGATCTAAAATNNNNNNNNNNNNNNNNNNNNCGTCGTATGCCGTCTTCTGCTTGCCGACTCCG
+# DNA is ~ 1.02e-12 g/oligo * 119 oligos
+# molar protein:DNA ratio: 1:25
+# volume: 5.0e-5 L 
+n_dna_seq = 7.5e-8/(1.02e-12*119) # molecules  - g/( g/oligo * oligo/molecule)
 dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
-prot_conc = dna_conc/25 # mol/L
+prot_conc = dna_conc/25 # mol/L (should be 25)
+#prot_conc /= 1000
 
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 def base_map(base):
@@ -95,7 +142,7 @@ def code_seqs_as_matrix(seqs, motif):
     return coded_seqs
     return theano.shared(coded_seqs, theano.config.floatX)
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=5000):
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=50000):
     # reset the motif data so that the minimum value in each column is 0
     min_energy = ddg_array.calc_min_energy(ref_energy)
     max_energy = ddg_array.calc_max_energy(ref_energy)
@@ -123,9 +170,13 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=5000):
         if base_i == 0:
             poly_sum[:len(new_poly)] = new_poly
         else:
-            poly_sum = np.convolve(poly_sum, new_poly)
-    
-    assert n_bins+1 >= poly_sum.nonzero()[0].max()    
+            # naive colvolve
+            #convolve(poly_sum, new_poly)
+            poly_sum = fftconvolve(poly_sum, new_poly, 'full')[:n_bins]
+
+    poly_sum[poly_sum < 1e-16] = 0.0
+    ## we lose this assert because we do this early
+    #assert n_bins+1 >= poly_sum.nonzero()[0].max(), poly_sum.nonzero()[0].max()
     part_fn = poly_sum[:n_bins]
 
     min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
@@ -140,10 +191,12 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
     sym_x = TT.vector('x')
     calc_energy = theano.function([sym_x], theano.shared(coded_seqs).dot(sym_x))
     """
-    sym_e = TT.vector('e')
-    sym_c = TT.scalar('c')
-    f = theano.function([sym_e, sym_c], (
-        -TT.log(1.0 + TT.exp(-(sym_c - sym_e)/(R*T)))).sum())
+    sym_cons_dg = TT.scalar('cons_dg')
+    sym_chem_pot = TT.scalar('chem_pot')
+    sym_ddg = TT.vector('ddg')
+    
+    f = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
+        TT.log(1.0 + TT.exp((-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum()))
 
     """
     print f.maker.fgraph.toposort()
@@ -157,7 +210,9 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
                      ddg_array, 
                      rnds_and_chem_affinities):
         assert len(rnds_and_coded_seqs) == len(rnds_and_chem_affinities)
-
+        #ref_energy = ref_energy.astype('float32')
+        rnds_and_chem_affinities = rnds_and_chem_affinities.astype('float32')
+        
         # score all of the sequences
         rnds_and_seq_ddgs = []
         for rnd, coded_seqs in enumerate(rnds_and_coded_seqs):
@@ -171,13 +226,13 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         numerators = []
         for sequencing_rnd, seq_ddgs in enumerate(rnds_and_seq_ddgs):
             chem_affinity = rnds_and_chem_affinities[0]
-            #numerator = np.log(logistic((chem_affinity-ref_energy-seq_ddgs)/(R*T))).sum()
-            numerator = f(seq_ddgs, (chem_affinity-ref_energy).astype('float32'))
+            numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
+            #numerator = f(rnds_and_chem_affinities[rnd], ref_energy, seq_ddgs)
             for rnd in xrange(1, sequencing_rnd+1):
-                #numerator += np.log(
-                #    logistic((rnds_and_chem_affinities[rnd]-ref_energy-seq_ddgs)/(R*T))).sum()
-                numerator += f(
-                    seq_ddgs, (rnds_and_chem_affinities[rnd]-ref_energy).astype('float32')).sum()
+                numerator += np.log(
+                    logistic(-(-rnds_and_chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
+                #numerator += f(
+                #    rnds_and_chem_affinities[rnd], ref_energy, seq_ddgs).sum()
             numerators.append(numerator)
 
         # now calculate the denominator (the normalizing factor for each round)
@@ -188,7 +243,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         curr_occupancies = np.ones(len(energies), dtype='float32')
         denominators = []
         for rnd, chem_affinity in enumerate(rnds_and_chem_affinities):
-            curr_occupancies *= logistic((chem_affinity-energies)/(R*T))
+            curr_occupancies *= logistic(-(-chem_affinity+energies)/(R*T))
             denominators.append( np.log((expected_cnts*curr_occupancies).sum()))
 
         lhd = 0.0
@@ -280,7 +335,7 @@ def test():
     f(ddg_array)
     return
 
-def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
+def estimate_dg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = len(rnds_and_seqs[0])
     def f(x):
@@ -306,6 +361,57 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
                    options={'disp': False, 'maxiter': 10000},
                    bounds=[(-6,6) for i in xrange(len(x0))])
     return res.x[0], res.x[1:].view(DeltaDeltaGArray), -f(res.x)
+
+def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
+    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
+    n_bind_sites = len(rnds_and_seqs[0])
+    def f(x):
+        x = x.astype('float32').view(DeltaDeltaGArray)
+        chem_pots = est_chem_potentials(
+            x, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(ref_energy, x, chem_pots)
+
+        print x.consensus_seq()
+        print ref_energy
+        print chem_pots
+        print x.calc_min_energy(ref_energy)
+        print x.calc_base_contributions()
+        print rv
+
+        
+        return -rv
+
+    x0 = ddg_array
+    res = minimize(f, x0, tol=ftol, method='COBYLA',
+                   options={'disp': False, 'maxiter': 10000},
+                   bounds=[(-6,6) for i in xrange(len(x0))])
+    return res.x.view(DeltaDeltaGArray), -f(res.x)
+
+def estimate_consensus_GFE(
+        rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
+    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
+    n_bind_sites = len(rnds_and_seqs[0])
+    def f(x):
+        #x = x.astype('float32').view(DeltaDeltaGArray)
+        chem_pots = est_chem_potentials(
+            ddg_array, x, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(x, ddg_array, chem_pots)
+
+        print chem_pots
+        print x, rv
+        print
+        return -rv
+
+    for x in np.linspace(-50, 5, 100):
+        f(x)
+    assert False
+    x0 = ref_energy
+    res = minimize_scalar(f,bounds=[-50,-20],method='bounded')
+    assert False
+    return 
+
 
 def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
@@ -355,12 +461,13 @@ def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc,
             energy_grid, partition_fn,
             dna_conc, prot_conc )
         chem_pots.append(chem_pot)
-        partition_fn *= logistic((chem_pot-energy_grid)/(R*T))
+        partition_fn *= logistic(-(-chem_pot+energy_grid)/(R*T))
         partition_fn = partition_fn/partition_fn.sum()
     return np.array(chem_pots, dtype='float32')
 
 def simulations(motif):
-    sim_sizes = [100, 100]
+    pool_size = 100000
+    sim_sizes = [1000, 1000, 1000, 1000]
 
     n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
     dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
@@ -369,59 +476,81 @@ def simulations(motif):
     ref_energy, ddg_array = motif.build_ddg_array()
     chem_pots = est_chem_potentials(
         ddg_array, ref_energy, dna_conc, prot_conc, 2, len(sim_sizes))
+    current_pool = np.array([np.random.randint(4, size=len(motif))
+                             for i in xrange(pool_size)])
     rnds_and_seqs = []
     for rnd, (sim_size, chem_pot) in enumerate(
             zip(sim_sizes, chem_pots), start=1):
-        if sim_size == 0:
-            rnds_and_seqs.append([])
-        else:
-            ofname = "test_%s_rnd_%i.txt" % (motif.name, rnd)
-            sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
+        occs = np.array([motif.est_occ(chem_pot, seq)
+                         for seq in current_pool])
+        #print current_pool
+        seq_indices = np.random.choice(
+            len(current_pool), size=sim_size,
+            p=occs/occs.sum(), replace=True)
+        seqs = current_pool[np.array(seq_indices, dtype=int)]
+        seq_occs = occs[np.array(seq_indices, dtype=int)]
+        with open("test_%s_rnd_%i.txt" % (motif.name, rnd), "w") as ofp:
+            for seq in seqs:
+                print >> ofp, "".join('ACGT'[x] for x in seq)
+        current_pool = seqs[np.random.choice(
+            len(seqs), size=pool_size,
+            p=seq_occs/seq_occs.sum(), replace=True)]
+        print "Finished simulations for round %i" % rnd
+    
     # sys.argv[2]
     print "Finished Simulations"
     print "Ref Energy:", ref_energy
     print "Chem Pots:", chem_pots
     print ddg_array
+    print "Waiting to continue..."
+    raw_input()
     return
     #return
 
-    
+def load_sequences(fnames, motif):
+    rnds_and_seqs = []
+    for fname in sorted(fnames,
+                        key=lambda x: int(x.split("_")[-1].split(".")[0])):
+        opener = gzip.open if fname.endswith(".gz") else open  
+        with opener(fname) as fp:
+            loader = load_fastq if ".fastq" in fname else load_text_file
+            coded_seqs = code_seqs_as_matrix(loader(fp), motif)
+            rnds_and_seqs.append( coded_seqs )
+    print "Finished loading sequences"
+    return rnds_and_seqs
+
 def main():
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
     #simulations(motif)
     #return
-
-    # 50-100 1e-9 g DNA
-    # DNA sequence: TCCATCACGAATGATACGGCGACCACCGAACACTCTTTCCCTACACGACGCTCTTCCGATCTAAAATNNNNNNNNNNNNNNNNNNNNCGTCGTATGCCGTCTTCTGCTTGCCGACTCCG
-    # DNA is ~ 1.02e-12 g/oligo * 119 oligos
-    # molar protein:DNA ratio: 1:25
-    # volume: 5.0e-5 L 
-    n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
-    dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
-    prot_conc = dna_conc/25 # mol/L
+    
+    rnds_and_seqs = load_sequences(sys.argv[2:], motif)
+    n_bind_sites = len(rnds_and_seqs[0])
 
     motif = load_motifs(sys.argv[1]).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
-    print "Finished loading motif"
-    
-    rnds_and_seqs = []
-    for fname in sorted(sys.argv[2:],
-                        key=lambda x: int(x.split("_")[-1].split(".")[0])):
-        with gzip.open(fname) as fp:
-            coded_seqs = code_seqs_as_matrix(load_fastq(fp), motif)
-            #coded_seqs = code_seqs_as_matrix(load_text_file(fp), motif)
-            rnds_and_seqs.append( coded_seqs )
-    print "Finished loading sequences"
 
+    chem_pots = est_chem_potentials(
+        ddg_array, ref_energy,
+        dna_conc, prot_conc,
+        n_bind_sites, len(rnds_and_seqs))
+    print ddg_array.consensus_seq()
+    print chem_pots
+    print ref_energy
+    print ddg_array.calc_min_energy(ref_energy)
+    print ddg_array.calc_base_contributions()
+    print 
+    print "Finished loading motif"
+
+    #ref_energy += 15
     x = ddg_array
-    #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    n_bind_sites = len(rnds_and_seqs[0])
+    x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
     chem_pots = est_chem_potentials(
         x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(rnds_and_seqs))
     print "Chem Pots:", chem_pots
     #raw_input()
-    ref_energy, x, lhd = estimate_ddg_matrix(
+    x, lhd = estimate_ddg_matrix(
         rnds_and_seqs, x, ref_energy, chem_pots)
     print x.consensus_seq()
     print ref_energy
