@@ -140,9 +140,9 @@ class Motif():
         return logistic((unbnd_tf_conc - score)/(R*T))
     
     def build_occupancy_weights(self, log10_occupancy_ratio, consensus_energy):
-        for i, line in enumerate(self.lines[1:]):
-            row = numpy.array([-logit(1e-3/2 + (1-1e-3)*float(x)) 
-                               for x in line.split()[1:]])
+        for i, weights in enumerate(self.pwm):
+            row = numpy.array([-logit(1e-3/2 + (1-1e-3)*x) 
+                               for x in weights])
             min_val = row.min()
             self.consensus_energy += min_val
             row -= min_val
@@ -202,36 +202,43 @@ class Motif():
             ref_energy += base_energies[0]
         return ref_energy, energies.view(DeltaDeltaGArray)
 
-    def __init__(self, text):
-        # load the motif data
-        lines = text.strip().split("\n")
-        if lines[0][0] == '>': lines[0] = lines[0][1:]
-        self.name = lines[0].split()[0]
-        self.factor = self.name.split("_")[0]
+    def __init__(self, name, factor, pwm):
+        self.name = name
+        self.factor = factor
         
-        self.lines = lines
-        self.meta_data_line = lines[0]
+        self.lines = None
+        self.meta_data_line = None
 
-        self.length = len(lines)-1
+        self.length = len(pwm)
 
         self.consensus_energy = 0.0
-        self.motif_data = numpy.zeros((self.length, 4), dtype=float)
-        
-        self.pwm = numpy.zeros((self.length, 4), dtype=float)
-        
-        for i, line in enumerate(lines[1:]):
-            pwm_row = numpy.array([
-                float(x) for x in line.split()[1:]])
-            self.pwm[i, :] = pwm_row
+        self.motif_data = numpy.zeros((self.length, 4), dtype='float32')
+                
+        self.pwm = numpy.array(pwm, dtype='float32')
         
         self.build_occupancy_weights(4, -14)
-        #print >> sys.stderr, self.factor
-        #print >> sys.stderr, "Cons Energy:", self.consensus_energy
-        #print >> sys.stderr, "Cons Occ:", logistic(self.consensus_energy/(R*T))
-        #print >> sys.stderr, "Mean Energy:", self.mean_energy
-        #print >> sys.stderr, "Mean Occ:", logistic(self.mean_energy/(R*T))
-        #print >> sys.stderr, self.motif_data
         return
+
+def load_motif_from_text(text):
+    # load the motif data
+    lines = text.strip().split("\n")
+    if lines[0][0] == '>': lines[0] = lines[0][1:]
+    name = lines[0].split()[0]
+    factor = name.split("_")[0]
+    motif_length = len(lines)-1
+
+    pwm = numpy.zeros((motif_length, 4), dtype=float)
+
+    for i, line in enumerate(lines[1:]):
+        pwm_row = numpy.array([
+            float(x) for x in line.split()[1:]])
+        pwm[i, :] = pwm_row
+
+    motif = Motif(name, factor, pwm)
+    motif.lines = lines
+    motif.meta_data_line = lines[0]
+
+    return motif
 
 def build_wig(fasta, motif, region):
     chrm, start, stop, summit = region
@@ -296,7 +303,7 @@ def iter_motifs(fp):
     for motif_str in raw_motifs:
         #yield motif_str.split("\n")[0]
         if len(motif_str) == 0: continue
-        yield Motif(motif_str)
+        yield load_motif_from_text(motif_str)
     return 
 
 def load_motifs(fname, motif_list=None):

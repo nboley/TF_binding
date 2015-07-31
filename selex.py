@@ -1,6 +1,6 @@
 import os, sys
 import math
-from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray, logit
+from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray
 
 from itertools import product, izip
 
@@ -75,10 +75,6 @@ def base_map(base):
         base = random.choice('ACGT')
     return base_map_dict[base]
 
-def generate_random_sequences( num, seq_len, bind_site_len  ):
-    seqs = numpy.random.randint( 0, 4, num*seq_len ).reshape(num, seq_len)
-    return parse_sequence_list( seqs, bind_site_len )
-
 def code_sequence(seq, motif):
     # store all binding sites (subseqs and reverse complements of length 
     # motif )
@@ -101,32 +97,7 @@ def code_sequence(seq, motif):
 
     return coded_bss
 
-def load_text_file(fp):
-    seqs = []
-    for line in fp:
-        seqs.append(line.strip().upper())
-    return seqs
-
-def load_fastq(fp):
-    seqs = []
-    for i, line in enumerate(fp):
-        if i%4 == 1:
-            seqs.append(line.strip().upper())
-    return seqs
-
 def code_seqs(seqs, motif):
-    """Load SELEX data and encode all the subsequences. 
-
-    """
-    # find the sequence length
-    seq_len = len(seqs[0])
-    assert all( seq_len == len(seq) for seq in seqs )
-    coded_seqs = []
-    for i, seq in enumerate(seqs):
-        coded_seqs.append(code_sequence(seq, motif))
-    return coded_seqs
-
-def code_seqs_as_matrix(seqs, motif):
     """Load SELEX data and encode all the subsequences. 
 
     """
@@ -142,6 +113,19 @@ def code_seqs_as_matrix(seqs, motif):
             coded_seqs[i,j,subseq] = 1
     #return coded_seqs
     return theano.shared(coded_seqs)
+
+def load_text_file(fp):
+    seqs = []
+    for line in fp:
+        seqs.append(line.strip().upper())
+    return seqs
+
+def load_fastq(fp):
+    seqs = []
+    for i, line in enumerate(fp):
+        if i%4 == 1:
+            seqs.append(line.strip().upper())
+    return seqs
 
 def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=5000):
     # reset the motif data so that the minimum value in each column is 0
@@ -188,10 +172,8 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=5000):
     return x, min_pdf
 
 def calc_log_lhd_factory(rnds_and_coded_seqs):
-    #sym_x = TT.vector('x')
-    #calc_energy = theano.function([sym_x], theano.shared(coded_seqs).dot(sym_x))
-
     n_bind_sites = rnds_and_coded_seqs[0].get_value().shape[1]
+    
     calc_energy_fns = []
     sym_e = TT.vector()
     for x in rnds_and_coded_seqs:
@@ -214,6 +196,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
     #print
     #print calc_energy_fns[0].maker.fgraph.toposort()
     #assert False
+    
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      rnds_and_chem_affinities):
@@ -258,115 +241,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
 
         return lhd
     
-    return calc_log_lhd
-
-def iter_simulated_seqs(motif, chem_pots):
-    cnt = 0
-    seqs = []
-    while True:
-        seq = np.random.randint(4, size=len(motif))
-        occ = 1.0
-        for chem_pot in chem_pots:
-            occ *= motif.est_occ(chem_pot, seq)
-        if random.random() < occ:
-            yield seq, occ
-    return
-        
-def sim_seqs(ofname, n_seq, motif, chem_pots):
-    fp = open(ofname, "w")
-    for i, (seq, occ) in enumerate(
-            iter_simulated_seqs(motif, chem_pots)):
-        print >> fp, "".join('ACGT'[x] for x in seq)
-        if i >= n_seq: break
-        if i%100 == 0: print "Finished sim seq %i/%i" % (i, n_seq)
-    fp.close()
-    return
-
-def test():
-    motif = load_motifs(sys.argv[1]).values()[0][0]
-    ref_energy, ddg_array = motif.build_ddg_array()
-
-    chem_pots = [-6, -7, -8, -9]
-    rnds_and_seqs = []
-    sim_sizes = [100, 100, 100, 100]
-    for rnd, (sim_size, chem_pot) in enumerate(
-            zip(sim_sizes, chem_pots), start=1):
-        if sim_size == 0:
-            rnds_and_seqs.append([])
-        else:
-            ofname = "test.rnd%i.cp%.2e.txt" % (rnd, chem_pot)
-            #sim_seqs(ofname, sim_size, motif, chem_pots[:rnd]) 
-            rnds_and_seqs.append( load_and_code_text_file(ofname, motif) )
-    # sys.argv[2]
-    print "Finished Simulations"
-    #return
-
-    print ddg_array.consensus_seq()
-    print ref_energy
-    print ddg_array.calc_min_energy(ref_energy)
-    print ddg_array.calc_base_contributions()
-
-    #print calc_rnd_log_lhd(
-    #    rnds_and_seqs[-1], ref_energy, ddg_array, len(chem_pots), chem_pots[-1])
-    print calc_log_lhd(rnds_and_seqs, ref_energy, ddg_array, chem_pots)
-    
-    log_chem_pot = -8
-    def f(x):
-        x = x.view(DeltaDeltaGArray)
-        #rv = calc_rnd_log_lhd(seqs, ref_energy, x, rnd, log_chem_pot)
-        rv = calc_log_lhd(rnds_and_seqs, ref_energy, x, chem_pots)
-        if VERBOSE:
-            print x.consensus_seq()
-            print ref_energy
-            print x.calc_min_energy(ref_energy)
-            print x.calc_base_contributions()
-            print rv
-            print
-        return -rv
-
-    x0 = np.array([random.random() for i in xrange(len(ddg_array))], dtype='float32')
-    # user a slow buty safe algorithm to find a starting point
-    #res = minimize(f, x0, tol=1e-2,
-    #               options={'disp': True, 'maxiter': 5000}
-    #               , method='Powell') #'Nelder-Mead')
-    #print "Finished finding a starting point" 
-    res = minimize(f, x0, tol=1e-6,
-                   options={'disp': True, 'maxiter': 50000},
-                   bounds=[(-6,6) for i in xrange(len(x0))])
-    global VERBOSE
-    VERBOSE = True
-    f(res.x)
-    
-    f(ddg_array)
-    return
-
-def estimate_dg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
-    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
-    n_bind_sites = len(rnds_and_seqs[0])
-    def f(x):
-        ref_energy = x[0]
-        x = x[1:].astype('float32').view(DeltaDeltaGArray)
-        chem_pots = est_chem_potentials(
-            x, ref_energy, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
-        rv = calc_log_lhd(ref_energy, x, chem_pots)
-
-        """
-        print x.consensus_seq()
-        print ref_energy
-        print chem_pots
-        print x.calc_min_energy(ref_energy)
-        print x.calc_base_contributions()
-        print rv
-        """
-        
-        return -rv
-
-    x0 = np.hstack((ref_energy, ddg_array))
-    res = minimize(f, x0, tol=ftol, method='COBYLA',
-                   options={'disp': False, 'maxiter': 10000},
-                   bounds=[(-6,6) for i in xrange(len(x0))])
-    return res.x[0], res.x[1:].view(DeltaDeltaGArray), -f(res.x)
+    return calc_log_lhd        
 
 def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
@@ -388,61 +263,9 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
         return -rv
 
     x0 = ddg_array
-    res = minimize(f, x0, tol=ftol, method='COBYLA',
-                   options={'disp': False, 'maxiter': 50000},
-                   bounds=[(-6,6) for i in xrange(len(x0))])
-    # x0 = res.x.view(DeltaDeltaGArray)
-    #res = minimize(f, x0, tol=ftol, 
-    #               options={'disp': False, 'maxiter': 10000},
-    #               bounds=[(-6,6) for i in xrange(len(x0))])
+    res = minimize(f, x0, tol=ftol, method='COBYLA', 
+                   options={'disp': True, 'maxiter': 50000})
     return res.x.view(DeltaDeltaGArray), -f(res.x)
-
-def estimate_consensus_GFE(
-        rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
-    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
-    n_bind_sites = len(rnds_and_seqs[0])
-    def f(x):
-        #x = x.astype('float32').view(DeltaDeltaGArray)
-        chem_pots = est_chem_potentials(
-            ddg_array, x, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
-        rv = calc_log_lhd(x, ddg_array, chem_pots)
-
-        print chem_pots
-        print x, rv
-        print
-        return -rv
-
-    for x in np.linspace(-50, 5, 100):
-        f(x)
-    assert False
-    x0 = ref_energy
-    res = minimize_scalar(f,bounds=[-50,-20],method='bounded')
-    assert False
-    return 
-
-
-def estimate_chem_pots_lhd(rnds_and_seqs, ddg_array, ref_energy, chem_pots):
-    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
-
-    if VERBOSE:
-        print ddg_array.consensus_seq()
-        print ref_energy
-        print ddg_array.calc_min_energy(ref_energy)
-        print ddg_array.calc_base_contributions()
-        print calc_log_lhd(ref_energy, ddg_array, chem_pots)
-
-    def f(x):
-        rv = calc_log_lhd(ref_energy, ddg_array, x)
-        if VERBOSE:
-            print rv, x
-        return -rv
-
-    x0 = chem_pots 
-    res = minimize(f, x0, tol=1e-12, method='COBYLA',
-                   options={'disp': False, 'maxiter': 50000},
-                   bounds=[(-30,0) for i in xrange(len(x0))])
-    return res.x
 
 def est_chem_potential(
         energy_grid, partition_fn, 
@@ -474,14 +297,13 @@ def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc,
         partition_fn = partition_fn/partition_fn.sum()
     return np.array(chem_pots, dtype='float32')
 
-def simulations(motif):
-    pool_size = 100000
-    sim_sizes = [1000, 1000, 1000, 1000]
+def generate_random_sequences( num, seq_len, bind_site_len  ):
+    seqs = numpy.random.randint( 0, 4, num*seq_len ).reshape(num, seq_len)
+    return parse_sequence_list( seqs, bind_site_len )
 
-    n_dna_seq = 7.5e-8/(1.02e-12*119) # g/molecule  - g/( g/oligo * oligo/molecule)
-    dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
-    prot_conc = dna_conc/25 # mol/L
-
+def simulate_reads( motif,
+                    size_sizes=(1000, 1000, 1000, 1000),
+                    pool_size = 100000):
     ref_energy, ddg_array = motif.build_ddg_array()
     chem_pots = est_chem_potentials(
         ddg_array, ref_energy, dna_conc, prot_conc, 2, len(sim_sizes))
@@ -523,7 +345,7 @@ def load_sequences(fnames, motif):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            coded_seqs = code_seqs_as_matrix(loader(fp), motif)
+            coded_seqs = code_seqs(loader(fp), motif)
             rnds_and_seqs.append( coded_seqs )
     print "Finished loading sequences"
     return rnds_and_seqs
@@ -556,35 +378,15 @@ def main():
     motif_fname = sys.argv[1]
     motif = load_motifs(motif_fname).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
-    #simulations(motif)
-    #return
     
     rnds_and_seqs = load_sequences(sys.argv[2:], motif)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
 
-    print ddg_array.consensus_seq()
-    print ref_energy
-    print ddg_array.calc_min_energy(ref_energy)
-    print ddg_array.calc_base_contributions()
-
     chem_pots = est_chem_potentials(
-        ddg_array, ref_energy,
-        dna_conc, prot_conc,
+        ddg_array, ref_energy, dna_conc, prot_conc,
         n_bind_sites, len(rnds_and_seqs))
-    print chem_pots
-    print 
-
-    print "Finished loading motif"
-    #return
-    ref_energy = np.float32(-2.0)
-    x = ddg_array
-    #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
-    chem_pots = est_chem_potentials(
-        x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(rnds_and_seqs))
-    print "Chem Pots:", chem_pots
-    #raw_input()
     x, lhd = estimate_ddg_matrix(
-        rnds_and_seqs, x, ref_energy, chem_pots)
+        rnds_and_seqs, ddg_array, ref_energy, chem_pots)
     print x.consensus_seq()
     print est_chem_potentials(
         x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(rnds_and_seqs))
@@ -599,4 +401,5 @@ def main():
     # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32
     return
 
-main()
+if __name__ == '__main__':
+    main()
