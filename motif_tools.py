@@ -223,7 +223,7 @@ def load_motif_from_text(text):
     factor = name.split("_")[0]
     motif_length = len(lines)-1
 
-    pwm = numpy.zeros((self.length, 4), dtype=float)
+    pwm = numpy.zeros((motif_length, 4), dtype=float)
 
     for i, line in enumerate(lines[1:]):
         pwm_row = numpy.array([
@@ -299,7 +299,7 @@ def iter_motifs(fp):
     for motif_str in raw_motifs:
         #yield motif_str.split("\n")[0]
         if len(motif_str) == 0: continue
-        yield Motif(motif_str)
+        yield load_motif_from_text(motif_str)
     return 
 
 def load_motifs(fname, motif_list=None):
