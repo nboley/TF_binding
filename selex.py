@@ -378,14 +378,13 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, x, chem_pots)
 
-        
         print x.consensus_seq()
         print ref_energy
         print chem_pots
         print x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print rv
-        
+
         return -rv
 
     x0 = ddg_array
@@ -529,8 +528,33 @@ def load_sequences(fnames, motif):
     print "Finished loading sequences"
     return rnds_and_seqs
 
+def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
+    # normalize the array so that the consensus energy is zero
+    consensus_energy = ddg_array.calc_min_energy(ref_energy)
+    base_energies = ddg_array.calc_base_contributions()
+    print >> ofp, ">%s.ENERGY\t%.2f" % (motif.name, consensus_energy)
+    #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
+    conc_energies = []
+    for pos, energies in enumerate(base_energies, start=1):
+        conc_energies.append(
+            energies - energies.min() - consensus_energy/len(base_energies))
+        print >> ofp, str(pos) + "\t" + "\t".join(
+            "%.2f" % (x - energies.min()) 
+            for x in energies )
+
+    print >> ofp, ">%s.PWM" % motif.name
+    #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
+    for pos, energies in enumerate(conc_energies, start=1):
+        pwm = 1-logistic(energies)
+        pwm = pwm/pwm.sum()
+        print >> ofp, str(pos) + "\t" + "\t".join(
+            "%.4f" % x for x in pwm )
+            
+
+
 def main():
-    motif = load_motifs(sys.argv[1]).values()[0][0]
+    motif_fname = sys.argv[1]
+    motif = load_motifs(motif_fname).values()[0][0]
     ref_energy, ddg_array = motif.build_ddg_array()
     #simulations(motif)
     #return
@@ -538,21 +562,20 @@ def main():
     rnds_and_seqs = load_sequences(sys.argv[2:], motif)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
 
-    motif = load_motifs(sys.argv[1]).values()[0][0]
-    ref_energy, ddg_array = motif.build_ddg_array()
+    print ddg_array.consensus_seq()
+    print ref_energy
+    print ddg_array.calc_min_energy(ref_energy)
+    print ddg_array.calc_base_contributions()
 
     chem_pots = est_chem_potentials(
         ddg_array, ref_energy,
         dna_conc, prot_conc,
         n_bind_sites, len(rnds_and_seqs))
-    print ddg_array.consensus_seq()
     print chem_pots
-    print ref_energy
-    print ddg_array.calc_min_energy(ref_energy)
-    print ddg_array.calc_base_contributions()
     print 
-    print "Finished loading motif"
 
+    print "Finished loading motif"
+    #return
     ref_energy = np.float32(-2.0)
     x = ddg_array
     #x = np.random.uniform(size=len(ddg_array)).view(DeltaDeltaGArray)
@@ -570,8 +593,10 @@ def main():
     print x.calc_base_contributions()
     print lhd
 
-    # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32
+    with open(motif_fname + ".SELEX.txt", "w") as ofp:
+        write_output(motif, x, ref_energy, ofp)
     
+    # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32
     return
 
 main()

@@ -148,13 +148,21 @@ class Motif():
             row -= min_val
             self.motif_data[i, :] = row
 
+        self.mean_energy = -2/(R*T)
+        mean_energy_diff = sum(row.sum()/4 for row in self.motif_data)
+        self.consensus_energy -= (mean_energy_diff + self.mean_energy)
+        
+        # change the units
+        self.consensus_energy *= (R*T)
+        self.mean_energy *= (R*T)
+        self.motif_data *= (R*T)
+
+        return
         # reset the consensus energy to the desired value
         self.consensus_energy = consensus_energy/(R*T)
         self.log10_occupancy_ratio = log10_occupancy_ratio
         consensus_occupancy = logistic(-self.consensus_energy)
 
-        mean_energy_diff = sum(row.sum()/4 for row in self.motif_data) 
-        self.mean_energy = self.consensus_energy + mean_energy_diff
         
         def f(scale):
             mean_occ = 1e-100 + logistic(
@@ -171,10 +179,6 @@ class Motif():
         self.mean_energy = self.consensus_energy + mean_energy_diff/res
         self.motif_data = self.motif_data/res
 
-        # change the units
-        self.consensus_energy *= (R*T)
-        self.mean_energy *= (R*T)
-        self.motif_data *= (R*T)
 
         #print "Conc:", self.consensus_energy, logistic(-self.consensus_energy/(R*T))
         #print "Mean:", self.mean_energy, logistic(-self.mean_energy/(R*T))
@@ -220,7 +224,7 @@ class Motif():
                 float(x) for x in line.split()[1:]])
             self.pwm[i, :] = pwm_row
         
-        self.build_occupancy_weights(6, -10)
+        self.build_occupancy_weights(4, -14)
         #print >> sys.stderr, self.factor
         #print >> sys.stderr, "Cons Energy:", self.consensus_energy
         #print >> sys.stderr, "Cons Occ:", logistic(self.consensus_energy/(R*T))
