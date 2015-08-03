@@ -277,9 +277,10 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
         penalty = (energy_diff[(energy_diff > 6)]**2).sum()
         
         print x.consensus_seq()
-        print ref_energy
         print chem_pots
-        print x.calc_min_energy(ref_energy)
+        print "Ref:", ref_energy
+        print "Mean:", ref_energy + x.sum()/3
+        print "Min:", x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print rv
         print penalty
@@ -314,7 +315,7 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
     x0 = res.x.view(DeltaDeltaGArray)
     """
     res = minimize(f, x0, tol=ftol, method='COBYLA',  
-                   options={'disp': False, 'maxiter': 100} )    
+                   options={'disp': False, 'maxiter': 50000} )    
     x0 = res.x.view(DeltaDeltaGArray)
     res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
                    options={'disp': False, 'maxiter': 50000} )
