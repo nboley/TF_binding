@@ -11,7 +11,7 @@ import theano
 import theano.tensor as TT
 
 from scipy.optimize import minimize, leastsq, bisect, minimize_scalar
-from scipy.signal import fftconvolve
+from numpy.fft import rfft, irfft
 
 import random
 
@@ -127,43 +127,47 @@ def load_fastq(fp):
             seqs.append(line.strip().upper())
     return seqs
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=5000):
+
+
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=8192): # 65536, 8192
+    # make sure the number of bins is a power of two. This is two aboid extra
+    # padding during the fft convolution
+    if (n_bins & (n_bins-1)):
+        raise ValueError, "The number of bins must be a power of two"
+
     # reset the motif data so that the minimum value in each column is 0
     min_energy = ddg_array.calc_min_energy(ref_energy)
     max_energy = ddg_array.calc_max_energy(ref_energy)
     step_size = (max_energy-min_energy+1e-6)/(n_bins-ddg_array.motif_len)
     
     # build the polynomial for each base
-    poly_sum = np.zeros(n_bins+1, dtype='float32')
-    # for each bae, add to the polynomial
+    fft_product = np.zeros(n_bins, dtype='float32')
+    new_poly = np.zeros(n_bins, dtype='float32')
+    nonzero_bins = np.zeros(8, dtype=int)
+    # for each base, add to the polynomial
     for base_i, base_energies in enumerate(
             ddg_array.calc_base_contributions()):
         min_base_energy = base_energies.min()
-        new_poly = np.zeros(
-            1+np.ceil((base_energies.max()-min_base_energy)/step_size),
-            dtype='float32')
         
-        for base_energy in base_energies:
+        for base, base_energy in enumerate(base_energies):
             mean_bin = (base_energy-min_base_energy)/step_size
             lower_bin = int(mean_bin)
+            nonzero_bins[2*base] = lower_bin
             upper_bin = int(np.ceil(mean_bin))
+            nonzero_bins[2*base+1] = upper_bin
 
             a = upper_bin - mean_bin
             new_poly[lower_bin] += 0.25*a
             new_poly[upper_bin] += 0.25*(1-a)
-
+        freq_poly = rfft(new_poly, n_bins)
+        new_poly[nonzero_bins] = 0
+        
         if base_i == 0:
-            poly_sum[:len(new_poly)] = new_poly
+            fft_product = freq_poly
         else:
-            # naive colvolve
-            #convolve(poly_sum, new_poly)
-            poly_sum = fftconvolve(poly_sum, new_poly, 'full')[:n_bins]
-
-    poly_sum[poly_sum < 1e-16] = 0.0
-    ## we lose this assert because we do this early
-    #assert n_bins+1 >= poly_sum.nonzero()[0].max(), poly_sum.nonzero()[0].max()
-    part_fn = poly_sum[:n_bins]
-
+            fft_product *= freq_poly
+        
+    part_fn = irfft(fft_product, n_bins)
     min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
     min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,], dtype='float32')
 
