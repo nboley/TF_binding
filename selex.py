@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import theano
 import theano.tensor as TT
 
-from scipy.optimize import minimize, leastsq, bisect, minimize_scalar
+from scipy.optimize import minimize, leastsq, bisect, minimize_scalar, differential_evolution
 from numpy.fft import rfft, irfft
 
 import random
@@ -18,6 +18,7 @@ import random
 import gzip
 
 VERBOSE = False
+CONSIDER_RANDOM_START = False
 
 """
 SELEX and massively parallel sequencing  
@@ -129,7 +130,7 @@ def load_fastq(fp):
 
 
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=8192): # 65536, 8192
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
     # make sure the number of bins is a power of two. This is two aboid extra
     # padding during the fft convolution
     if (n_bins & (n_bins-1)):
@@ -143,22 +144,12 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=8192): # 65536,
     # build the polynomial for each base
     fft_product = np.zeros(n_bins, dtype='float32')
     new_poly = np.zeros(n_bins, dtype='float32')
-    nonzero_bins = np.zeros(8, dtype=int)
     # for each base, add to the polynomial
     for base_i, base_energies in enumerate(
             ddg_array.calc_base_contributions()):
-        min_base_energy = base_energies.min()
-        
-        for base, base_energy in enumerate(base_energies):
-            mean_bin = (base_energy-min_base_energy)/step_size
-            lower_bin = int(mean_bin)
-            nonzero_bins[2*base] = lower_bin
-            upper_bin = int(np.ceil(mean_bin))
-            nonzero_bins[2*base+1] = upper_bin
-
-            a = upper_bin - mean_bin
-            new_poly[lower_bin] += 0.25*a
-            new_poly[upper_bin] += 0.25*(1-a)
+        nonzero_bins = np.array(
+            ((base_energies-base_energies.min())/step_size).round(), dtype=int)
+        new_poly[nonzero_bins] = 0.25
         freq_poly = rfft(new_poly, n_bins)
         new_poly[nonzero_bins] = 0
         
@@ -166,12 +157,16 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=8192): # 65536,
             fft_product = freq_poly
         else:
             fft_product *= freq_poly
-        
+    
+    # move back into polynomial coefficient space
     part_fn = irfft(fft_product, n_bins)
+    ## Account for the energy being the minimum over multiple binding sites
+    # insert a leading zero for the cumsum
     min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
-    min_pdf = np.array((min_cdf[1:] - min_cdf[:-1]).tolist() + [0.0,], dtype='float32')
-
-    x = np.linspace(min_energy, min_energy+step_size*len(part_fn), len(part_fn));
+    min_cdf = np.insert(min_cdf, 0, 0.0)
+    min_pdf = np.array(np.diff(min_cdf), dtype='float32')
+    # build the energy grid
+    x = np.linspace(min_energy, min_energy+step_size*n_bins, n_bins);
     assert len(x) == n_bins
     return x, min_pdf
 
@@ -193,14 +188,10 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
     
     calc_occ = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
         TT.log(1.0 + TT.exp(
-            (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum()))
+            (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
+    )
 
-    
-    #print calc_occ.maker.fgraph.toposort()
-    #print
-    #print calc_energy_fns[0].maker.fgraph.toposort()
-    #assert False
-    
+        
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      rnds_and_chem_affinities):
@@ -224,7 +215,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
                 #numerator += np.log(
                 #    logistic(-(-rnds_and_chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
                 numerator += calc_occ(
-                    rnds_and_chem_affinities[rnd], ref_energy, seq_ddgs).sum()
+                    rnds_and_chem_affinities[rnd], ref_energy, seq_ddgs)
             numerators.append(numerator)
 
         # now calculate the denominator (the normalizing factor for each round)
@@ -247,6 +238,29 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
     
     return calc_log_lhd        
 
+
+def init_param_space_lhs(samples, N=1000 ):
+    """
+    Initializes a starting location with Latin Hypercube Sampling
+    """
+    rng = np.random.mtrand._rand
+
+    # Generate the intervals
+    segsize = 1.0 / samples
+
+    # Fill points uniformly in each interval
+    rdrange = rng.rand(samples, N) * segsize
+    rdrange += np.atleast_2d(
+        np.linspace(0., 1., samples, endpoint=False)).T
+
+    # Make the random pairings
+    population = np.zeros_like(rdrange)
+
+    for j in range(N):
+        order = rng.permutation(range(samples))
+        population[:, j] = rdrange[order, j]
+    return (population.T - 0.5)*10
+
 def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
@@ -256,19 +270,55 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
             x, ref_energy, dna_conc, prot_conc,
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, x, chem_pots)
-
+        
+        base_conts = x.calc_base_contributions()
+        energy_diff = base_conts.max(1) - base_conts.min(1)
+        penalty = (energy_diff[(energy_diff > 6)]**2).sum()
+        
         print x.consensus_seq()
         print ref_energy
         print chem_pots
         print x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print rv
+        print penalty
+        print rv - penalty
 
-        return -rv
+        return -rv + penalty
 
+    ## Find random starting location
     x0 = ddg_array
-    res = minimize(f, x0, tol=ftol, method='COBYLA', 
-                   options={'disp': True, 'maxiter': 50000})
+    if CONSIDER_RANDOM_START:
+        max_lhd = -1e100
+        curr_x = None
+        for i, x in enumerate(init_param_space_lhs(len(ddg_array))):
+            lhd = -f(x)
+            print i
+            if lhd > max_lhd:
+                max_lhd = lhd
+                curr_x = x
+        print "="*60
+        f(x)
+        print "="*60
+        f(x0)
+        
+        if f(x) < f(x0):
+            x0 = x
+
+    """
+    res = differential_evolution(
+        f, [(-6,6) for i in xrange(len(ddg_array))], 
+        recombination=0.1,
+        strategy='best2bin')
+    x0 = res.x.view(DeltaDeltaGArray)
+    """
+    res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
+                   options={'disp': False, 'maxiter': 50000} )
+    """
+    x0 = res.x.view(DeltaDeltaGArray)
+    res = minimize(f, x0, tol=ftol, method='COBYLA',  
+                   options={'disp': False, 'maxiter': 50000} )
+    """
     return res.x.view(DeltaDeltaGArray), -f(res.x)
 
 def est_chem_potential(
