@@ -312,13 +312,11 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
         strategy='best2bin')
     x0 = res.x.view(DeltaDeltaGArray)
     """
+    res = minimize(f, x0, tol=ftol, method='COBYLA',  
+                   options={'disp': False, 'maxiter': 100} )    
+    x0 = res.x.view(DeltaDeltaGArray)
     res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
                    options={'disp': False, 'maxiter': 50000} )
-    """
-    x0 = res.x.view(DeltaDeltaGArray)
-    res = minimize(f, x0, tol=ftol, method='COBYLA',  
-                   options={'disp': False, 'maxiter': 50000} )
-    """
     return res.x.view(DeltaDeltaGArray), -f(res.x)
 
 def est_chem_potential(
