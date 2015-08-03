@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 import theano
 import theano.tensor as TT
 
-from scipy.optimize import minimize, leastsq, bisect, minimize_scalar, differential_evolution
+from scipy.optimize import (
+    minimize, brentq, differential_evolution )
 from numpy.fft import rfft, irfft
 
 import random
@@ -334,7 +335,7 @@ def est_chem_potential(
         return prot_conc - math.exp(u) - sum_terms.sum()
     min_u = -100
     max_u = math.log(prot_conc)
-    rv = bisect(f, min_u, max_u, xtol=1e-4)
+    rv = brentq(f, min_u, max_u, xtol=1e-4)
     return rv
 
 def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc,
