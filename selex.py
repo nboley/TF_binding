@@ -331,7 +331,7 @@ def est_chem_potential(
     def f(u):
         sum_terms = dna_conc*partition_fn/(1+np.exp(energy_grid-u))
         return prot_conc - math.exp(u) - sum_terms.sum()
-    min_u = -100
+    min_u = -200
     max_u = math.log(prot_conc)
     rv = brentq(f, min_u, max_u, xtol=1e-4)
     return rv
