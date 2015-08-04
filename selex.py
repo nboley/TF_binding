@@ -13,7 +13,7 @@ import theano
 import theano.tensor as TT
 
 from scipy.optimize import (
-    minimize, brentq, differential_evolution )
+    minimize, minimize_scalar, brentq, differential_evolution, anneal )
 from numpy.fft import rfft, irfft
 
 import random
@@ -139,7 +139,7 @@ def load_fastq(fp):
 
 
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
     # make sure the number of bins is a power of two. This is two aboid extra
     # padding during the fft convolution
     if (n_bins & (n_bins-1)):
@@ -207,7 +207,6 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         assert len(rnds_and_coded_seqs) == len(rnds_and_chem_affinities)
         ref_energy = ref_energy.astype('float32')
         rnds_and_chem_affinities = rnds_and_chem_affinities.astype('float32')
-        
         # score all of the sequences
         rnds_and_seq_ddgs = []
         for rnd, calc_energy in enumerate(calc_energy_fns):
@@ -289,8 +288,8 @@ def init_param_space_lhs(samples, N=1000 ):
         population[:, j] = rdrange[order, j]
     return (population.T - 0.5)*10
 
-def estimate_ddg_matrix(rnds_and_seqs, ddg_array_or_bs_size, 
-                        ref_energy, ftol=1e-12):
+def estimate_ddg_matrix(rnds_and_seqs, ddg_array, 
+                            ref_energy, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
     def f(x):
@@ -303,34 +302,162 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array_or_bs_size,
         base_conts = x.calc_base_contributions()
         energy_diff = base_conts.max(1) - base_conts.min(1)
         penalty = (energy_diff[(energy_diff > 6)]**2).sum()
-        
+
         print x.consensus_seq()
         print chem_pots
         print "Ref:", ref_energy
         print "Mean:", ref_energy + x.sum()/3
         print "Min:", x.calc_min_energy(ref_energy)
-        print x.calc_base_contributions()
+        print x.calc_base_contributions().round(2)
         print rv
         print penalty
-        print rv - penalty
+        print rv - penalty + abs(ref_energy)
 
         return -rv + penalty
 
-    if isinstance(ddg_array_or_bs_size, int):
-        res = differential_evolution(
-            f, [(-6,6) for i in xrange(3*ddg_array_or_bs_size)], 
-            recombination=0.1,
-            strategy='best2bin')
-        return res.x.view(DeltaDeltaGArray), -f(res.x)
-    else:
-        x0 = ddg_array_or_bs_size
+    x0 = ddg_array.astype('float32')
+    lhd_0 = f(x0)
+    res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
+                   options={'disp': False, 
+                            'maxiter': 50000, 
+                            'xtol': 1e-5, 'ftol': 1e-6} )
+    print "HERE", f(res.x)
+    if lhd_0 < f(res.x):
+        return x0, f(res.x)
+    return res.x.astype('float32').view(DeltaDeltaGArray), -f(res.x)
+
+def estimate_dg_matrix_coord(rnds_and_seqs, ddg_array, 
+                             ref_energy, ftol=1e-12):
+    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
+    n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
+    def f_ddg(x, (index, ref_energy)):
+        ddg_array[index] += x
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
+        
+        ddg_array[index] -= x
+
+        return -rv
+
+    def f_ref_energy(x):
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy+x, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
+        return -rv
+
+    while True:
+        initial_lhd = -f_ref_energy(0)
+        res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=1e-3)  
+        ref_energy += res.x
+        for i, x0 in enumerate(ddg_array):
+            res = minimize_scalar(
+                f_ddg, bounds=[-5,5], args=[i,ref_energy], tol=1e-3)  
+            ddg_array[i] += res.x
+            print "="*50
+            print i/3, i%3
+            print ddg_array.consensus_seq()
+            print "Ref:", ref_energy
+            print est_chem_potentials(
+                ddg_array, ref_energy, dna_conc, prot_conc,
+                n_bind_sites, len(rnds_and_seqs))
+            print "Mean:", ref_energy + ddg_array.sum()/3
+            print "Min:", ddg_array.calc_min_energy(ref_energy)
+            print ddg_array.calc_base_contributions().round(2)
+            print res.fun
+                
+        if initial_lhd > -f_ref_energy(0) - 1e-6: break
+        #print i, x0, res
     
-    res = minimize(f, x0, tol=ftol, method='COBYLA',  
-                   options={'disp': False, 'maxiter': 50000} )    
-    x0 = res.x.view(DeltaDeltaGArray)
+    return ddg_array, ref_energy, -f_ref_energy(0)
+
+def estimate_dg_matrix(rnds_and_seqs, ddg_array, 
+                        ref_energy, ftol=1e-12):
+    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
+    n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
+    def f_ddg(x, (base_pos, ref_energy)):
+        ddg_array[3*base_pos:3*(base_pos+1)] += x
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
+        #print rv
+        ddg_array[3*base_pos:3*(base_pos+1)] -= x
+        return -rv
+
+    def f_ref_energy(x):
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy+x, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
+        return -rv
+
+    while True:
+        initial_lhd = -f_ref_energy(0)
+        res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=1e-3)  
+        ref_energy += res.x
+        for base_pos in xrange(ddg_array.motif_len):
+            x0 = np.zeros(3, dtype=float)
+            res = minimize(
+                f_ddg, x0, args=[base_pos, ref_energy], 
+                method='Powell', tol=1e-2)
+            ddg_array[3*base_pos:3*(base_pos+1)] += res.x
+            print "="*50
+            print base_pos, res.x
+            print ddg_array.consensus_seq()
+            print "Ref:", ref_energy
+            print est_chem_potentials(
+                ddg_array, ref_energy, dna_conc, prot_conc,
+                n_bind_sites, len(rnds_and_seqs))
+            print "Mean:", ref_energy + ddg_array.sum()/3
+            print "Min:", ddg_array.calc_min_energy(ref_energy)
+            print ddg_array.calc_base_contributions().round(2)
+            print res.fun
+        #break
+        if initial_lhd > -f_ref_energy(0) - 1e-6: break
+        #print i, x0, res
+    
+    return ddg_array, ref_energy, -f_ref_energy(0)
+
+def estimate_chem_pots_w_lhd(rnds_and_seqs, ddg_array, 
+                             ref_energy, ftol=1e-12):
+    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
+    n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
+    chem_pots_0 = est_chem_potentials(
+        ddg_array, ref_energy, dna_conc, prot_conc,
+        n_bind_sites, len(rnds_and_seqs))
+    
+    def f(x):
+        chem_pots = est_chem_potentials(
+            ddg_array, x[0], dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(x[0], ddg_array, chem_pots_0)
+        """
+        print x
+        print ref_energy
+        print rv
+        print calc_log_lhd(ref_energy, ddg_array, chem_pots_0)
+        print
+        """
+        return -rv + abs(x[0])
+    """
+    def f(x):
+        rv = calc_log_lhd(ref_energy, ddg_array, x)
+        print est_chem_potentials(
+            ddg_array, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        print x
+        print rv
+        print calc_log_lhd(ref_energy, ddg_array, x)
+        print
+        return -rv
+    """
+    x0 = ref_energy #chem_pots_0
     res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
                    options={'disp': False, 'maxiter': 50000} )
-    return res.x.view(DeltaDeltaGArray), -f(res.x)
+    return res.x, -f([res.x,])
 
 def est_chem_potential(
         energy_grid, partition_fn, 
@@ -343,7 +470,7 @@ def est_chem_potential(
     def f(u):
         sum_terms = dna_conc*partition_fn/(1+np.exp(energy_grid-u))
         return prot_conc - math.exp(u) - sum_terms.sum()
-    min_u = -200
+    min_u = -100
     max_u = math.log(prot_conc)
     rv = brentq(f, min_u, max_u, xtol=1e-4)
     return rv
@@ -436,31 +563,30 @@ def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
         print >> ofp, str(pos) + "\t" + "\t".join(
             "%.4f" % x for x in pwm )
 
-def find_pwm(rnds_and_seqs, bs_len):
+def find_consensus_bind_site(seqs, bs_len):
     # produce and initial alignment from the last round
-    sixmers = defaultdict(int)
-    for seq in rnds_and_seqs[-1]:
+    mers = defaultdict(int)
+    for seq in seqs:
         for bs in enumerate_binding_sites(seq, bs_len):
-            sixmers[bs] += 1
-    max_cnt = max(sixmers.values())
-    consensus = next(sixmer for sixmer, cnt in sixmers.items() 
+            mers[bs] += 1
+    max_cnt = max(mers.values())
+    consensus = next(mer for mer, cnt in mers.items() 
                      if cnt == max_cnt)
-    counts = np.zeros((4, bs_len))
-    for pos, base in enumerate(consensus): 
-        counts[base_map(base), pos] += 1000
+    return consensus
 
-    # code the sequences from round 1 ( this pwm should be
-    # closest to the real pwm )
+def find_pwm_from_starting_alignment(seqs, counts):
+    bs_len = counts.shape[1]
+    
+    # code the sequences
     all_binding_sites = []
     all_weights = []
-    for seq in rnds_and_seqs[0]:
+    for seq in seqs:
         binding_sites = list(enumerate_binding_sites(seq, bs_len))
         all_binding_sites.append( binding_sites )
         weights = np.array([1.0/len(binding_sites)]*len(binding_sites))
         all_weights.append(weights)
 
-    #print counts
-    #assert False
+    # iterate over the alignments
     prev_counts = counts.copy()
     for i in xrange(50):
         # upadte the counts
@@ -482,18 +608,29 @@ def find_pwm(rnds_and_seqs, bs_len):
                 weights[:] = 0
                 weights[max_pos] = 1
             weights /= weights.sum()
-        if (counts.round() - prev_counts.round() ).sum() == 0: break
-        else: prev_counts = counts.copy()
-        print i, counts.round()
-        counts[:,:] = 0
-    
+        if (counts.round() - prev_counts.round() ).sum() == 0: 
+            break
+        else: 
+            prev_counts = counts.copy()
+            counts[:,:] = 0
+
     return (counts/counts.sum(0)).T
+
+def find_pwm(rnds_and_seqs, bs_len):
+    consensus = find_consensus_bind_site(rnds_and_seqs[-1], bs_len)
+    counts = np.zeros((4, bs_len))
+    for pos, base in enumerate(consensus): 
+        counts[base_map(base), pos] += 1000
+
+    # find a pwm using the initial sixmer alignment
+    pwm = find_pwm_from_starting_alignment(rnds_and_seqs[0], counts)
+    return pwm
 
 def main():
     #motif_fname = sys.argv[1]
     #motif = load_motifs(motif_fname).values()[0][0]
     #ref_energy, ddg_array = motif.build_ddg_array()
-    bs_len = 8
+    bs_len = 6
     factor_name = "TEST"
     
     rnds_and_seqs = load_sequences(sys.argv[1:])
@@ -505,22 +642,19 @@ def main():
     pwm = find_pwm(rnds_and_seqs, bs_len)
     motif = Motif("aligned_%imer" % bs_len, factor_name, pwm)
     ref_energy, ddg_array = motif.build_ddg_array()
-
-    #return
-    #x, lhd = estimate_ddg_matrix(
-    #    coded_rnds_and_seqs, 6, ref_energy)
-    #return
-
-    x, lhd = estimate_ddg_matrix(
-        coded_rnds_and_seqs, ddg_array, ref_energy)
+    
+    matrices = []
+    x = ddg_array.copy()
+    x, ref_energy, lhd = estimate_dg_matrix(
+        coded_rnds_and_seqs, x, ref_energy)
     print x.consensus_seq()
-    print est_chem_potentials(
-        x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(coded_rnds_and_seqs))
     print ref_energy
     print x.calc_min_energy(ref_energy)
     print x.calc_base_contributions()
     print lhd
-
+    #raw_input()
+    matrices.append(x.copy())
+        
     with open(factor_name + ".SELEX.txt", "w") as ofp:
         write_output(motif, x, ref_energy, ofp)
     
