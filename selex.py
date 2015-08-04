@@ -2,7 +2,7 @@ import os, sys
 import math
 from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray, Motif
 
-from itertools import product, izip
+from itertools import product, izip, chain
 
 from collections import defaultdict
 
@@ -73,7 +73,7 @@ dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
 prot_conc = dna_conc/25 # mol/L (should be 25)
 #prot_conc /= 1000
 
-RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 def base_map(base):
     if base == 'N':
@@ -118,7 +118,6 @@ def code_seqs(seqs, motif_len):
     assert all( seq_len == len(seq) for seq in seqs )
     coded_seqs = np.zeros((len(seqs), len(subseq0), motif_len*3), 
                           dtype=theano.config.floatX)
-    print coded_seqs.shape
     for i, seq in enumerate(seqs):
         for j, subseq in enumerate(code_sequence(seq, motif_len)):
             coded_seqs[i,j,subseq] = 1
@@ -252,6 +251,25 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
 def init_param_space_lhs(samples, N=1000 ):
     """
     Initializes a starting location with Latin Hypercube Sampling
+
+    ## Find random starting location
+    x0 = ddg_array
+    if CONSIDER_RANDOM_START:
+        max_lhd = -1e100
+        curr_x = None
+        for i, x in enumerate(init_param_space_lhs(len(ddg_array))):
+            lhd = -f(x)
+            print i
+            if lhd > max_lhd:
+                max_lhd = lhd
+                curr_x = x
+        print "="*60
+        f(x)
+        print "="*60
+        f(x0)
+        
+        if f(x) < f(x0):
+            x0 = x
     """
     rng = np.random.mtrand._rand
 
@@ -271,7 +289,8 @@ def init_param_space_lhs(samples, N=1000 ):
         population[:, j] = rdrange[order, j]
     return (population.T - 0.5)*10
 
-def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e-12):
+def estimate_ddg_matrix(rnds_and_seqs, ddg_array_or_bs_size, 
+                        ref_energy, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
     def f(x):
@@ -297,32 +316,15 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
 
         return -rv + penalty
 
-    ## Find random starting location
-    x0 = ddg_array
-    if CONSIDER_RANDOM_START:
-        max_lhd = -1e100
-        curr_x = None
-        for i, x in enumerate(init_param_space_lhs(len(ddg_array))):
-            lhd = -f(x)
-            print i
-            if lhd > max_lhd:
-                max_lhd = lhd
-                curr_x = x
-        print "="*60
-        f(x)
-        print "="*60
-        f(x0)
-        
-        if f(x) < f(x0):
-            x0 = x
-
-    """
-    res = differential_evolution(
-        f, [(-6,6) for i in xrange(len(ddg_array))], 
-        recombination=0.1,
-        strategy='best2bin')
-    x0 = res.x.view(DeltaDeltaGArray)
-    """
+    if isinstance(ddg_array_or_bs_size, int):
+        res = differential_evolution(
+            f, [(-6,6) for i in xrange(3*ddg_array_or_bs_size)], 
+            recombination=0.1,
+            strategy='best2bin')
+        return res.x.view(DeltaDeltaGArray), -f(res.x)
+    else:
+        x0 = ddg_array_or_bs_size
+    
     res = minimize(f, x0, tol=ftol, method='COBYLA',  
                    options={'disp': False, 'maxiter': 50000} )    
     x0 = res.x.view(DeltaDeltaGArray)
@@ -401,7 +403,7 @@ def simulate_reads( motif,
     return
     #return
 
-def load_sequences(fnames, motif):
+def load_sequences(fnames):
     rnds_and_seqs = []
     for fname in sorted(fnames,
                         key=lambda x: int(x.split("_")[-1].split(".")[0])):
@@ -434,30 +436,34 @@ def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
         print >> ofp, str(pos) + "\t" + "\t".join(
             "%.4f" % x for x in pwm )
 
-def find_most_common_sixmer(seqs):
-    bs_len = 6
+def find_pwm(rnds_and_seqs, bs_len):
+    # produce and initial alignment from the last round
+    sixmers = defaultdict(int)
+    for seq in rnds_and_seqs[-1]:
+        for bs in enumerate_binding_sites(seq, bs_len):
+            sixmers[bs] += 1
+    max_cnt = max(sixmers.values())
+    consensus = next(sixmer for sixmer, cnt in sixmers.items() 
+                     if cnt == max_cnt)
+    counts = np.zeros((4, bs_len))
+    for pos, base in enumerate(consensus): 
+        counts[base_map(base), pos] += 1000
+
+    # code the sequences from round 1 ( this pwm should be
+    # closest to the real pwm )
     all_binding_sites = []
     all_weights = []
-    total_cnt = len(seqs)
-    counts = np.zeros((4, bs_len))
-    sixmers = defaultdict(int)
-    for seq in seqs:
+    for seq in rnds_and_seqs[0]:
         binding_sites = list(enumerate_binding_sites(seq, bs_len))
         all_binding_sites.append( binding_sites )
         weights = np.array([1.0/len(binding_sites)]*len(binding_sites))
         all_weights.append(weights)
-        for bs in binding_sites:
-            sixmers[bs] += 1
-    max_cnt = max(sixmers.values())
-    consensus = next(sixmer for sixmer, cnt in sixmers.items() if cnt == max_cnt)
-    
+
+    #print counts
+    #assert False
     prev_counts = counts.copy()
     for i in xrange(50):
         # upadte the counts
-        counts[:,:] = 0
-        for pos, base in enumerate(consensus): 
-            counts[base_map(base), pos] += 100
-        #assert False
         for bss, weights in izip(all_binding_sites, all_weights):
             for bs, weight in izip(bss, weights):
                 for j, base in enumerate(bs):
@@ -478,29 +484,35 @@ def find_most_common_sixmer(seqs):
             weights /= weights.sum()
         if (counts.round() - prev_counts.round() ).sum() == 0: break
         else: prev_counts = counts.copy()
-
+        print i, counts.round()
+        counts[:,:] = 0
+    
     return (counts/counts.sum(0)).T
 
-
 def main():
-    motif_fname = sys.argv[1]
-    motif = load_motifs(motif_fname).values()[0][0]
-    ref_energy, ddg_array = motif.build_ddg_array()
+    #motif_fname = sys.argv[1]
+    #motif = load_motifs(motif_fname).values()[0][0]
+    #ref_energy, ddg_array = motif.build_ddg_array()
+    bs_len = 8
+    factor_name = "TEST"
     
-    rnds_and_seqs = load_sequences(sys.argv[2:], motif)
-    coded_rnds_and_seqs = [ code_seqs(seqs, len(motif)) 
+    rnds_and_seqs = load_sequences(sys.argv[1:])
+    coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
                             for seqs in rnds_and_seqs ]
+    print "Finished coding sequences"
     n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
 
-    pwm = find_most_common_sixmer(rnds_and_seqs[-1])
-    motif = Motif("sixmer_aligned", motif.factor, pwm)
+    pwm = find_pwm(rnds_and_seqs, bs_len)
+    motif = Motif("aligned_%imer" % bs_len, factor_name, pwm)
     ref_energy, ddg_array = motif.build_ddg_array()
 
-    chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, dna_conc, prot_conc,
-        n_bind_sites, len(coded_rnds_and_seqs))
+    #return
+    #x, lhd = estimate_ddg_matrix(
+    #    coded_rnds_and_seqs, 6, ref_energy)
+    #return
+
     x, lhd = estimate_ddg_matrix(
-        coded_rnds_and_seqs, ddg_array, ref_energy, chem_pots)
+        coded_rnds_and_seqs, ddg_array, ref_energy)
     print x.consensus_seq()
     print est_chem_potentials(
         x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(coded_rnds_and_seqs))
@@ -509,7 +521,7 @@ def main():
     print x.calc_base_contributions()
     print lhd
 
-    with open(motif_fname + ".SELEX.txt", "w") as ofp:
+    with open(factor_name + ".SELEX.txt", "w") as ofp:
         write_output(motif, x, ref_energy, ofp)
     
     # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32

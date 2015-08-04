@@ -148,8 +148,8 @@ class Motif():
             row -= min_val
             self.motif_data[i, :] = row
 
-        self.mean_energy = 8/(R*T)
-        self.consensus_energy = -12/(R*T)        
+        self.mean_energy = -2/(R*T)
+        self.consensus_energy = (-2 + -1.5*len(self.pwm))/(R*T)        
         mean_energy_diff = sum(row.sum()/4 for row in self.motif_data)
 
         # mean_energy = self.consensus_energy + mean_energy_diff/scale
