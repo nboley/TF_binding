@@ -286,9 +286,10 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
         penalty = (energy_diff[(energy_diff > 6)]**2).sum()
         
         print x.consensus_seq()
-        print ref_energy
         print chem_pots
-        print x.calc_min_energy(ref_energy)
+        print "Ref:", ref_energy
+        print "Mean:", ref_energy + x.sum()/3
+        print "Min:", x.calc_min_energy(ref_energy)
         print x.calc_base_contributions()
         print rv
         print penalty
@@ -322,13 +323,11 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array, ref_energy, chem_pots, ftol=1e
         strategy='best2bin')
     x0 = res.x.view(DeltaDeltaGArray)
     """
+    res = minimize(f, x0, tol=ftol, method='COBYLA',  
+                   options={'disp': False, 'maxiter': 50000} )    
+    x0 = res.x.view(DeltaDeltaGArray)
     res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
                    options={'disp': False, 'maxiter': 50000} )
-    """
-    x0 = res.x.view(DeltaDeltaGArray)
-    res = minimize(f, x0, tol=ftol, method='COBYLA',  
-                   options={'disp': False, 'maxiter': 50000} )
-    """
     return res.x.view(DeltaDeltaGArray), -f(res.x)
 
 def est_chem_potential(
@@ -342,7 +341,7 @@ def est_chem_potential(
     def f(u):
         sum_terms = dna_conc*partition_fn/(1+np.exp(energy_grid-u))
         return prot_conc - math.exp(u) - sum_terms.sum()
-    min_u = -100
+    min_u = -200
     max_u = math.log(prot_conc)
     rv = brentq(f, min_u, max_u, xtol=1e-4)
     return rv

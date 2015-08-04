@@ -139,7 +139,7 @@ class Motif():
         score = self.score_seq(seq)
         return logistic((unbnd_tf_conc - score)/(R*T))
     
-    def build_occupancy_weights(self, log10_occupancy_ratio, consensus_energy):
+    def build_occupancy_weights(self):
         for i, weights in enumerate(self.pwm):
             row = numpy.array([-logit(1e-3/2 + (1-1e-3)*x) 
                                for x in weights])
@@ -148,41 +148,23 @@ class Motif():
             row -= min_val
             self.motif_data[i, :] = row
 
-        self.mean_energy = -2/(R*T)
+        self.mean_energy = 8/(R*T)
+        self.consensus_energy = -12/(R*T)        
         mean_energy_diff = sum(row.sum()/4 for row in self.motif_data)
-        self.consensus_energy -= (mean_energy_diff + self.mean_energy)
+
+        # mean_energy = self.consensus_energy + mean_energy_diff/scale
+        # scale =  R*T*(self.consensus_energy + mean_energy_diff)/mean_energy
+        scale = (self.consensus_energy + mean_energy_diff)/self.mean_energy
+        self.motif_data /= scale
         
         # change the units
         self.consensus_energy *= (R*T)
         self.mean_energy *= (R*T)
         self.motif_data *= (R*T)
 
-        return
-        # reset the consensus energy to the desired value
-        self.consensus_energy = consensus_energy/(R*T)
-        self.log10_occupancy_ratio = log10_occupancy_ratio
-        consensus_occupancy = logistic(-self.consensus_energy)
-
-        
-        def f(scale):
-            mean_occ = 1e-100 + logistic(
-                -self.consensus_energy - mean_energy_diff/scale)
-            rv = (
-                math.log10(consensus_occupancy) 
-                - math.log10(mean_occ) 
-                - log10_occupancy_ratio )
-            #print math.log10(mean_occ), math.log10(consensus_occupancy) 
-            return rv
-        res = bisect(f, 0.1, 1e12)
-        #res = 1.0
-        #print "Scale:", res
-        self.mean_energy = self.consensus_energy + mean_energy_diff/res
-        self.motif_data = self.motif_data/res
-
-
-        #print "Conc:", self.consensus_energy, logistic(-self.consensus_energy/(R*T))
-        #print "Mean:", self.mean_energy, logistic(-self.mean_energy/(R*T))
-        #print self.motif_data
+        print "Conc:", self.consensus_energy, logistic(-self.consensus_energy/(R*T))
+        print "Mean:", self.mean_energy, logistic(-self.mean_energy/(R*T))
+        print self.motif_data
         #assert False
 
     @property
@@ -216,7 +198,7 @@ class Motif():
                 
         self.pwm = numpy.array(pwm, dtype='float32')
         
-        self.build_occupancy_weights(4, -14)
+        self.build_occupancy_weights()
         return
 
 def load_motif_from_text(text):
