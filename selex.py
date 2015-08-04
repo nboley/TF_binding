@@ -1,8 +1,10 @@
 import os, sys
 import math
-from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray
+from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray, Motif
 
 from itertools import product, izip
+
+from collections import defaultdict
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -71,19 +73,26 @@ dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
 prot_conc = dna_conc/25 # mol/L (should be 25)
 #prot_conc /= 1000
 
+RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 def base_map(base):
     if base == 'N':
         base = random.choice('ACGT')
     return base_map_dict[base]
 
-def code_sequence(seq, motif):
+def enumerate_binding_sites(seq, bs_len):
+    for offset in xrange(0, len(seq)-bs_len+1):
+        subseq = seq[offset:offset+bs_len].upper()
+        yield subseq
+        yield "".join(RC_map[base] for base in reversed(subseq))
+
+def code_sequence(seq, motif_len):
     # store all binding sites (subseqs and reverse complements of length 
     # motif )
     coded_bss = []
     #coded_seq = np.array([base_map[base] for base in seq.upper()])
-    for offset in xrange(0, len(seq)-len(motif)+1):
-        subseq = seq[offset:offset+len(motif)].upper()
+    for offset in xrange(0, len(seq)-motif_len+1):
+        subseq = seq[offset:offset+motif_len].upper()
         # forward sequence
         coded_subseq = [
             pos*3 + (base_map(base) - 1) 
@@ -99,19 +108,19 @@ def code_sequence(seq, motif):
 
     return coded_bss
 
-def code_seqs(seqs, motif):
+def code_seqs(seqs, motif_len):
     """Load SELEX data and encode all the subsequences. 
 
     """
-    subseq0 = code_sequence(seqs[0], motif)
+    subseq0 = code_sequence(seqs[0], motif_len)
     # find the sequence length
     seq_len = len(seqs[0])
     assert all( seq_len == len(seq) for seq in seqs )
-    coded_seqs = np.zeros((len(seqs), len(subseq0), len(motif)*3), 
+    coded_seqs = np.zeros((len(seqs), len(subseq0), motif_len*3), 
                           dtype=theano.config.floatX)
     print coded_seqs.shape
     for i, seq in enumerate(seqs):
-        for j, subseq in enumerate(code_sequence(seq, motif)):
+        for j, subseq in enumerate(code_sequence(seq, motif_len)):
             coded_seqs[i,j,subseq] = 1
     #return coded_seqs
     return theano.shared(coded_seqs)
@@ -400,8 +409,7 @@ def load_sequences(fnames, motif):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            coded_seqs = code_seqs(loader(fp), motif)
-            rnds_and_seqs.append( coded_seqs )
+            rnds_and_seqs.append( loader(fp) )
     print "Finished loading sequences"
     return rnds_and_seqs
 
@@ -426,7 +434,53 @@ def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
         pwm = pwm/pwm.sum()
         print >> ofp, str(pos) + "\t" + "\t".join(
             "%.4f" % x for x in pwm )
-            
+
+def find_most_common_sixmer(seqs):
+    bs_len = 6
+    all_binding_sites = []
+    all_weights = []
+    total_cnt = len(seqs)
+    counts = np.zeros((4, bs_len))
+    sixmers = defaultdict(int)
+    for seq in seqs:
+        binding_sites = list(enumerate_binding_sites(seq, bs_len))
+        all_binding_sites.append( binding_sites )
+        weights = np.array([1.0/len(binding_sites)]*len(binding_sites))
+        all_weights.append(weights)
+        for bs in binding_sites:
+            sixmers[bs] += 1
+    max_cnt = max(sixmers.values())
+    consensus = next(sixmer for sixmer, cnt in sixmers.items() if cnt == max_cnt)
+    
+    prev_counts = counts.copy()
+    for i in xrange(50):
+        # upadte the counts
+        counts[:,:] = 0
+        for pos, base in enumerate(consensus): 
+            counts[base_map(base), pos] += 100
+        #assert False
+        for bss, weights in izip(all_binding_sites, all_weights):
+            for bs, weight in izip(bss, weights):
+                for j, base in enumerate(bs):
+                    counts[base_map(base),j] += weight
+
+        # update the weights
+        for bss, weights in izip(all_binding_sites, all_weights):
+            max_score = 0
+            max_pos = None
+            for j, bs in enumerate(bss):
+                score = sum(
+                    counts[base_map(base), k] for k, base in enumerate(bs))
+                if score > max_score:
+                    max_score = score
+                    max_pos = j
+                weights[:] = 0
+                weights[max_pos] = 1
+            weights /= weights.sum()
+        if (counts.round() - prev_counts.round() ).sum() == 0: break
+        else: prev_counts = counts.copy()
+
+    return (counts/counts.sum(0)).T
 
 
 def main():
@@ -435,16 +489,22 @@ def main():
     ref_energy, ddg_array = motif.build_ddg_array()
     
     rnds_and_seqs = load_sequences(sys.argv[2:], motif)
-    n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
+    coded_rnds_and_seqs = [ code_seqs(seqs, len(motif)) 
+                            for seqs in rnds_and_seqs ]
+    n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
+
+    pwm = find_most_common_sixmer(rnds_and_seqs[-1])
+    motif = Motif("sixmer_aligned", motif.factor, pwm)
+    ref_energy, ddg_array = motif.build_ddg_array()
 
     chem_pots = est_chem_potentials(
         ddg_array, ref_energy, dna_conc, prot_conc,
-        n_bind_sites, len(rnds_and_seqs))
+        n_bind_sites, len(coded_rnds_and_seqs))
     x, lhd = estimate_ddg_matrix(
-        rnds_and_seqs, ddg_array, ref_energy, chem_pots)
+        coded_rnds_and_seqs, ddg_array, ref_energy, chem_pots)
     print x.consensus_seq()
     print est_chem_potentials(
-        x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(rnds_and_seqs))
+        x, ref_energy, dna_conc, prot_conc, n_bind_sites, len(coded_rnds_and_seqs))
     print ref_energy
     print x.calc_min_energy(ref_energy)
     print x.calc_base_contributions()
