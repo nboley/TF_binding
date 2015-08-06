@@ -3,6 +3,8 @@ import sys
 import math
 
 import numpy
+numpy.random.seed(0)
+
 from scipy.optimize import brute, bisect
 
 from collections import defaultdict
@@ -114,7 +116,7 @@ class Motif():
             score = self.consensus_energy
             RC_score = self.consensus_energy
             if 'N' in subseq:
-                yield offset + len(self)/2, self.mean_energy
+                yield offset, self.mean_energy
                 continue
             for i, base in enumerate(subseq):
                 if isinstance(subseq, str): base = base_map[base]
@@ -154,7 +156,7 @@ class Motif():
 
         # mean_energy = self.consensus_energy + mean_energy_diff/scale
         # scale =  R*T*(self.consensus_energy + mean_energy_diff)/mean_energy
-        scale = (self.consensus_energy + mean_energy_diff)/self.mean_energy
+        scale = mean_energy_diff/(self.mean_energy - self.consensus_energy)
         self.motif_data /= scale
         
         # change the units
@@ -162,9 +164,10 @@ class Motif():
         self.mean_energy *= (R*T)
         self.motif_data *= (R*T)
 
-        print "Conc:", self.consensus_energy, logistic(-self.consensus_energy/(R*T))
-        print "Mean:", self.mean_energy, logistic(-self.mean_energy/(R*T))
-        print self.motif_data
+        assert self.min_energy == self.consensus_energy
+        #print "Conc:", self.consensus_energy, logistic(-self.consensus_energy/(R*T))
+        #print "Mean:", self.mean_energy, logistic(-self.mean_energy/(R*T))
+        #print self.motif_data
         #assert False
 
     @property

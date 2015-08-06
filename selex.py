@@ -20,8 +20,12 @@ import random
 
 import gzip
 
+import warnings
+warnings.simplefilter("ignore")
+
 VERBOSE = False
 CONSIDER_RANDOM_START = False
+CMP_LHD_NUMERATOR_CALCS = False
 
 """
 SELEX and massively parallel sequencing  
@@ -65,16 +69,17 @@ sample for sequencing.
 
 # 50-100 1e-9 g DNA
 # DNA sequence: TCCATCACGAATGATACGGCGACCACCGAACACTCTTTCCCTACACGACGCTCTTCCGATCTAAAATNNNNNNNNNNNNNNNNNNNNCGTCGTATGCCGTCTTCTGCTTGCCGACTCCG
-# DNA is ~ 1.02e-12 g/oligo * 119 oligos
+# DNA is on average ~ 1.079734e-21 g/oligo * 119 oligos
 # molar protein:DNA ratio: 1:25
 # volume: 5.0e-5 L 
-n_dna_seq = 7.5e-8/(1.02e-12*119) # molecules  - g/( g/oligo * oligo/molecule)
+n_dna_seq = 7.5e-8/(1.079734e-21*119) # molecules  - g/( g/oligo * oligo/molecule)
 dna_conc = 6.02e23*n_dna_seq/5.0e-5 # mol/L
 prot_conc = dna_conc/25 # mol/L (should be 25)
 #prot_conc /= 1000
 
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
-base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
+
 def base_map(base):
     if base == 'N':
         base = random.choice('ACGT')
@@ -92,23 +97,24 @@ def code_sequence(seq, motif_len):
     coded_bss = []
     #coded_seq = np.array([base_map[base] for base in seq.upper()])
     for offset in xrange(0, len(seq)-motif_len+1):
-        subseq = seq[offset:offset+motif_len].upper()
+        subseq = seq[offset:offset+motif_len]
+        if isinstance(subseq, str): subseq = subseq.upper()
         # forward sequence
         coded_subseq = [
             pos*3 + (base_map(base) - 1) 
             for pos, base in enumerate(subseq)
-            if base != 'A']
+            if base_map(base) != 0]
         coded_bss.append(np.array(coded_subseq, dtype=int))
         # reverse complement
         coded_subseq = [
             pos*3 + (2 - base_map(base)) 
             for pos, base in enumerate(reversed(subseq))
-            if base != 'T']
+            if base_map(base) != 3]
         coded_bss.append(np.array(coded_subseq, dtype=int))
 
     return coded_bss
 
-def code_seqs(seqs, motif_len):
+def code_seqs(seqs, motif_len, ON_GPU=True):
     """Load SELEX data and encode all the subsequences. 
 
     """
@@ -121,8 +127,10 @@ def code_seqs(seqs, motif_len):
     for i, seq in enumerate(seqs):
         for j, subseq in enumerate(code_sequence(seq, motif_len)):
             coded_seqs[i,j,subseq] = 1
-    #return coded_seqs
-    return theano.shared(coded_seqs)
+    if ON_GPU:
+        return theano.shared(coded_seqs)
+    else:
+        return coded_seqs
 
 def load_text_file(fp):
     seqs = []
@@ -136,8 +144,6 @@ def load_fastq(fp):
         if i%4 == 1:
             seqs.append(line.strip().upper())
     return seqs
-
-
 
 def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
     # make sure the number of bins is a power of two. This is two aboid extra
@@ -179,6 +185,60 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
     assert len(x) == n_bins
     return x, min_pdf
 
+
+def calc_occ(seq_ddgs, ref_energy, chem_affinity):
+    return logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))
+
+sym_cons_dg = TT.scalar('cons_dg')
+sym_chem_pot = TT.scalar('chem_pot')
+sym_ddg = TT.vector('ddg')
+
+# calculate the sum of log occupancies for a particular round, given a 
+# set of energies
+calc_rnd_lhd_num = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
+    TT.log(1.0 + TT.exp(
+        (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
+)
+
+def calc_lhd_numerators(
+        seq_ddgs, chem_affinities, ref_energy):
+    # the occupancies of each rnd are a function of the chemical affinity of
+    # the round in which there were sequenced and each previous round. We 
+    # loop through each sequenced round, and calculate the numerator of the log 
+    # lhd 
+    numerators = []
+    for sequencing_rnd, seq_ddgs in enumerate(seq_ddgs):
+        chem_affinity = chem_affinities[0]
+        numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
+        #numerator = calc_rnd_lhd_num(chem_affinity, ref_energy, seq_ddgs)
+        for rnd in xrange(1, sequencing_rnd+1):
+            numerator += np.log(
+                logistic(-(-chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
+            #numerator += calc_rnd_lhd_num(
+            #    chem_affinities[rnd], ref_energy, seq_ddgs)
+        numerators.append(numerator)
+    
+    if CMP_LHD_NUMERATOR_CALCS:
+        print "NUMERATORS", "="*10, numerators
+        print chem_affinities
+        print ref_energy
+        print
+    
+    return numerators
+
+def calc_lhd_denominators(ref_energy, ddg_array, chem_affinities, n_bind_sites):
+    # now calculate the denominator (the normalizing factor for each round)
+    # calculate the expected bin counts in each energy level for round 0
+    energies, partition_fn = est_partition_fn(
+        ref_energy, ddg_array, n_bind_sites)
+    expected_cnts = (4**ddg_array.motif_len)*partition_fn
+    curr_occupancies = np.ones(len(energies), dtype='float32')
+    denominators = []
+    for rnd, chem_affinity in enumerate(chem_affinities):
+        curr_occupancies *= logistic(-(-chem_affinity+energies)/(R*T))
+        denominators.append( np.log((expected_cnts*curr_occupancies).sum()))
+    return denominators
+
 def calc_log_lhd_factory(rnds_and_coded_seqs):
     n_bind_sites = rnds_and_coded_seqs[0].get_value().shape[1]
     
@@ -191,16 +251,6 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         calc_energy_fns.append(
             theano.function([sym_e], x.dot(sym_e).min(1)) )
     
-    sym_cons_dg = TT.scalar('cons_dg')
-    sym_chem_pot = TT.scalar('chem_pot')
-    sym_ddg = TT.vector('ddg')
-    
-    calc_occ = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
-        TT.log(1.0 + TT.exp(
-            (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
-    )
-
-        
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      rnds_and_chem_affinities):
@@ -211,31 +261,13 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
         rnds_and_seq_ddgs = []
         for rnd, calc_energy in enumerate(calc_energy_fns):
             rnds_and_seq_ddgs.append( calc_energy(ddg_array) )
-        # the occupancies of each rnd are a function of the chemical affinity of
-        # the round in which there were sequenced and each previous round. We 
-        # loop through each sequenced round, and calculate the numerator of the log lhd 
-        numerators = []
-        for sequencing_rnd, seq_ddgs in enumerate(rnds_and_seq_ddgs):
-            chem_affinity = rnds_and_chem_affinities[0]
-            #numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
-            numerator = calc_occ(chem_affinity, ref_energy, seq_ddgs)
-            for rnd in xrange(1, sequencing_rnd+1):
-                #numerator += np.log(
-                #    logistic(-(-rnds_and_chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
-                numerator += calc_occ(
-                    rnds_and_chem_affinities[rnd], ref_energy, seq_ddgs)
-            numerators.append(numerator)
+        # calculate the numerators
+        numerators = calc_lhd_numerators(
+            rnds_and_seq_ddgs, rnds_and_chem_affinities, ref_energy)
 
-        # now calculate the denominator (the normalizing factor for each round)
-        # calculate the expected bin counts in each energy level for round 0
-        energies, partition_fn = est_partition_fn(
-            ref_energy, ddg_array, n_bind_sites)
-        expected_cnts = (4**ddg_array.motif_len)*partition_fn
-        curr_occupancies = np.ones(len(energies), dtype='float32')
-        denominators = []
-        for rnd, chem_affinity in enumerate(rnds_and_chem_affinities):
-            curr_occupancies *= logistic(-(-chem_affinity+energies)/(R*T))
-            denominators.append( np.log((expected_cnts*curr_occupancies).sum()))
+        # calcualte the denominators
+        denominators = calc_lhd_denominators(
+            ref_energy, ddg_array, rnds_and_chem_affinities, n_bind_sites)
 
         lhd = 0.0
         for rnd_num, rnd_denom, rnd_seq_ddgs in izip(
@@ -321,7 +353,6 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array,
                    options={'disp': False, 
                             'maxiter': 50000, 
                             'xtol': 1e-5, 'ftol': 1e-6} )
-    print "HERE", f(res.x)
     if lhd_0 < f(res.x):
         return x0, f(res.x)
     return res.x.astype('float32').view(DeltaDeltaGArray), -f(res.x)
@@ -394,6 +425,7 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
         rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
         return -rv
 
+    prev_inner_lhd = 0
     while True:
         initial_lhd = -f_ref_energy(0)
         res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=1e-3)  
@@ -415,6 +447,8 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             print "Min:", ddg_array.calc_min_energy(ref_energy)
             print ddg_array.calc_base_contributions().round(2)
             print res.fun
+            print res.fun - prev_inner_lhd
+            prev_inner_lhd = res.fun
         #break
         if initial_lhd > -f_ref_energy(0) - 1e-6: break
         #print i, x0, res
@@ -494,7 +528,7 @@ def generate_random_sequences( num, seq_len, bind_site_len  ):
     return parse_sequence_list( seqs, bind_site_len )
 
 def simulate_reads( motif,
-                    size_sizes=(1000, 1000, 1000, 1000),
+                    sim_sizes=(1000, 1000, 1000, 1000),
                     pool_size = 100000):
     ref_energy, ddg_array = motif.build_ddg_array()
     chem_pots = est_chem_potentials(
@@ -512,6 +546,7 @@ def simulate_reads( motif,
             p=occs/occs.sum(), replace=True)
         seqs = current_pool[np.array(seq_indices, dtype=int)]
         seq_occs = occs[np.array(seq_indices, dtype=int)]
+
         with open("test_%s_rnd_%i.txt" % (motif.name, rnd), "w") as ofp:
             for seq in seqs:
                 print >> ofp, "".join('ACGT'[x] for x in seq)
@@ -626,22 +661,142 @@ def find_pwm(rnds_and_seqs, bs_len):
     pwm = find_pwm_from_starting_alignment(rnds_and_seqs[0], counts)
     return pwm
 
-def main():
-    #motif_fname = sys.argv[1]
-    #motif = load_motifs(motif_fname).values()[0][0]
-    #ref_energy, ddg_array = motif.build_ddg_array()
-    bs_len = 6
-    factor_name = "TEST"
+def build_random_read_energies_pool(pool_size, read_len, ddg_array, ref_energy):
+    seqs = []
+    energies = np.zeros(pool_size, dtype='float32')
+    for i in xrange(pool_size):
+        if i%10000 == 0: print "Bootstrapped %i reads." % i
+        seq = np.random.randint(4, size=read_len)
+        seqs.append(seq)
+        coded_seq = code_sequence(seq, ddg_array.motif_len)
+        energy = 1e100
+        for subseq in coded_seq:
+            energy = min(energy, ddg_array[subseq].sum())
+        energies[i] = energy
+    return energies, seqs
+
+def bootstrap_lhd_numerators(initial_energy_pool, sim_sizes, 
+                             chem_pots, ref_energy, ddg_array):
+    curr_energy_pool = initial_energy_pool
+
+    numerators = []
+    if CMP_LHD_NUMERATOR_CALCS: 
+        rnd_seq_ddgs = []
+    for rnd, (sim_size, chem_pot) in enumerate(izip(sim_sizes, chem_pots)):
+        ### update the bound sequence pool
+        # calculate the occupancies 
+        occs = calc_occ(curr_energy_pool, ref_energy, chem_pot)
+        if isinstance(occs, float):
+            occs = np.array([occs,])
+        # cast to a double, and re-normalize to avoid errors in np.random.choice
+        ps = np.array(occs/occs.sum(), dtype='double')
+        ps = ps/ps.sum()
+        seq_indices = np.random.choice(
+            len(curr_energy_pool), size=sim_size,
+            p=ps, replace=True)
+        selected_energies = curr_energy_pool[seq_indices]
+        if CMP_LHD_NUMERATOR_CALCS: 
+            rnd_seq_ddgs.append(selected_energies)
+        # calculate the addition to the lhd
+        numerator = 0
+        for inner_rnd in xrange(rnd+1):
+            numerator += calc_rnd_lhd_num(
+                chem_pots[inner_rnd].astype('float32'), 
+                ref_energy.astype('float32'), 
+                selected_energies)
+        numerators.append(numerator)
+
+        seq_indices = np.random.choice(
+            len(curr_energy_pool), size=len(curr_energy_pool),
+            p=ps, replace=True)
+        curr_energy_pool = curr_energy_pool[seq_indices]
+
+
+    if CMP_LHD_NUMERATOR_CALCS:
+        print "NUMERATORS", "+"*10, numerators
+        print chem_pots
+        print ref_energy
+        print "ENERGIES", rnd_seq_ddgs
+        numerators = calc_lhd_numerators(
+            rnd_seq_ddgs, chem_pots.astype('float32'), ref_energy) 
+        print "NUMERATORS", "="*10, numerators
     
-    rnds_and_seqs = load_sequences(sys.argv[1:])
+    return sum(numerators)
+
+def bootstrap_lhds(read_len,
+                   ddg_array, ref_energy, 
+                   sim_sizes,
+                   pool_size=10000 ):
+    bs_len = ddg_array.motif_len
+    # multiply vby two for the reverse complements
+    n_bind_sites = 2*(read_len-bs_len+1)
+    chem_pots = est_chem_potentials(
+        ddg_array, ref_energy, 
+        dna_conc, prot_conc, 
+        n_bind_sites,
+        len(sim_sizes))
+
+    # calculate the normalizing constant. This is only a function of the 
+    # energy model and chemical affinities, so we only need to do this once
+    # for all of the simulated samples
+    denominators = calc_lhd_denominators(
+        ref_energy, ddg_array, chem_pots, n_bind_sites)
+    normalizing_constant = sum(cnt*denom for cnt, denom 
+                               in izip(sim_sizes, denominators))
+
+    # simualte the numerators. First we build random sequences, and then 
+    # calculate their energies. This pool will remain the same throughout
+    # the simulations (to avoid additional variance from the initial pool
+    # sampling - the real pool is much larger than we can simualte so we
+    # don't want the additional variance from re-sampling every bootstrap )
+    initial_energy_pool, initial_pool_seqs = build_random_read_energies_pool(
+        pool_size, read_len, ddg_array, ref_energy)
+    lhds = []
+    for i in xrange(100):
+        numerator = bootstrap_lhd_numerators(
+            initial_energy_pool, sim_sizes, 
+            chem_pots, ref_energy, ddg_array)
+        lhds.append( numerator - normalizing_constant )
+    return lhds, initial_pool_seqs
+
+def main():
+    motif_fname = sys.argv[1]
+    motif = load_motifs(motif_fname).values()[0][0]
+    ref_energy, ddg_array = motif.build_ddg_array()
+
+    pool_size = 10000
+    sim_sizes = [1000,1000,1000,1000]
+
+    read_len = 6
+    bs_len = ddg_array.motif_len
+    lhd, seqs = bootstrap_lhds(
+        read_len, ddg_array, ref_energy, 
+        sim_sizes = sim_sizes,
+        pool_size=pool_size )
+    print "LHD", lhd
+    #simulate_reads( motif,
+    #                sim_sizes=sim_sizes,
+    #                pool_size = pool_size)
+    factor_name = "TEST"
+    rnds_and_seqs = load_sequences(sys.argv[2:])
     coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
                             for seqs in rnds_and_seqs ]
     print "Finished coding sequences"
     n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
 
-    pwm = find_pwm(rnds_and_seqs, bs_len)
-    motif = Motif("aligned_%imer" % bs_len, factor_name, pwm)
-    ref_energy, ddg_array = motif.build_ddg_array()
+    chem_pots = est_chem_potentials(
+        ddg_array, ref_energy, 
+        dna_conc, prot_conc, 
+        n_bind_sites,
+        len(rnds_and_seqs))
+    #print "REF ENERGY:", ref_energy
+    #print "CHEM POT:", chem_pots
+    calc_log_lhd = calc_log_lhd_factory(coded_rnds_and_seqs)
+    print calc_log_lhd(ref_energy, ddg_array, chem_pots)
+    return
+    #pwm = find_pwm(rnds_and_seqs, bs_len)
+    #motif = Motif("aligned_%imer" % bs_len, factor_name, pwm)
+    #ref_energy, ddg_array = motif.build_ddg_array()
     
     matrices = []
     x = ddg_array.copy()
