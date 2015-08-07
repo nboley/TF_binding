@@ -186,6 +186,22 @@ class Motif():
             ref_energy += base_energies[0]
         return ref_energy, energies.view(DeltaDeltaGArray)
 
+    def update_energy_array(self, ddg_array, ref_energy):
+        assert self.motif_data.shape == ddg_array.shape
+        self.motif_data = ddg_array.copy()
+        self.consensus_energy = ref_energy
+        # normalize so that the consensus base is zero at each position 
+        for base_pos, base_data in enumerate(self.motif_data):
+            min_energy = base_data.min()
+            self.motif_data[base_pos,:] -= min_energy
+            self.consensus_energy -= min_energy
+        # update the mean energy
+        self.mean_energy = self.consensus_energy + self.motif_data.mean()
+        return
+    
+    def __str__():
+        pass
+
     def __init__(self, name, factor, pwm):
         self.name = name
         self.factor = factor

@@ -1,6 +1,7 @@
 import os, sys
 import math
-from motif_tools import load_motifs, logistic, R, T, DeltaDeltaGArray, Motif
+from motif_tools import (
+    load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
 
 from itertools import product, izip, chain
 
@@ -27,6 +28,8 @@ VERBOSE = False
 DEBUG = False
 CMP_LHD_NUMERATOR_CALCS = False
 RANDOM_POOL_SIZE = None
+CONVERGENCE_MAX_LHD_CHANGE = 1e-10
+MAX_NUM_ITER = 100000
 
 """
 SELEX and massively parallel sequencing  
@@ -152,7 +155,7 @@ def load_fastq(fp):
             seqs.append(line.strip().upper())
     return seqs
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
     # make sure the number of bins is a power of two. This is two aboid extra
     # padding during the fft convolution
     if (n_bins & (n_bins-1)):
@@ -421,7 +424,6 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             ddg_array, ref_energy, dna_conc, prot_conc,
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
-        #print rv
         ddg_array[3*base_pos:3*(base_pos+1)] -= x
         return -rv
 
@@ -432,35 +434,67 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
         rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
         return -rv
 
-    prev_inner_lhd = 0
+    iteration_number = 0
+    prev_lhd = -1e100
     tol = 1e-2
-    while tol > 1e-10:
-        initial_lhd = -f_ref_energy(0)
-        res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=tol)  
-        ref_energy += res.x
-        for base_pos in xrange(ddg_array.motif_len):
-            x0 = np.zeros(3, dtype=float)
-            res = minimize(
-                f_ddg, x0, args=[base_pos, ref_energy], 
-                method='Powell', tol=1e-2)
-            ddg_array[3*base_pos:3*(base_pos+1)] += res.x
-            print "="*50
-            print base_pos, res.x
-            print ddg_array.consensus_seq()
-            print "Ref:", ref_energy
-            print est_chem_potentials(
-                ddg_array, ref_energy, dna_conc, prot_conc,
-                n_bind_sites, len(rnds_and_seqs))
-            print "Mean:", ref_energy + ddg_array.sum()/3
-            print "Min:", ddg_array.calc_min_energy(ref_energy)
-            print ddg_array.calc_base_contributions().round(2)
-            print res.fun
-            print res.fun - prev_inner_lhd
-            prev_inner_lhd = res.fun
+    # initialize the lhd changes to a large number so each base is updated
+    # once in the first round
+    lhd_changes = 1e10*np.ones(ddg_array.motif_len)
+    # until the minimum update tolerance is below the stop iteration threshold  
+    while tol > CONVERGENCE_MAX_LHD_CHANGE and iteration_number < MAX_NUM_ITER:
+        iteration_number +=1 
+        # avoid a divide by zero when calculating the update weights
+        lhd_changes += tol/100
+        # find the base position to update next. We want to focus on the bases
+        # that are givng the largest updates, but we also want the process to be
+        # somewhat to avoid shifting the motif in a particular direction, so we 
+        # choose the update base proportional to the update weights in the 
+        # previous round
+        base_index = np.random.choice(
+            np.arange(ddg_array.motif_len),
+            size=1,
+            p=lhd_changes/lhd_changes.sum() )
+        print "="*50
+        print "Minimizing pos %i at tolerance %.e" % (base_index+1, tol)
+        print "Weights:", (lhd_changes/lhd_changes.sum()).round(2)
+        print "Prev lhd Changes:", '  '.join("%.2e" % x for x in lhd_changes)
+
+        #res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=tol)  
+        #ref_energy += res.x
+
+        res = minimize(
+            f_ddg, np.zeros(3, dtype=float),
+            args=[base_index, ref_energy], 
+            method='Powell', tol=1e-2)
+        new_lhd = -res.fun
+        if new_lhd > prev_lhd:
+            ddg_array[3*base_index:3*(base_index+1)] += res.x
+        else:
+            print "STEP DIDNT IMPROVE THE LHD"
+            new_lhd = prev_lhd
+
+        ## print debugging information
+        print "Consensus:", ddg_array.consensus_seq()        
+        print "Change:", res.x
+        print "Ref:", ref_energy
+        print "Chem Pots:", est_chem_potentials(
+            ddg_array, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        print "Mean:", ref_energy + ddg_array.sum()/3
+        print "Min:", ddg_array.calc_min_energy(ref_energy)
+        print ddg_array.calc_base_contributions().round(2)
+        print "New Lhd", new_lhd
+        lhd_changes[base_index] = new_lhd - prev_lhd
+        print "Lhd Change", new_lhd - prev_lhd
+        prev_lhd = new_lhd
+
         # if the change has been small enough, update the search tolerance
-        if initial_lhd > -f_ref_energy(0) - tol: 
+        if lhd_changes.max() < tol: 
+            # increase the lhd changes to make sure that every base is explored 
+            # during before reducing the tolerance again 
+            lhd_changes += tol
             tol /= 10
-    
+
     return ddg_array, ref_energy, -f_ref_energy(0)
 
 def estimate_chem_pots_w_lhd(rnds_and_seqs, ddg_array, 
@@ -670,18 +704,16 @@ def find_pwm(rnds_and_seqs, bs_len):
     return pwm
 
 def build_random_read_energies_pool(pool_size, read_len, ddg_array, ref_energy):
-    seqs = []
     energies = np.zeros(pool_size, dtype='float32')
     for i in xrange(pool_size):
         if i%10000 == 0: print "Bootstrapped %i reads." % i
         seq = np.random.randint(4, size=read_len)
-        seqs.append(seq)
         coded_seq = code_sequence(seq, ddg_array.motif_len)
         energy = 1e100
         for subseq in coded_seq:
             energy = min(energy, ddg_array[subseq].sum())
         energies[i] = energy
-    return energies, seqs
+    return energies
 
 def bootstrap_lhd_numerators(initial_energy_pool, sim_sizes, 
                              chem_pots, ref_energy, ddg_array):
@@ -757,7 +789,7 @@ def bootstrap_lhds(read_len,
     # the simulations (to avoid additional variance from the initial pool
     # sampling - the real pool is much larger than we can simualte so we
     # don't want the additional variance from re-sampling every bootstrap )
-    initial_energy_pool, initial_pool_seqs = build_random_read_energies_pool(
+    initial_energy_pool = build_random_read_energies_pool(
         pool_size, read_len, ddg_array, ref_energy)
     lhds = []
     for i in xrange(100):
@@ -765,7 +797,35 @@ def bootstrap_lhds(read_len,
             initial_energy_pool, sim_sizes, 
             chem_pots, ref_energy, ddg_array)
         lhds.append( numerator - normalizing_constant )
-    return lhds, initial_pool_seqs
+    return lhds
+
+def load_energy_data(fname):
+    def load_energy(mo_text):
+        lines = mo_text.strip().split("\n")
+        motif_name, consensus_energy = lines[0].split()
+        assert motif_name.endswith('.ENERGY')
+        consensus_energy = float(consensus_energy)
+        ddg_array = np.zeros((len(lines)-1,4))
+        for pos, line in enumerate(lines[1:]):
+            energies = np.array([float(x) for x in line.strip().split()[1:]])
+            ddg_array[pos,:] = energies
+        return consensus_energy, ddg_array
+    
+    with open(fname) as fp:
+        models = fp.read().strip().split(">")
+        # make sure there's a leading >
+        assert models[0] == ''
+        models = models[1:]
+        assert len(models) == 2
+        pwm_model_text = next(mo for mo in models if ".PWM" in mo.split("\n")[0])
+        motif = load_motif_from_text(pwm_model_text)
+        models.remove(pwm_model_text)
+        assert len(models) == 1
+        energy_mo_text = models[0]
+        consensus_energy, ddg_array = load_energy(energy_mo_text)
+        motif.update_energy_array(ddg_array, consensus_energy)
+    
+    return motif
 
 def parse_arguments():
     import argparse
@@ -785,6 +845,11 @@ def parse_arguments():
     parser.add_argument( '--initial-binding-site-len', type=int, default=6,
         help='The starting length of the binding site (this will grow)')
 
+    parser.add_argument( '--lhd-covergence-eps', type=float,
+                         help='Convergence tolerance for lhd change.')
+    parser.add_argument( '--max-iter', type=float, default=1e5,
+                         help='Maximum number of optimization iterations.')
+
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
     parser.add_argument( '--random-seq-pool-size', type=float, default=1e5,
@@ -801,7 +866,9 @@ def parse_arguments():
     global VERBOSE
     VERBOSE = args.verbose
     global RANDOM_POOL_SIZE
-    RANDOM_POOL_SIZE = args.random_seq_pool_size
+    RANDOM_POOL_SIZE = int(args.random_seq_pool_size)
+    global MAX_NUM_ITER
+    MAX_NUM_ITER = int(args.max_iter)
     
     if args.random_seed != None:
         np.random.seed(args.random_seed)
@@ -815,8 +882,11 @@ def parse_arguments():
         motifs = load_motifs(args.starting_pwm)
         assert len(motifs) == 1, "Motif file contains multiple motifs"
         motif = motifs.values()[0]
+        args.starting_pwm.close()
     elif args.starting_energy_model != None:
-        raise NotImplementedError, "Havent implemented energy start yet"
+        log("Loading energy data", 'VERBOSE')
+        motif = load_energy_data(args.starting_energy_model.name)
+        args.starting_energy_model.close()
     else:
         log("Initializing starting location from %imer search" % args.initial_binding_site_len, 
             'VERBOSE')
@@ -832,33 +902,26 @@ def main():
     motif, rnds_and_seqs = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
     bs_len = ddg_array.motif_len
+    log("Coding sequences", 'VERBOSE')
     coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
                             for seqs in rnds_and_seqs ]
 
     ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
         coded_rnds_and_seqs, ddg_array.copy(), ref_energy)
-    print ddg_array_hat.consensus_seq()
-    print ref_energy_hat
-    print ddg_array_hat.calc_min_energy(ref_energy)
-    print ddg_array_hat.calc_base_contributions()
-    print lhd_hat
-
+    
     # XXX this is messy, should be packaged into an object
     n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
     sim_sizes = [len(seqs) for seqs in rnds_and_seqs]
-    read_len = 20
-    lhd, seqs = bootstrap_lhds(
-        read_len, x, ref_energy, 
+    read_len = len(rnds_and_seqs[0][0])
+    bs_lhds = bootstrap_lhds(
+        read_len, ddg_array_hat, ref_energy_hat, 
         sim_sizes = sim_sizes,
-        pool_size=pool_size )
-    print "MEAN", np.array(lhd).mean(), "SD", np.array(lhd).std()
-    print calc_log_lhd(ref_energy, ddg_array, chem_pots)
-
-    
-
+        pool_size=RANDOM_POOL_SIZE )
+    print "BS MEAN", np.array(bs_lhds).mean(), "SD", np.array(bs_lhds).std()
+    print lhd_hat
         
-    with open(factor_name + ".SELEX.txt", "w") as ofp:
-        write_output(motif, x, ref_energy, ofp)
+    with open(motif.name + ".SELEX.txt", "w") as ofp:
+        write_output(motif, ddg_array_hat, ref_energy_hat, ofp)
     
     # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32
     return
