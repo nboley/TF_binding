@@ -24,8 +24,9 @@ import warnings
 warnings.simplefilter("ignore")
 
 VERBOSE = False
-CONSIDER_RANDOM_START = False
+DEBUG = False
 CMP_LHD_NUMERATOR_CALCS = False
+RANDOM_POOL_SIZE = None
 
 """
 SELEX and massively parallel sequencing  
@@ -79,6 +80,12 @@ prot_conc = dna_conc/25 # mol/L (should be 25)
 
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
+
+def log(msg, level='NORMAL'):
+    assert level in ('NORMAL', 'VERBOSE', 'DEBUG')
+    if level == 'DEBUG' and not DEBUG: return 
+    if level == 'VERBOSE' and not VERBOSE: return 
+    print >> sys.stderr, msg
 
 def base_map(base):
     if base == 'N':
@@ -426,9 +433,10 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
         return -rv
 
     prev_inner_lhd = 0
-    while True:
+    tol = 1e-2
+    while tol > 1e-10:
         initial_lhd = -f_ref_energy(0)
-        res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=1e-3)  
+        res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=tol)  
         ref_energy += res.x
         for base_pos in xrange(ddg_array.motif_len):
             x0 = np.zeros(3, dtype=float)
@@ -449,9 +457,9 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             print res.fun
             print res.fun - prev_inner_lhd
             prev_inner_lhd = res.fun
-        #break
-        if initial_lhd > -f_ref_energy(0) - 1e-6: break
-        #print i, x0, res
+        # if the change has been small enough, update the search tolerance
+        if initial_lhd > -f_ref_energy(0) - tol: 
+            tol /= 10
     
     return ddg_array, ref_energy, -f_ref_energy(0)
 
@@ -504,8 +512,8 @@ def est_chem_potential(
     def f(u):
         sum_terms = dna_conc*partition_fn/(1+np.exp(energy_grid-u))
         return prot_conc - math.exp(u) - sum_terms.sum()
-    min_u = -100
-    max_u = math.log(prot_conc)
+    min_u = -1000
+    max_u = 100 + math.log(prot_conc)
     rv = brentq(f, min_u, max_u, xtol=1e-4)
     return rv
 
@@ -573,7 +581,6 @@ def load_sequences(fnames):
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
             rnds_and_seqs.append( loader(fp) )
-    print "Finished loading sequences"
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -653,6 +660,7 @@ def find_pwm_from_starting_alignment(seqs, counts):
 
 def find_pwm(rnds_and_seqs, bs_len):
     consensus = find_consensus_bind_site(rnds_and_seqs[-1], bs_len)
+    log("Found consensus %imer '%s'" % (bs_len, consensus))
     counts = np.zeros((4, bs_len))
     for pos, base in enumerate(consensus): 
         counts[base_map(base), pos] += 1000
@@ -759,56 +767,95 @@ def bootstrap_lhds(read_len,
         lhds.append( numerator - normalizing_constant )
     return lhds, initial_pool_seqs
 
+def parse_arguments():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Estimate energy models from a SELEX experiment.')
+
+    parser.add_argument( '--selex-files', nargs='+', type=file, required=True,
+                         help='Files containing SELEX reads.')
+
+    parser.add_argument( '--background-sequence', type=file, 
+        help='File containing reads sequenced from round 0.')
+
+    parser.add_argument( '--starting-pwm', type=file,
+                         help='A PWM to start from.')
+    parser.add_argument( '--starting-energy-model', type=file,
+                         help='An energy model to start from.')
+    parser.add_argument( '--initial-binding-site-len', type=int, default=6,
+        help='The starting length of the binding site (this will grow)')
+
+    parser.add_argument( '--random-seed', type=int,
+                         help='Set the random number generator seed.')
+    parser.add_argument( '--random-seq-pool-size', type=float, default=1e5,
+        help='The random pool size for the bootstrap.')
+
+
+    parser.add_argument( '--verbose', default=False, action='store_true',
+                         help='Print extra status information.')
+    
+    args = parser.parse_args()
+    assert not (args.starting_pwm and args.starting_energy_model), \
+            "Can not set both --starting-pwm and --starting-energy_model"
+
+    global VERBOSE
+    VERBOSE = args.verbose
+    global RANDOM_POOL_SIZE
+    RANDOM_POOL_SIZE = args.random_seq_pool_size
+    
+    if args.random_seed != None:
+        np.random.seed(args.random_seed)
+    
+
+    log("Loading sequences", 'VERBOSE')
+    rnds_and_seqs = load_sequences(x.name for x in args.selex_files)
+
+    if args.starting_pwm != None:
+        log("Loading PWM starting location", 'VERBOSE')
+        motifs = load_motifs(args.starting_pwm)
+        assert len(motifs) == 1, "Motif file contains multiple motifs"
+        motif = motifs.values()[0]
+    elif args.starting_energy_model != None:
+        raise NotImplementedError, "Havent implemented energy start yet"
+    else:
+        log("Initializing starting location from %imer search" % args.initial_binding_site_len, 
+            'VERBOSE')
+        factor_name = 'TEST'
+        bs_len = args.initial_binding_site_len
+        pwm = find_pwm(rnds_and_seqs, args.initial_binding_site_len)
+        motif = Motif("aligned_%imer" % args.initial_binding_site_len, 
+                      factor_name, pwm)
+    
+    return motif, rnds_and_seqs
+
 def main():
-    motif_fname = sys.argv[1]
-    motif = load_motifs(motif_fname).values()[0][0]
+    motif, rnds_and_seqs = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
-
-    pool_size = 10000
-    sim_sizes = [1000,1000,1000,1000]
-
-    read_len = 6
     bs_len = ddg_array.motif_len
-    lhd, seqs = bootstrap_lhds(
-        read_len, ddg_array, ref_energy, 
-        sim_sizes = sim_sizes,
-        pool_size=pool_size )
-    print "LHD", lhd
-    #simulate_reads( motif,
-    #                sim_sizes=sim_sizes,
-    #                pool_size = pool_size)
-    factor_name = "TEST"
-    rnds_and_seqs = load_sequences(sys.argv[2:])
     coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
                             for seqs in rnds_and_seqs ]
-    print "Finished coding sequences"
-    n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
 
-    chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, 
-        dna_conc, prot_conc, 
-        n_bind_sites,
-        len(rnds_and_seqs))
-    #print "REF ENERGY:", ref_energy
-    #print "CHEM POT:", chem_pots
-    calc_log_lhd = calc_log_lhd_factory(coded_rnds_and_seqs)
+    ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
+        coded_rnds_and_seqs, ddg_array.copy(), ref_energy)
+    print ddg_array_hat.consensus_seq()
+    print ref_energy_hat
+    print ddg_array_hat.calc_min_energy(ref_energy)
+    print ddg_array_hat.calc_base_contributions()
+    print lhd_hat
+
+    # XXX this is messy, should be packaged into an object
+    n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
+    sim_sizes = [len(seqs) for seqs in rnds_and_seqs]
+    read_len = 20
+    lhd, seqs = bootstrap_lhds(
+        read_len, x, ref_energy, 
+        sim_sizes = sim_sizes,
+        pool_size=pool_size )
+    print "MEAN", np.array(lhd).mean(), "SD", np.array(lhd).std()
     print calc_log_lhd(ref_energy, ddg_array, chem_pots)
-    return
-    #pwm = find_pwm(rnds_and_seqs, bs_len)
-    #motif = Motif("aligned_%imer" % bs_len, factor_name, pwm)
-    #ref_energy, ddg_array = motif.build_ddg_array()
+
     
-    matrices = []
-    x = ddg_array.copy()
-    x, ref_energy, lhd = estimate_dg_matrix(
-        coded_rnds_and_seqs, x, ref_energy)
-    print x.consensus_seq()
-    print ref_energy
-    print x.calc_min_energy(ref_energy)
-    print x.calc_base_contributions()
-    print lhd
-    #raw_input()
-    matrices.append(x.copy())
+
         
     with open(factor_name + ".SELEX.txt", "w") as ofp:
         write_output(motif, x, ref_energy, ofp)

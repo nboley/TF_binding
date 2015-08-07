@@ -3,7 +3,6 @@ import sys
 import math
 
 import numpy
-numpy.random.seed(0)
 
 from scipy.optimize import brute, bisect
 
@@ -116,7 +115,7 @@ class Motif():
             score = self.consensus_energy
             RC_score = self.consensus_energy
             if 'N' in subseq:
-                yield offset, self.mean_energy
+                yield offset, False, self.mean_energy
                 continue
             for i, base in enumerate(subseq):
                 if isinstance(subseq, str): base = base_map[base]
