@@ -28,8 +28,14 @@ VERBOSE = False
 DEBUG = False
 CMP_LHD_NUMERATOR_CALCS = False
 RANDOM_POOL_SIZE = None
-CONVERGENCE_MAX_LHD_CHANGE = 1e-10
-MAX_NUM_ITER = 100000
+CONVERGENCE_MAX_LHD_CHANGE = None
+MAX_NUM_ITER = None
+
+EXPECTED_MEAN_ENERGY = -3.0
+CONSTRAIN_MEAN_ENERGY = True
+
+CONSTRAIN_BASE_ENERGY_DIFF = True
+MAX_BASE_ENERGY_DIFF = 8.0
 
 """
 SELEX and massively parallel sequencing  
@@ -219,13 +225,13 @@ def calc_lhd_numerators(
     numerators = []
     for sequencing_rnd, seq_ddgs in enumerate(seq_ddgs):
         chem_affinity = chem_affinities[0]
-        numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
-        #numerator = calc_rnd_lhd_num(chem_affinity, ref_energy, seq_ddgs)
+        #numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
+        numerator = calc_rnd_lhd_num(chem_affinity, ref_energy, seq_ddgs)
         for rnd in xrange(1, sequencing_rnd+1):
-            numerator += np.log(
-                logistic(-(-chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
-            #numerator += calc_rnd_lhd_num(
-            #    chem_affinities[rnd], ref_energy, seq_ddgs)
+            #numerator += np.log(
+            #    logistic(-(-chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
+            numerator += calc_rnd_lhd_num(
+                chem_affinities[rnd], ref_energy, seq_ddgs)
         numerators.append(numerator)
     
     if CMP_LHD_NUMERATOR_CALCS:
@@ -424,6 +430,19 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             ddg_array, ref_energy, dna_conc, prot_conc,
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
+        
+        # Penalize models with non-physical mean affinities
+        new_mean_energy = ref_energy + ddg_array.sum()/3
+        if CONSTRAIN_MEAN_ENERGY or new_mean_energy > EXPECTED_MEAN_ENERGY:
+            rv -= abs(new_mean_energy - EXPECTED_MEAN_ENERGY)**2
+        
+        # Penalize non-physical differences in base affinities
+        if CONSTRAIN_BASE_ENERGY_DIFF:
+            base_energy_diff = (
+                max(0, ddg_array[3*base_pos:3*(base_pos+1)].max())
+                - min(0, ddg_array[3*base_pos:3*(base_pos+1)].min()))
+            rv -= (base_energy_diff)**2
+        
         ddg_array[3*base_pos:3*(base_pos+1)] -= x
         return -rv
 
@@ -432,46 +451,61 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             ddg_array, ref_energy+x, dna_conc, prot_conc,
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
+
+        # Penalize models with non-physical mean affinities
+        new_mean_energy = ref_energy + x + ddg_array.sum()/3
+        if CONSTRAIN_MEAN_ENERGY or new_mean_energy > EXPECTED_MEAN_ENERGY:
+            rv -= abs(new_mean_energy-EXPECTED_MEAN_ENERGY)**2
+
         return -rv
 
     iteration_number = 0
     prev_lhd = -1e100
     tol = 1e-2
     # initialize the lhd changes to a large number so each base is updated
-    # once in the first round
-    lhd_changes = 1e10*np.ones(ddg_array.motif_len)
+    # once in the first round. We add an additional weight for the ref energy
+    lhd_changes = 1e10*np.ones(ddg_array.motif_len+1)
     # until the minimum update tolerance is below the stop iteration threshold  
     while tol > CONVERGENCE_MAX_LHD_CHANGE and iteration_number < MAX_NUM_ITER:
         iteration_number +=1 
         # avoid a divide by zero when calculating the update weights
-        lhd_changes += tol/100
+        lhd_changes += tol/10
         # find the base position to update next. We want to focus on the bases
         # that are givng the largest updates, but we also want the process to be
         # somewhat to avoid shifting the motif in a particular direction, so we 
         # choose the update base proportional to the update weights in the 
         # previous round
         base_index = np.random.choice(
-            np.arange(ddg_array.motif_len),
+            np.arange(ddg_array.motif_len+1),
             size=1,
             p=lhd_changes/lhd_changes.sum() )
+        #base_index = 6
         print "="*50
         print "Minimizing pos %i at tolerance %.e" % (base_index+1, tol)
         print "Weights:", (lhd_changes/lhd_changes.sum()).round(2)
         print "Prev lhd Changes:", '  '.join("%.2e" % x for x in lhd_changes)
 
-        #res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=tol)  
-        #ref_energy += res.x
-
-        res = minimize(
-            f_ddg, np.zeros(3, dtype=float),
-            args=[base_index, ref_energy], 
-            method='Powell', tol=1e-2)
-        new_lhd = -res.fun
-        if new_lhd > prev_lhd:
-            ddg_array[3*base_index:3*(base_index+1)] += res.x
+        # if this is the ref energy position
+        if base_index == ddg_array.motif_len:
+            res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=tol)  
+            new_lhd = -res.fun
+            if new_lhd > prev_lhd:
+                ref_energy += res.x
+            else:
+                print "STEP DIDNT IMPROVE THE LHD"
+                new_lhd = prev_lhd
+        # otherwise this is a base energy
         else:
-            print "STEP DIDNT IMPROVE THE LHD"
-            new_lhd = prev_lhd
+            res = minimize(
+                f_ddg, np.zeros(3, dtype=float),
+                args=[base_index, ref_energy], 
+                method='Powell', tol=1e-2)
+            new_lhd = -res.fun
+            if new_lhd > prev_lhd:
+                ddg_array[3*base_index:3*(base_index+1)] += res.x
+            else:
+                print "STEP DIDNT IMPROVE THE LHD"
+                new_lhd = prev_lhd
 
         ## print debugging information
         print "Consensus:", ddg_array.consensus_seq()        
@@ -495,7 +529,7 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             lhd_changes += tol
             tol /= 10
 
-    return ddg_array, ref_energy, -f_ref_energy(0)
+    return ddg_array, ref_energy, prev_lhd
 
 def estimate_chem_pots_w_lhd(rnds_and_seqs, ddg_array, 
                              ref_energy, ftol=1e-12):
@@ -614,7 +648,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp) )
+            rnds_and_seqs.append( loader(fp)[:1000] ) # [:1000]
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -845,7 +879,7 @@ def parse_arguments():
     parser.add_argument( '--initial-binding-site-len', type=int, default=6,
         help='The starting length of the binding site (this will grow)')
 
-    parser.add_argument( '--lhd-covergence-eps', type=float,
+    parser.add_argument( '--lhd-convergence-eps', type=float, default=1e-8,
                          help='Convergence tolerance for lhd change.')
     parser.add_argument( '--max-iter', type=float, default=1e5,
                          help='Maximum number of optimization iterations.')
@@ -867,6 +901,8 @@ def parse_arguments():
     VERBOSE = args.verbose
     global RANDOM_POOL_SIZE
     RANDOM_POOL_SIZE = int(args.random_seq_pool_size)
+    global CONVERGENCE_MAX_LHD_CHANGE
+    CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     global MAX_NUM_ITER
     MAX_NUM_ITER = int(args.max_iter)
     
