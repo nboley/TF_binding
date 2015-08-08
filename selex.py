@@ -38,7 +38,7 @@ CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 8.0
 
 # during optimization, how much to account for previous values
-MOMENTUM = 0.5
+MOMENTUM = None
 
 """
 SELEX and massively parallel sequencing  
@@ -464,11 +464,11 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
         return -rv
 
     iteration_number = 0
-    prev_lhd = -1e100
     tol = 1e-2
     # initialize the lhd changes to a large number so each base is updated
     # once in the first round. We add an additional weight for the ref energy
-    lhd_changes = 1e10*np.ones(ddg_array.motif_len+1)
+    prev_lhd = -f_ref_energy(0.0)
+    lhd_changes = 1000*np.ones(ddg_array.motif_len+1)
     weights = lhd_changes/lhd_changes.sum()
     # until the minimum update tolerance is below the stop iteration threshold  
     while tol > CONVERGENCE_MAX_LHD_CHANGE and iteration_number < MAX_NUM_ITER:
@@ -525,14 +525,15 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
         print "Lhd Change", new_lhd - prev_lhd
 
         ## update the base selection weights
+        new_lhd_change = (
+            lhd_changes[base_index]*MOMENTUM + (1-MOMENTUM)*(new_lhd-prev_lhd) )
         # avoid a divide by zero
         lhd_changes += tol/10
         # don't update the base we just updated
         lhd_changes[base_index] = 0.0
         weights = lhd_changes/lhd_changes.sum()
         lhd_changes -= tol/10
-        lhd_changes[base_index] = (
-            lhd_changes[base_index]*(1-MOMENTUM) + MOMENTUM*(new_lhd-prev_lhd))
+        lhd_changes[base_index] = new_lhd_change
         # if we had a successful update, then make sure we try every other entry
         if new_lhd - prev_lhd > tol/100:
             lhd_changes += tol
@@ -904,6 +905,8 @@ def parse_arguments():
                          help='Convergence tolerance for lhd change.')
     parser.add_argument( '--max-iter', type=float, default=1e5,
                          help='Maximum number of optimization iterations.')
+    parser.add_argument( '--momentum', type=float, default=0.1,
+                         help='Optimization tuning param (between 0 and 1).')
 
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
@@ -926,6 +929,9 @@ def parse_arguments():
     CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     global MAX_NUM_ITER
     MAX_NUM_ITER = int(args.max_iter)
+    global MOMENTUM
+    MOMENTUM = args.momentum
+    assert MOMENTUM < 1 and MOMENTUM >= 0
     
     if args.random_seed != None:
         np.random.seed(args.random_seed)
@@ -968,14 +974,15 @@ def main():
     prev_lhd = -1e100
     ddg_array_hat = ddg_array.copy()
     ref_energy_hat = ref_energy
-    while lhd_hat > prev_lhd + 1e-2:
+    while lhd_hat > prev_lhd + 1.0:
         prev_lhd = lhd_hat
         ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
             coded_rnds_and_seqs, ddg_array_hat, ref_energy_hat)
         opt_path.append((ddg_array_hat, ref_energy_hat, lhd_hat))
         for i in xrange(10):
             print "="*100
-        raw_input()
+        #break
+        #raw_input()
     for data in opt_path:
         print data
     
