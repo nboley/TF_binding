@@ -441,7 +441,8 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             base_energy_diff = (
                 max(0, ddg_array[3*base_pos:3*(base_pos+1)].max())
                 - min(0, ddg_array[3*base_pos:3*(base_pos+1)].min()))
-            rv -= (base_energy_diff)**2
+            if base_energy_diff > MAX_BASE_ENERGY_DIFF:
+                rv -= (base_energy_diff)**2
         
         ddg_array[3*base_pos:3*(base_pos+1)] -= x
         return -rv
@@ -499,7 +500,7 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             res = minimize(
                 f_ddg, np.zeros(3, dtype=float),
                 args=[base_index, ref_energy], 
-                method='Powell', tol=1e-2)
+                method='Powell', tol=tol)
             new_lhd = -res.fun
             if new_lhd > prev_lhd:
                 ddg_array[3*base_index:3*(base_index+1)] += res.x
@@ -529,7 +530,12 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
             lhd_changes += tol
             tol /= 10
 
-    return ddg_array, ref_energy, prev_lhd
+    chem_pots = est_chem_potentials(
+        ddg_array, ref_energy, dna_conc, prot_conc,
+        n_bind_sites, len(rnds_and_seqs))
+    new_lhd = calc_log_lhd(ref_energy, ddg_array, chem_pots)
+
+    return ddg_array, ref_energy, new_lhd
 
 def estimate_chem_pots_w_lhd(rnds_and_seqs, ddg_array, 
                              ref_energy, ftol=1e-12):
@@ -648,7 +654,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp)[:1000] ) # [:1000]
+            rnds_and_seqs.append( loader(fp) ) # [:1000]
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -662,7 +668,7 @@ def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
         conc_energies.append(
             energies - energies.min() - consensus_energy/len(base_energies))
         print >> ofp, str(pos) + "\t" + "\t".join(
-            "%.2f" % (x - energies.min()) 
+            "%.6f" % (x - energies.min()) 
             for x in energies )
 
     print >> ofp, ">%s.PWM" % motif.name
