@@ -6,3 +6,21 @@ SELEX.py
 2) clean up motif object to store ddg infromation, etc.
    - write a __str__ method
 3) Get rid of the stupid matrix multiplication, and write a proper cude kernel
+
+Questions:
+How do in-vitro compare to 'known' motifs
+    -What's the correlation with ATAC-seq in the upper rank list
+    -Do multiple motifs improve our prediction accuracy
+    -Write a script to find the best motif
+How do motifs from different factors do
+    -Anshul
+Can we predict the chemical affinity *without* using ChIP-seq?
+
+TODO:
+Find the best base gibbs free energy for each motif
+     - Maximize marginal rank correlation with ChIP-seq  
+Optimize over the best motif
+Use DNASE instead of ATAC-seq 
+Include chromatin marks 
+do a better job with fragment elngth distribution
+   - use mean fragment length from cross correlation analysis
