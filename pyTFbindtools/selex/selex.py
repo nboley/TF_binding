@@ -621,48 +621,6 @@ def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc,
         partition_fn = partition_fn/partition_fn.sum()
     return np.array(chem_pots, dtype='float32')
 
-def generate_random_sequences( num, seq_len, bind_site_len  ):
-    seqs = numpy.random.randint( 0, 4, num*seq_len ).reshape(num, seq_len)
-    return parse_sequence_list( seqs, bind_site_len )
-
-def simulate_reads( motif,
-                    sim_sizes=(1000, 1000, 1000, 1000),
-                    pool_size = 100000):
-    ref_energy, ddg_array = motif.build_ddg_array()
-    chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, dna_conc, prot_conc, 2, len(sim_sizes))
-    current_pool = np.array([np.random.randint(4, size=len(motif))
-                             for i in xrange(pool_size)])
-    rnds_and_seqs = []
-    for rnd, (sim_size, chem_pot) in enumerate(
-            zip(sim_sizes, chem_pots), start=1):
-        occs = np.array([motif.est_occ(chem_pot, seq)
-                         for seq in current_pool])
-        #print current_pool
-        seq_indices = np.random.choice(
-            len(current_pool), size=sim_size,
-            p=occs/occs.sum(), replace=True)
-        seqs = current_pool[np.array(seq_indices, dtype=int)]
-        seq_occs = occs[np.array(seq_indices, dtype=int)]
-
-        with open("test_%s_rnd_%i.txt" % (motif.name, rnd), "w") as ofp:
-            for seq in seqs:
-                print >> ofp, "".join('ACGT'[x] for x in seq)
-        current_pool = seqs[np.random.choice(
-            len(seqs), size=pool_size,
-            p=seq_occs/seq_occs.sum(), replace=True)]
-        print "Finished simulations for round %i" % rnd
-    
-    # sys.argv[2]
-    print "Finished Simulations"
-    print "Ref Energy:", ref_energy
-    print "Chem Pots:", chem_pots
-    print ddg_array
-    print "Waiting to continue..."
-    raw_input()
-    return
-    #return
-
 def load_sequences(fnames):
     rnds_and_seqs = []
     for fname in sorted(fnames,

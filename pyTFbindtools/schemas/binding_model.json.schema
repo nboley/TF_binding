@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "name": "binding_model",
+  "type": "object",
+  "required": ["id", "name"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Primary key in the TFs table in the TF database"
+    },
+    "name": {
+      "type": "string",
+      "description": "Name of the TF"
+    },
+    "pwm": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/row"},
+      "minItems": 1,
+      "definitions": {
+        "row": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"$ref": "#/definitions/weight"},
+        },
+        "weight": {
+            "type": "float",
+            "minimum": 0,
+            "maximum": 1,
+        }
+      }
+    }
+  }
+}
