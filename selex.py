@@ -37,6 +37,9 @@ CONSTRAIN_MEAN_ENERGY = True
 CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 8.0
 
+# during optimization, how much to account for previous values
+MOMENTUM = 0.5
+
 """
 SELEX and massively parallel sequencing  
 Sequence of the DNA ligand is described in Supplemental Table S3. The ligands 
@@ -161,7 +164,7 @@ def load_fastq(fp):
             seqs.append(line.strip().upper())
     return seqs
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
+def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
     # make sure the number of bins is a power of two. This is two aboid extra
     # padding during the fft convolution
     if (n_bins & (n_bins-1)):
@@ -466,24 +469,24 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
     # initialize the lhd changes to a large number so each base is updated
     # once in the first round. We add an additional weight for the ref energy
     lhd_changes = 1e10*np.ones(ddg_array.motif_len+1)
+    weights = lhd_changes/lhd_changes.sum()
     # until the minimum update tolerance is below the stop iteration threshold  
     while tol > CONVERGENCE_MAX_LHD_CHANGE and iteration_number < MAX_NUM_ITER:
         iteration_number +=1 
-        # avoid a divide by zero when calculating the update weights
-        lhd_changes += tol/10
         # find the base position to update next. We want to focus on the bases
         # that are givng the largest updates, but we also want the process to be
         # somewhat to avoid shifting the motif in a particular direction, so we 
         # choose the update base proportional to the update weights in the 
         # previous round
+        print "Weights:", weights.round(2)
         base_index = np.random.choice(
             np.arange(ddg_array.motif_len+1),
             size=1,
-            p=lhd_changes/lhd_changes.sum() )
+            p=weights )
+        
         #base_index = 6
         print "="*50
         print "Minimizing pos %i at tolerance %.e" % (base_index+1, tol)
-        print "Weights:", (lhd_changes/lhd_changes.sum()).round(2)
         print "Prev lhd Changes:", '  '.join("%.2e" % x for x in lhd_changes)
 
         # if this is the ref energy position
@@ -519,16 +522,28 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
         print "Min:", ddg_array.calc_min_energy(ref_energy)
         print ddg_array.calc_base_contributions().round(2)
         print "New Lhd", new_lhd
-        lhd_changes[base_index] = new_lhd - prev_lhd
         print "Lhd Change", new_lhd - prev_lhd
-        prev_lhd = new_lhd
 
+        ## update the base selection weights
+        # avoid a divide by zero
+        lhd_changes += tol/10
+        # don't update the base we just updated
+        lhd_changes[base_index] = 0.0
+        weights = lhd_changes/lhd_changes.sum()
+        lhd_changes -= tol/10
+        lhd_changes[base_index] = (
+            lhd_changes[base_index]*(1-MOMENTUM) + MOMENTUM*(new_lhd-prev_lhd))
+        # if we had a successful update, then make sure we try every other entry
+        if new_lhd - prev_lhd > tol/100:
+            lhd_changes += tol
+        prev_lhd = new_lhd
+        
         # if the change has been small enough, update the search tolerance
         if lhd_changes.max() < tol: 
             # increase the lhd changes to make sure that every base is explored 
             # during before reducing the tolerance again 
             lhd_changes += tol
-            tol /= 10
+            tol /= 100
 
     chem_pots = est_chem_potentials(
         ddg_array, ref_energy, dna_conc, prot_conc,
@@ -661,7 +676,7 @@ def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
     # normalize the array so that the consensus energy is zero
     consensus_energy = ddg_array.calc_min_energy(ref_energy)
     base_energies = ddg_array.calc_base_contributions()
-    print >> ofp, ">%s.ENERGY\t%.2f" % (motif.name, consensus_energy)
+    print >> ofp, ">%s.ENERGY\t%.6f" % (motif.name, consensus_energy)
     #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
     conc_energies = []
     for pos, energies in enumerate(base_energies, start=1):
@@ -948,13 +963,26 @@ def main():
     coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
                             for seqs in rnds_and_seqs ]
 
-    ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
-        coded_rnds_and_seqs, ddg_array.copy(), ref_energy)
+    opt_path = []
+    lhd_hat = -1e50
+    prev_lhd = -1e100
+    ddg_array_hat = ddg_array.copy()
+    ref_energy_hat = ref_energy
+    while lhd_hat > prev_lhd + 1e-2:
+        prev_lhd = lhd_hat
+        ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
+            coded_rnds_and_seqs, ddg_array_hat, ref_energy_hat)
+        opt_path.append((ddg_array_hat, ref_energy_hat, lhd_hat))
+        for i in xrange(10):
+            print "="*100
+        raw_input()
+    for data in opt_path:
+        print data
     
     # XXX this is messy, should be packaged into an object
-    n_bind_sites = coded_rnds_and_seqs[0].get_value().shape[1]
     sim_sizes = [len(seqs) for seqs in rnds_and_seqs]
     read_len = len(rnds_and_seqs[0][0])
+    n_bind_sites = read_len - bs_len + 1
     bs_lhds = bootstrap_lhds(
         read_len, ddg_array_hat, ref_energy_hat, 
         sim_sizes = sim_sizes,

@@ -5,3 +5,4 @@ SELEX.py
    - should validate sequence lengths, and store initial condition information
 2) clean up motif object to store ddg infromation, etc.
    - write a __str__ method
+3) Get rid of the stupid matrix multiplication, and write a proper cude kernel
