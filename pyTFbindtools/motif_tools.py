@@ -199,9 +199,6 @@ class Motif():
         self.mean_energy = self.consensus_energy + self.motif_data.mean()
         return
     
-    def __str__():
-        pass
-
     def __init__(self, name, factor, pwm):
         self.name = name
         self.factor = factor

@@ -3,7 +3,7 @@ import math
 
 import pyTFbindtools
 
-from motif_tools import (
+from ..motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
 
 from itertools import product, izip, chain
@@ -112,8 +112,10 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
     # for each base, add to the polynomial
     for base_i, base_energies in enumerate(
             ddg_array.calc_base_contributions()):
+        # add 1e-12 to avoid rounding errors
         nonzero_bins = np.array(
-            ((base_energies-base_energies.min())/step_size).round(), dtype=int)
+            ((base_energies-base_energies.min()+1e-6)/step_size).round(), 
+            dtype=int)
         new_poly[nonzero_bins] = 0.25
         freq_poly = rfft(new_poly, n_bins)
         new_poly[nonzero_bins] = 0
@@ -306,7 +308,8 @@ def estimate_ddg_matrix(rnds_and_seqs, ddg_array,
         return x0, f(res.x)
     return res.x.astype('float32').view(DeltaDeltaGArray), -f(res.x)
 
-def estimate_dg_matrix_coord(rnds_and_seqs, ddg_array, 
+def estimate_dg_matrix_coord(rnds_and_seqs, ddg_array,
+                             dna_conc, prot_conc,
                              ref_energy, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
@@ -353,8 +356,9 @@ def estimate_dg_matrix_coord(rnds_and_seqs, ddg_array,
     
     return ddg_array, ref_energy, -f_ref_energy(0)
 
-def estimate_dg_matrix(rnds_and_seqs, ddg_array, 
-                        ref_energy, ftol=1e-12):
+def estimate_dg_matrix(rnds_and_seqs, ddg_array, ref_energy,
+                       dna_conc, prot_conc,
+                       ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
     def f_ddg(x, (base_pos, ref_energy)):
@@ -484,6 +488,7 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array,
     return ddg_array, ref_energy, new_lhd
 
 def estimate_chem_pots_w_lhd(rnds_and_seqs, ddg_array, 
+                             dna_conc, prot_conc,
                              ref_energy, ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
@@ -606,7 +611,7 @@ def find_pwm_from_starting_alignment(seqs, counts):
 
 def find_pwm(rnds_and_seqs, bs_len):
     consensus = find_consensus_bind_site(rnds_and_seqs[-1], bs_len)
-    log("Found consensus %imer '%s'" % (bs_len, consensus))
+    pyTFbindtools.log("Found consensus %imer '%s'" % (bs_len, consensus))
     counts = np.zeros((4, bs_len))
     for pos, base in enumerate(consensus): 
         counts[base_map(base), pos] += 1000
@@ -676,17 +681,13 @@ def bootstrap_lhd_numerators(initial_energy_pool, sim_sizes,
     return sum(numerators)
 
 def bootstrap_lhds(read_len,
-                   ddg_array, ref_energy, 
+                   ddg_array, ref_energy,
+                   chem_pots,
                    sim_sizes,
                    pool_size=10000 ):
     bs_len = ddg_array.motif_len
     # multiply vby two for the reverse complements
     n_bind_sites = 2*(read_len-bs_len+1)
-    chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, 
-        dna_conc, prot_conc, 
-        n_bind_sites,
-        len(sim_sizes))
 
     # calculate the normalizing constant. This is only a function of the 
     # energy model and chemical affinities, so we only need to do this once
