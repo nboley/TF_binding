@@ -1,11 +1,6 @@
 import os, sys
 import math
 
-import pyTFbindtools
-
-from ..motif_tools import (
-    load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
-
 from itertools import product, izip, chain
 
 from collections import defaultdict
@@ -21,6 +16,12 @@ from scipy.optimize import (
 from numpy.fft import rfft, irfft
 
 import random
+
+import pyTFbindtools
+
+from ..motif_tools import (
+    load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
+from simulate import simulate_reads
 
 # ignore theano warnings
 import warnings

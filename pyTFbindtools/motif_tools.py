@@ -2,7 +2,7 @@ import sys
 
 import math
 
-import numpy
+import numpy as np
 
 from scipy.optimize import brute, bisect
 
@@ -22,10 +22,37 @@ def logit(x):
 
 def logistic(x):
     try: e_x = math.exp(-x)
-    except: e_x = numpy.exp(-x)
+    except: e_x = np.exp(-x)
     return 1/(1+e_x)
     #return e_x/(1+e_x)
 
+def load_energy_data(fname):
+    def load_energy(mo_text):
+        lines = mo_text.strip().split("\n")
+        motif_name, consensus_energy = lines[0].split()
+        assert motif_name.endswith('.ENERGY')
+        consensus_energy = float(consensus_energy)
+        ddg_array = np.zeros((len(lines)-1,4))
+        for pos, line in enumerate(lines[1:]):
+            energies = np.array([float(x) for x in line.strip().split()[1:]])
+            ddg_array[pos,:] = energies
+        return consensus_energy, ddg_array
+    
+    with open(fname) as fp:
+        models = fp.read().strip().split(">")
+        # make sure there's a leading >
+        assert models[0] == ''
+        models = models[1:]
+        assert len(models) == 2
+        pwm_model_text = next(mo for mo in models if ".PWM" in mo.split("\n")[0])
+        motif = load_motif_from_text(pwm_model_text)
+        models.remove(pwm_model_text)
+        assert len(models) == 1
+        energy_mo_text = models[0]
+        consensus_energy, ddg_array = load_energy(energy_mo_text)
+        motif.update_energy_array(ddg_array, consensus_energy)
+    
+    return motif
 def estimate_unbnd_conc_in_region(
         motif, score_cov, atacseq_cov, chipseq_rd_cov,
         frag_len, max_chemical_affinity_change):
@@ -37,21 +64,21 @@ def estimate_unbnd_conc_in_region(
     atacseq_weights = trimmed_atacseq_cov/trimmed_atacseq_cov.max()
     
     # build the smoothing window
-    sm_window = numpy.ones(frag_len, dtype=float)/frag_len
-    sm_window = numpy.bartlett(2*frag_len)
+    sm_window = np.ones(frag_len, dtype=float)/frag_len
+    sm_window = np.bartlett(2*frag_len)
     sm_window = sm_window/sm_window.sum()
 
     def build_occ(log_tf_conc):
         raw_occ = logistic(log_tf_conc + score_cov/(R*T))
         occ = raw_occ*atacseq_weights
-        smoothed_occ = numpy.convolve(sm_window, occ/occ.sum(), mode='same')
+        smoothed_occ = np.convolve(sm_window, occ/occ.sum(), mode='same')
 
         return raw_occ, occ, smoothed_occ
 
     def calc_lhd(log_tf_conc):
         raw_occ, occ, smoothed_occ = build_occ(-log_tf_conc)
         #diff = (100*smoothed_occ - 100*rd_cov/rd_cov.sum())**2
-        lhd = -(numpy.log(smoothed_occ + 1e-12)*chipseq_rd_cov).sum()
+        lhd = -(np.log(smoothed_occ + 1e-12)*chipseq_rd_cov).sum()
         #print log_tf_conc, diff.sum()
         return lhd
 
@@ -61,14 +88,14 @@ def estimate_unbnd_conc_in_region(
                       
     return -log_tf_conc
 
-class DeltaDeltaGArray(numpy.ndarray):
+class DeltaDeltaGArray(np.ndarray):
     def calc_ddg(self, coded_subseq):
         """Calculate delta delta G for coded_subseq.
         """
         return self[coded_subseq].sum()
 
     def calc_base_contributions(self):
-        base_contribs = numpy.zeros((len(self)/3, 4))
+        base_contribs = np.zeros((len(self)/3, 4))
         base_contribs[:,1:4] = self.reshape((len(self)/3,3))
         return base_contribs
     
@@ -86,7 +113,7 @@ class DeltaDeltaGArray(numpy.ndarray):
 
     def consensus_seq(self):
         base_contribs = self.calc_base_contributions()
-        return "".join( 'ACGT'[x] for x in numpy.argmin(base_contribs, axis=1) )
+        return "".join( 'ACGT'[x] for x in np.argmin(base_contribs, axis=1) )
 
 class Motif():
     def __len__(self):
@@ -142,7 +169,7 @@ class Motif():
     
     def build_occupancy_weights(self):
         for i, weights in enumerate(self.pwm):
-            row = numpy.array([-logit(1e-3/2 + (1-1e-3)*x) 
+            row = np.array([-logit(1e-3/2 + (1-1e-3)*x) 
                                for x in weights])
             min_val = row.min()
             self.consensus_energy += min_val
@@ -179,7 +206,7 @@ class Motif():
 
     def build_ddg_array(self):
         ref_energy = self.consensus_energy
-        energies = numpy.zeros(3*len(self), dtype='float32')
+        energies = np.zeros(3*len(self), dtype='float32')
         for i, base_energies in enumerate(self.motif_data):
             for j, base_energy in enumerate(base_energies[1:]):
                 energies[3*i+j] = base_energy - base_energies[0]
@@ -209,9 +236,9 @@ class Motif():
         self.length = len(pwm)
 
         self.consensus_energy = 0.0
-        self.motif_data = numpy.zeros((self.length, 4), dtype='float32')
+        self.motif_data = np.zeros((self.length, 4), dtype='float32')
                 
-        self.pwm = numpy.array(pwm, dtype='float32')
+        self.pwm = np.array(pwm, dtype='float32')
         
         self.build_occupancy_weights()
         return
@@ -224,10 +251,10 @@ def load_motif_from_text(text):
     factor = name.split("_")[0]
     motif_length = len(lines)-1
 
-    pwm = numpy.zeros((motif_length, 4), dtype=float)
+    pwm = np.zeros((motif_length, 4), dtype=float)
 
     for i, line in enumerate(lines[1:]):
-        pwm_row = numpy.array([
+        pwm_row = np.array([
             float(x) for x in line.split()[1:]])
         pwm[i, :] = pwm_row
 
