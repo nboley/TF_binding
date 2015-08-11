@@ -188,6 +188,8 @@ calc_rnd_lhd_num = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
         (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
 )
 
+
+
 def calc_lhd_numerators(
         seq_ddgs, chem_affinities, ref_energy):
     # the occupancies of each rnd are a function of the chemical affinity of
@@ -618,6 +620,7 @@ def find_consensus_bind_site(seqs, bs_len):
     return consensus
 
 def find_pwm_from_starting_alignment(seqs, counts):
+    assert counts.shape[0] == 4
     bs_len = counts.shape[1]
     
     # code the sequences
@@ -670,17 +673,21 @@ def find_pwm(rnds_and_seqs, bs_len):
     pwm = find_pwm_from_starting_alignment(rnds_and_seqs[0], counts)
     return pwm
 
-def build_random_read_energies_pool(pool_size, read_len, ddg_array, ref_energy):
+def build_random_read_energies_pool(pool_size, read_len, ddg_array, ref_energy, 
+                                    store_seqs=False):
+    seqs = []
     energies = np.zeros(pool_size, dtype='float32')
     for i in xrange(pool_size):
-        if i%10000 == 0: print "Bootstrapped %i reads." % i
+        if i%10000 == 0: 
+            pyTFbindtools.log("Bootstrapped %i reads." % i, level='VERBOSE')
         seq = np.random.randint(4, size=read_len)
+        if store_seqs: seqs.append(seq)
         coded_seq = code_sequence(seq, ddg_array.motif_len)
         energy = 1e100
         for subseq in coded_seq:
             energy = min(energy, ddg_array[subseq].sum())
         energies[i] = energy
-    return energies
+    return energies, seqs
 
 def bootstrap_lhd_numerators(initial_energy_pool, sim_sizes, 
                              chem_pots, ref_energy, ddg_array):
@@ -752,7 +759,7 @@ def bootstrap_lhds(read_len,
     # the simulations (to avoid additional variance from the initial pool
     # sampling - the real pool is much larger than we can simualte so we
     # don't want the additional variance from re-sampling every bootstrap )
-    initial_energy_pool = build_random_read_energies_pool(
+    initial_energy_pool, seqs = build_random_read_energies_pool(
         pool_size, read_len, ddg_array, ref_energy)
     lhds = []
     for i in xrange(100):
