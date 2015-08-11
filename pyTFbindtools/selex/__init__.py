@@ -12,7 +12,7 @@ import theano
 import theano.tensor as TT
 
 from scipy.optimize import (
-    minimize, minimize_scalar, brentq, differential_evolution, anneal )
+    minimize, minimize_scalar, brentq, approx_fprime )
 from numpy.fft import rfft, irfft
 
 import random
@@ -21,7 +21,6 @@ import pyTFbindtools
 
 from ..motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
-from simulate import simulate_reads
 
 # ignore theano warnings
 import warnings
@@ -78,15 +77,13 @@ def code_sequence(seq, motif_len):
 
     return coded_bss
 
-def code_seqs(seqs, motif_len, ON_GPU=True):
+def code_seqs(seqs, motif_len, n_seqs=None, ON_GPU=True):
     """Load SELEX data and encode all the subsequences. 
 
     """
-    subseq0 = code_sequence(seqs[0], motif_len)
-    # find the sequence length
-    seq_len = len(seqs[0])
-    assert all( seq_len == len(seq) for seq in seqs )
-    coded_seqs = np.zeros((len(seqs), len(subseq0), motif_len*3), 
+    if n_seqs == None: n_seqs = len(seqs)
+    subseq0 = code_sequence(next(iter(seqs)), motif_len)
+    coded_seqs = np.zeros((n_seqs, len(subseq0), motif_len*3), 
                           dtype=theano.config.floatX)
     for i, seq in enumerate(seqs):
         for j, subseq in enumerate(code_sequence(seq, motif_len)):
@@ -96,7 +93,7 @@ def code_seqs(seqs, motif_len, ON_GPU=True):
     else:
         return coded_seqs
 
-def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
+def est_partition_fn_fft(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
     # make sure the number of bins is a power of two. This is two aboid extra
     # padding during the fft convolution
     if (n_bins & (n_bins-1)):
@@ -139,6 +136,44 @@ def est_partition_fn(ref_energy, ddg_array, n_bind_sites, n_bins=2**16):
     return x, min_pdf
 
 
+cached_coded_seqs = {}
+def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites):
+    assert ddg_array.motif_len <= 6
+    if ddg_array.motif_len not in cached_coded_seqs:
+        cached_coded_seqs[ddg_array.motif_len] = code_seqs(
+            product('ACGT', repeat=ddg_array.motif_len), 
+            ddg_array.motif_len, 
+            n_seqs=4**ddg_array.motif_len, 
+            ON_GPU=False)
+    coded_seqs = cached_coded_seqs[ddg_array.motif_len]
+    
+    energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
+    energies.sort()
+    part_fn = np.ones(len(energies), dtype=float)/len(energies)
+    min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
+    #min_cdf = np.insert(min_cdf, 0, 0.0)
+    min_pdf = np.array(np.diff(min_cdf), dtype='float32')
+    return energies, min_cdf
+
+def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites):
+    seq_len = n_bind_sites + ddg_array.motif_len - 1
+    n_sims = 10000
+    if 'SIM' not in cached_coded_seqs:
+        current_pool = np.array([np.random.randint(4, size=seq_len)
+                                 for i in xrange(n_sims)])
+        coded_seqs = code_seqs(current_pool, ddg_array.motif_len, ON_GPU=False)
+
+        cached_coded_seqs['SIM'] = coded_seqs
+    coded_seqs = cached_coded_seqs['SIM']
+    energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
+    energies.sort()
+    part_fn = np.ones(len(energies), dtype=float)/len(energies)
+    return energies, part_fn
+
+est_partition_fn = est_partition_fn_fft
+est_partition_fn = est_partition_fn_brute
+est_partition_fn = est_partition_fn_sampling
+
 def calc_occ(seq_ddgs, ref_energy, chem_affinity):
     return logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))
 
@@ -179,17 +214,19 @@ def calc_lhd_numerators(
     
     return numerators
 
-def calc_lhd_denominators(ref_energy, ddg_array, chem_affinities, n_bind_sites):
+def calc_lhd_denominators(
+        ref_energy, ddg_array, chem_affinities, n_bind_sites):
     # now calculate the denominator (the normalizing factor for each round)
     # calculate the expected bin counts in each energy level for round 0
     energies, partition_fn = est_partition_fn(
         ref_energy, ddg_array, n_bind_sites)
-    expected_cnts = (4**ddg_array.motif_len)*partition_fn
+    expected_cnts = (4**(ddg_array.motif_len+n_bind_sites-1))*partition_fn 
     curr_occupancies = np.ones(len(energies), dtype='float32')
     denominators = []
     for rnd, chem_affinity in enumerate(chem_affinities):
         curr_occupancies *= logistic(-(-chem_affinity+energies)/(R*T))
-        denominators.append( np.log((expected_cnts*curr_occupancies).sum()))
+        denominators.append( np.log((expected_cnts*curr_occupancies).sum()) )
+    #print denominators
     return denominators
 
 def calc_log_lhd_factory(rnds_and_coded_seqs):
@@ -208,7 +245,7 @@ def calc_log_lhd_factory(rnds_and_coded_seqs):
                      ddg_array, 
                      rnds_and_chem_affinities):
         assert len(rnds_and_coded_seqs) == len(rnds_and_chem_affinities)
-        ref_energy = ref_energy.astype('float32')
+        ref_energy = np.array(ref_energy).astype('float32')
         rnds_and_chem_affinities = rnds_and_chem_affinities.astype('float32')
         # score all of the sequences
         rnds_and_seq_ddgs = []
@@ -272,134 +309,144 @@ def init_param_space_lhs(samples, N=1000 ):
         population[:, j] = rdrange[order, j]
     return (population.T - 0.5)*10
 
-def estimate_ddg_matrix(rnds_and_seqs, ddg_array, 
-                            ref_energy, ftol=1e-12):
-    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
-    n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
-    def f(x):
-        x = x.astype('float32').view(DeltaDeltaGArray)
-        chem_pots = est_chem_potentials(
-            x, ref_energy, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
-        rv = calc_log_lhd(ref_energy, x, chem_pots)
-        
-        base_conts = x.calc_base_contributions()
-        energy_diff = base_conts.max(1) - base_conts.min(1)
-        penalty = (energy_diff[(energy_diff > 6)]**2).sum()
-
-        print x.consensus_seq()
-        print chem_pots
-        print "Ref:", ref_energy
-        print "Mean:", ref_energy + x.sum()/3
-        print "Min:", x.calc_min_energy(ref_energy)
-        print x.calc_base_contributions().round(2)
-        print rv
-        print penalty
-        print rv - penalty + abs(ref_energy)
-
-        return -rv + penalty
-
-    x0 = ddg_array.astype('float32')
-    lhd_0 = f(x0)
-    res = minimize(f, x0, tol=ftol, method='Powell', # COBYLA  
-                   options={'disp': False, 
-                            'maxiter': 50000, 
-                            'xtol': 1e-5, 'ftol': 1e-6} )
-    if lhd_0 < f(res.x):
-        return x0, f(res.x)
-    return res.x.astype('float32').view(DeltaDeltaGArray), -f(res.x)
-
-def estimate_dg_matrix_coord(rnds_and_seqs, ddg_array,
-                             dna_conc, prot_conc,
-                             ref_energy, ftol=1e-12):
-    calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
-    n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
-    def f_ddg(x, (index, ref_energy)):
-        ddg_array[index] += x
-        chem_pots = est_chem_potentials(
-            ddg_array, ref_energy, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
-        rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
-        
-        ddg_array[index] -= x
-
-        return -rv
-
-    def f_ref_energy(x):
-        chem_pots = est_chem_potentials(
-            ddg_array, ref_energy+x, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
-        rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
-        return -rv
-
-    while True:
-        initial_lhd = -f_ref_energy(0)
-        res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=1e-3)  
-        ref_energy += res.x
-        for i, x0 in enumerate(ddg_array):
-            res = minimize_scalar(
-                f_ddg, bounds=[-5,5], args=[i,ref_energy], tol=1e-3)  
-            ddg_array[i] += res.x
-            print "="*50
-            print i/3, i%3
-            print ddg_array.consensus_seq()
-            print "Ref:", ref_energy
-            print est_chem_potentials(
-                ddg_array, ref_energy, dna_conc, prot_conc,
-                n_bind_sites, len(rnds_and_seqs))
-            print "Mean:", ref_energy + ddg_array.sum()/3
-            print "Min:", ddg_array.calc_min_energy(ref_energy)
-            print ddg_array.calc_base_contributions().round(2)
-            print res.fun
-                
-        if initial_lhd > -f_ref_energy(0) - 1e-6: break
-        #print i, x0, res
-    
-    return ddg_array, ref_energy, -f_ref_energy(0)
-
-def estimate_dg_matrix(rnds_and_seqs, ddg_array, ref_energy,
+def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
                        dna_conc, prot_conc,
                        ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
-    def f_ddg(x, (base_pos, ref_energy)):
+
+    def calc_penalty(ref_energy, ddg_array, chem_pots):
+        penalty = 0
+        
+        # Penalize models with non-physical mean affinities
+        new_mean_energy = ref_energy + ddg_array.sum()/3
+        if CONSTRAIN_MEAN_ENERGY:
+            penalty += (new_mean_energy - EXPECTED_MEAN_ENERGY)**2
+
+        # Penalize non-physical differences in base affinities
+        if CONSTRAIN_BASE_ENERGY_DIFF:
+            base_conts = ddg_array.calc_base_contributions()
+            energy_diff = base_conts.max(1) - base_conts.min(1)
+            penalty += (energy_diff[(energy_diff > 6)]**2).sum()
+        #return 0
+        return penalty
+
+    def f_single_base_dg(x, (base_pos, ref_energy)):
         ddg_array[3*base_pos:3*(base_pos+1)] += x
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy, dna_conc, prot_conc,
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
-        
-        # Penalize models with non-physical mean affinities
-        new_mean_energy = ref_energy + ddg_array.sum()/3
-        if CONSTRAIN_MEAN_ENERGY or new_mean_energy > EXPECTED_MEAN_ENERGY:
-            rv -= abs(new_mean_energy - EXPECTED_MEAN_ENERGY)**2
-        
-        # Penalize non-physical differences in base affinities
-        if CONSTRAIN_BASE_ENERGY_DIFF:
-            base_energy_diff = (
-                max(0, ddg_array[3*base_pos:3*(base_pos+1)].max())
-                - min(0, ddg_array[3*base_pos:3*(base_pos+1)].min()))
-            if base_energy_diff > MAX_BASE_ENERGY_DIFF:
-                rv -= (base_energy_diff)**2
-        
+        penalty = calc_penalty(ref_energy, ddg_array, chem_pots)        
         ddg_array[3*base_pos:3*(base_pos+1)] -= x
-        return -rv
+        return -rv + penalty
+
+    def f_dg(x):
+        ref_energy = x[0]
+        ddg_array = x[1:].astype('float32').view(DeltaDeltaGArray)
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(rnds_and_seqs))
+        rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
+        penalty = calc_penalty(ref_energy, ddg_array, chem_pots)
+        
+        """
+        print ddg_array.consensus_seq()
+        print chem_pots
+        print "Ref:", ref_energy
+        print "Mean:", ref_energy + x.sum()/3
+        print "Min:", ddg_array.calc_min_energy(ref_energy)
+        print ddg_array.calc_base_contributions().round(2)
+        print rv
+        print penalty
+        print rv + penalty
+        """
+        return -rv + penalty
 
     def f_ref_energy(x):
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy+x, dna_conc, prot_conc,
             n_bind_sites, len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
+        penalty = calc_penalty(ref_energy+x, ddg_array, chem_pots)
 
-        # Penalize models with non-physical mean affinities
-        new_mean_energy = ref_energy + x + ddg_array.sum()/3
-        if CONSTRAIN_MEAN_ENERGY or new_mean_energy > EXPECTED_MEAN_ENERGY:
-            rv -= abs(new_mean_energy-EXPECTED_MEAN_ENERGY)**2
+        return -rv + penalty
 
-        return -rv
+    """
+    # ada delta
+    def ada_delta(x0):
+        # from http://arxiv.org/pdf/1212.5701.pdf
+        e = 1e-6
+        p = 0.99
+        grad_sq = np.zeros(len(x0))
+        delta_x_sq = np.zeros(len(x0))
+        
+        eps = 1.0
+        num_small_decreases = 0
+        for i in xrange(10000):
+            grad = approx_fprime(x0, f_dg, epsilon=1e-2)
+            #grad /= np.abs(grad).sum()
+            grad_sq = p*grad_sq + (1-p)*(grad**2)
+            delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
+                grad_sq + e)*grad
+            delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
+            x0 += delta_x #.clip(-2, 2) #grad #delta
+            print f_dg(x0)
+            print math.sqrt((grad**2).sum())
+            print grad
+            print delta_x
+            print x0[1:].view(DeltaDeltaGArray).calc_base_contributions().round(2)
+            #raw_input()
 
+        return
+
+    x0 = init_ddg_array.copy().astype('float32')
+    x0 = np.insert(x0, 0, init_ref_energy)
+    ada_delta(x0)
+    assert False
+    """
+    
+    """
+    # gradient descent
+    eps = 1.0
+    num_small_decreases = 0
+    while num_small_decreases < 10:
+        grad = approx_fprime(x0, f_dg, epsilon=eps)
+        grad /= np.abs(grad).sum()
+        def f(alpha):
+            return f_dg(alpha*grad + x0)
+        prev_fun = f(0)
+        res = minimize_scalar(f, bounds=[-10,10])
+        if abs(res.x) < eps: 
+            eps /= 2
+        elif abs(res.x) > 2*eps:
+            eps *= 2
+        if prev_fun - res.fun < 1e-6:
+            num_small_decreases += 1
+        else:
+            num_small_decreases = 0
+        print num_small_decreases, eps, res.fun, res.fun - prev_fun
+        
+        x0 += res.x*grad
+
+    ddg_array = res.x[1:].astype('float32').view(DeltaDeltaGArray)    
+    ref_energy = res.x[0]
+    """
+    
+    """
+    # Nelder Meadx
+    res = minimize(f_dg, x0, tol=ftol, method='Nelder-Mead', # COBYLA  
+                   options={'disp': False, 
+                            'maxiter': 1, 
+                            'xtol': 1e-3, 'ftol': 1e-2} )
+
+    """
+    
+    ddg_array = init_ddg_array.copy()
+    ref_energy = np.array(init_ref_energy)
     iteration_number = 0
     tol = 1e-2
+    #assert False
     # initialize the lhd changes to a large number so each base is updated
     # once in the first round. We add an additional weight for the ref energy
     prev_lhd = -f_ref_energy(0.0)
@@ -426,7 +473,8 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array, ref_energy,
 
         # if this is the ref energy position
         if base_index == ddg_array.motif_len:
-            res = minimize_scalar(f_ref_energy, bounds=[-5,5], tol=tol)  
+            res = minimize_scalar(f_ref_energy,
+                                  bounds=[-5,5], tol=tol )  
             new_lhd = -res.fun
             if new_lhd > prev_lhd:
                 ref_energy += res.x
@@ -436,10 +484,11 @@ def estimate_dg_matrix(rnds_and_seqs, ddg_array, ref_energy,
         # otherwise this is a base energy
         else:
             res = minimize(
-                f_ddg, np.zeros(3, dtype=float),
+                f_single_base_dg, np.zeros(3, dtype=float),
                 args=[base_index, ref_energy], 
-                method='Powell', tol=tol)
+                method='COBYLA', tol=tol)
             new_lhd = -res.fun
+            print new_lhd, prev_lhd
             if new_lhd > prev_lhd:
                 ddg_array[3*base_index:3*(base_index+1)] += res.x
             else:
