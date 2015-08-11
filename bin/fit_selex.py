@@ -16,7 +16,9 @@ from pyTFbindtools.selex import (
     est_chem_potentials, bootstrap_lhds,
     find_pwm_from_starting_alignment)
 from pyTFbindtools.motif_tools import (
-    load_energy_data, load_motifs, load_motif_from_text, logistic, Motif, R, T )
+    load_energy_data, load_motifs, load_motif_from_text,
+    logistic, Motif, R, T,
+    DeltaDeltaGArray)
 
 """
 SELEX and massively parallel sequencing  
@@ -88,7 +90,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp)[:1000] ) # [:1000]
+            rnds_and_seqs.append( loader(fp) ) # [:1000]
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -197,8 +199,79 @@ def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
     pwm = pwm.T/pwm.sum(1)
     return pwm
 
-def find_shift()
+def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
+    pwm = find_pwm_from_starting_alignment(
+        rnds_and_seqs[-1], build_pwm_from_energies(ddg_array, ref_energy, -12))
+    left_shift_pwm = find_pwm_from_starting_alignment(
+        rnds_and_seqs[-1], np.hstack((np.zeros((4,1)), pwm.T)))    
+    right_shift_pwm = find_pwm_from_starting_alignment(
+        rnds_and_seqs[-1], np.hstack((pwm.T, np.zeros((4,1)))))    
+    left_shift_score = (
+        left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:])).sum()
+    right_shift_score = (
+        right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:])).sum()
+    if left_shift_score < right_shift_score:
+        pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
+        return np.insert(ddg_array, 0, np.zeros(3, dtype='float32')).view(
+            DeltaDeltaGArray)
+    else:
+        pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
+        return np.append(ddg_array, np.zeros(3, dtype='float32')).view(
+            DeltaDeltaGArray)
 
+def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
+    opt_path = []
+    for rnd_num in xrange(4):
+        bs_len = ddg_array.motif_len
+        pyTFbindtools.log("Coding sequences", 'VERBOSE')
+        coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
+                                for seqs in rnds_and_seqs ]
+        pyTFbindtools.log("FINISHED Coding sequences", 'VERBOSE')
+        lhd_hat = -1e50
+        prev_lhd = -1e100
+        ddg_array_hat = ddg_array.copy()
+        ref_energy_hat = ref_energy
+        pyTFbindtools.log("Estimating energy model", 'VERBOSE')
+        while lhd_hat > prev_lhd + 1.0:
+            prev_lhd = lhd_hat
+            ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
+                coded_rnds_and_seqs, ddg_array_hat, ref_energy_hat,
+                dna_conc, prot_conc)
+            for i in xrange(10):
+                print "="*100
+            break
+
+        # XXX this is messy, should be packaged into an object
+        pyTFbindtools.log("checking quality of fit", 'VERBOSE')
+        sim_sizes = [len(seqs) for seqs in rnds_and_seqs]
+        read_len = len(rnds_and_seqs[0][0])
+        n_bind_sites = read_len - bs_len + 1
+
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy, 
+            dna_conc, prot_conc, 
+            n_bind_sites,
+            len(sim_sizes))
+
+        bs_lhds = bootstrap_lhds(
+            read_len, ddg_array_hat, ref_energy_hat, 
+            chem_pots,
+            sim_sizes=sim_sizes,
+            pool_size=random_seq_pool_size )
+        
+        opt_path.append(
+            (rnd_num,
+             ddg_array_hat, ref_energy_hat,
+             lhd_hat, (np.array(bs_lhds).mean(), np.array(bs_lhds).std())))
+        
+        print "BS MEAN", np.array(bs_lhds).mean(), "SD", np.array(bs_lhds).std()
+        print lhd_hat
+
+        ddg_array = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
+        ref_energy = ref_energy_hat
+    
+    return ddg_array, ref_energy
+    
 def main():
     motif, rnds_and_seqs, random_seq_pool_size = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
@@ -210,56 +283,10 @@ def main():
     #from pyTFbindtools.selex import est_partition_fn
     #est_partition_fn(ref_energy, ddg_array, 2)
     #return
-    bs_len = ddg_array.motif_len
-    pyTFbindtools.log("Coding sequences", 'VERBOSE')
-    coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
-                            for seqs in rnds_and_seqs ]
-    """
-    opt_path = []
-    lhd_hat = -1e50
-    prev_lhd = -1e100
-    ddg_array_hat = ddg_array.copy()
-    ref_energy_hat = ref_energy
-    while lhd_hat > prev_lhd + 1.0:
-        prev_lhd = lhd_hat
-        ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
-            coded_rnds_and_seqs, ddg_array_hat, ref_energy_hat,
-            dna_conc, prot_conc)
-        opt_path.append((ddg_array_hat, ref_energy_hat, lhd_hat))
-        for i in xrange(10):
-            print "="*100
-        break
-    """
-    pwm = find_pwm_from_starting_alignment(
-        rnds_and_seqs[-1], build_pwm_from_energies(ddg_array, ref_energy, -12))
-    print pwm
-    left_shift_pwm = find_pwm_from_starting_alignment(
-        rnds_and_seqs[-1], np.hstack((np.zeros((4,1)), pwm.T)))    
-    right_shift_pwm = find_pwm_from_starting_alignment(
-        rnds_and_seqs[-1], np.hstack((pwm.T, np.zeros((4,1)))))    
-    print left_shift_pwm[0,:], (left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:])).sum()
-    print right_shift_pwm[-1,:], (right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:])).sum()
-    return
-
-    # XXX this is messy, should be packaged into an object
-    sim_sizes = [len(seqs) for seqs in rnds_and_seqs]
-    read_len = len(rnds_and_seqs[0][0])
-    n_bind_sites = read_len - bs_len + 1
-
-    chem_pots = est_chem_potentials(
-        ddg_array, ref_energy, 
-        dna_conc, prot_conc, 
-        n_bind_sites,
-        len(sim_sizes))
-
-    bs_lhds = bootstrap_lhds(
-        read_len, ddg_array_hat, ref_energy_hat, 
-        chem_pots,
-        sim_sizes=sim_sizes,
-        pool_size=random_seq_pool_size )
-    print "BS MEAN", np.array(bs_lhds).mean(), "SD", np.array(bs_lhds).std()
-    print lhd_hat
-        
+    ddg_array_hat, ref_energy_hat = fit_model(
+        rnds_and_seqs, ddg_array, ref_energy,
+        random_seq_pool_size)
+    
     with open(motif.name + ".SELEX.txt", "w") as ofp:
         write_output(motif, ddg_array_hat, ref_energy_hat, ofp)
     

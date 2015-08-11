@@ -138,7 +138,7 @@ def est_partition_fn_fft(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
 
 cached_coded_seqs = {}
 def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites):
-    assert ddg_array.motif_len <= 6
+    assert ddg_array.motif_len <= 8
     if ddg_array.motif_len not in cached_coded_seqs:
         cached_coded_seqs[ddg_array.motif_len] = code_seqs(
             product('ACGT', repeat=ddg_array.motif_len), 
@@ -158,20 +158,21 @@ def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites):
 def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites):
     seq_len = n_bind_sites + ddg_array.motif_len - 1
     n_sims = 10000
-    if 'SIM' not in cached_coded_seqs:
+    key = ('SIM', ddg_array.motif_len)
+    if key not in cached_coded_seqs:
         current_pool = np.array([np.random.randint(4, size=seq_len)
                                  for i in xrange(n_sims)])
         coded_seqs = code_seqs(current_pool, ddg_array.motif_len, ON_GPU=False)
 
-        cached_coded_seqs['SIM'] = coded_seqs
-    coded_seqs = cached_coded_seqs['SIM']
+        cached_coded_seqs[key] = coded_seqs
+    coded_seqs = cached_coded_seqs[key]
     energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
     energies.sort()
     part_fn = np.ones(len(energies), dtype=float)/len(energies)
     return energies, part_fn
 
-est_partition_fn = est_partition_fn_fft
-est_partition_fn = est_partition_fn_brute
+#est_partition_fn = est_partition_fn_fft
+#est_partition_fn = est_partition_fn_brute
 est_partition_fn = est_partition_fn_sampling
 
 def calc_occ(seq_ddgs, ref_energy, chem_affinity):
@@ -316,7 +317,7 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
                        ftol=1e-12):
     calc_log_lhd = calc_log_lhd_factory(rnds_and_seqs)
     n_bind_sites = rnds_and_seqs[0].get_value().shape[1]
-
+    
     def calc_penalty(ref_energy, ddg_array, chem_pots):
         penalty = 0
         
@@ -333,7 +334,7 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
         #return 0
         return penalty
 
-    def f_single_base_dg(x, (base_pos, ref_energy)):
+    def f_single_base_dg(x, base_pos, ref_energy):
         ddg_array[3*base_pos:3*(base_pos+1)] += x
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy, dna_conc, prot_conc,
@@ -374,7 +375,6 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
 
         return -rv + penalty
 
-    """
     # ada delta
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
@@ -385,7 +385,7 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
         
         eps = 1.0
         num_small_decreases = 0
-        for i in xrange(10000):
+        for i in xrange(20):
             grad = approx_fprime(x0, f_dg, epsilon=1e-2)
             #grad /= np.abs(grad).sum()
             grad_sq = p*grad_sq + (1-p)*(grad**2)
@@ -405,8 +405,6 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
     x0 = init_ddg_array.copy().astype('float32')
     x0 = np.insert(x0, 0, init_ref_energy)
     ada_delta(x0)
-    assert False
-    """
     
     """
     # gradient descent
@@ -435,13 +433,14 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
     ref_energy = res.x[0]
     """
     
-    """
     # Nelder Meadx
+    """
     res = minimize(f_dg, x0, tol=ftol, method='Nelder-Mead', # COBYLA  
                    options={'disp': False, 
                             'maxiter': 1, 
                             'xtol': 1e-3, 'ftol': 1e-2} )
-
+    ddg_array = res.x[1:].astype('float32').view(DeltaDeltaGArray)    
+    ref_energy = res.x[0]
     """
     
     ddg_array = init_ddg_array.copy()
@@ -455,7 +454,7 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
     lhd_changes = 1000*np.ones(ddg_array.motif_len+1)
     weights = lhd_changes/lhd_changes.sum()
     # until the minimum update tolerance is below the stop iteration threshold  
-    while tol > CONVERGENCE_MAX_LHD_CHANGE and iteration_number < MAX_NUM_ITER:
+    while tol > 100*CONVERGENCE_MAX_LHD_CHANGE and iteration_number < MAX_NUM_ITER:
         iteration_number +=1 
         # find the base position to update next. We want to focus on the bases
         # that are givng the largest updates, but we also want the process to be
