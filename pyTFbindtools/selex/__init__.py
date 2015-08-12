@@ -232,27 +232,31 @@ def calc_lhd_denominators(
     #print denominators
     return denominators
 
-def calc_log_lhd_factory(rnds_and_coded_seqs):
-    n_bind_sites = rnds_and_coded_seqs[0].get_value().shape[1]
+def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs):
+    n_bind_sites = partitioned_and_coded_rnds_and_seqs[
+        0][0].get_value().shape[1]
     
     calc_energy_fns = []
     sym_e = TT.vector()
-    for x in rnds_and_coded_seqs:
-        #calc_energy_fns.append(
-        #    theano.function([sym_e], theano.sandbox.cuda.basic_ops.gpu_from_host(
-        #        x.dot(sym_e).min(1)) ) )
-        calc_energy_fns.append(
-            theano.function([sym_e], x.dot(sym_e).min(1)) )
+    for rnds_and_coded_seqs in partitioned_and_coded_rnds_and_seqs:
+        calc_energy_fns.append([])
+        for x in rnds_and_coded_seqs:
+            #calc_energy_fns.append(
+            #    theano.function([sym_e], theano.sandbox.cuda.basic_ops.gpu_from_host(
+            #        x.dot(sym_e).min(1)) ) )
+            calc_energy_fns[-1].append(
+                theano.function([sym_e], x.dot(sym_e).min(1)) )
     
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
-                     rnds_and_chem_affinities):
+                     rnds_and_chem_affinities,
+                     partition_index):
         assert len(rnds_and_coded_seqs) == len(rnds_and_chem_affinities)
         ref_energy = np.array(ref_energy).astype('float32')
         rnds_and_chem_affinities = rnds_and_chem_affinities.astype('float32')
         # score all of the sequences
         rnds_and_seq_ddgs = []
-        for rnd, calc_energy in enumerate(calc_energy_fns):
+        for rnd, calc_energy in enumerate(calc_energy_fns[partition_index]):
             rnds_and_seq_ddgs.append( calc_energy(ddg_array) )
         # calculate the numerators
         numerators = calc_lhd_numerators(
@@ -767,3 +771,121 @@ def bootstrap_lhds(read_len,
             chem_pots, ref_energy, ddg_array)
         lhds.append( numerator - normalizing_constant )
     return lhds
+
+def partition_data(seqs):
+    assert len(seqs) > 150
+    n_partitions = max(5, len(seqs)/1000)
+    partitioned_seqs = [[] for i in xrange(n_partitions)]
+    for i, seq in enumerate(seqs):
+        partitioned_seqs[i%n_partitions].append(seq)
+    return partitioned_seqs
+
+def partition_and_code_all_seqs(rnds_and_seqs, bs_len):
+    return zip(*[
+        [ code_seqs(rnd_seqs, bs_len)
+          for rnd_seqs in partition_data(seqs)]
+        for seqs in rnds_and_seqs])
+
+def estimate_dg_matrix_with_adadelta(
+        partitioned_and_coded_rnds_and_seqs,
+        init_ddg_array, init_ref_energy,
+        dna_conc, prot_conc,
+        ftol=1e-12):    
+    def calc_penalty(ref_energy, ddg_array, chem_pots):
+        penalty = 0
+        
+        # Penalize models with non-physical mean affinities
+        new_mean_energy = ref_energy + ddg_array.sum()/3
+        if CONSTRAIN_MEAN_ENERGY:
+            penalty += (new_mean_energy - EXPECTED_MEAN_ENERGY)**2
+
+        # Penalize non-physical differences in base affinities
+        if CONSTRAIN_BASE_ENERGY_DIFF:
+            base_conts = ddg_array.calc_base_contributions()
+            energy_diff = base_conts.max(1) - base_conts.min(1)
+            penalty += (energy_diff[(energy_diff > 6)]**2).sum()
+        #return 0
+        return penalty
+
+    def extract_data_from_array(x):
+        ref_energy = x[0]
+        ddg_array = x[1:].astype('float32').view(DeltaDeltaGArray)
+        chem_pots = est_chem_potentials(
+            ddg_array, ref_energy, dna_conc, prot_conc,
+            n_bind_sites, len(partitioned_and_coded_rnds_and_seqs[0]))
+        return ref_energy, chem_pots, ddg_array
+    
+    def f_dg(x, train_index):
+        ref_energy, chem_pots, ddg_array = extract_data_from_array(x)
+        rv = calc_log_lhd(ref_energy, ddg_array, chem_pots, train_index)
+        penalty = calc_penalty(ref_energy, ddg_array, chem_pots)
+        return -rv + penalty
+
+    # ada delta
+    test_lhds = []
+    train_lhds = []
+    xs = []
+    def ada_delta(x0):
+        # from http://arxiv.org/pdf/1212.5701.pdf
+        e = 1e-6
+        p = 0.99
+        grad_sq = np.zeros(len(x0))
+        delta_x_sq = np.zeros(len(x0))
+        
+        eps = 1.0
+        num_small_decreases = 0
+        for i in xrange(MAX_NUM_ITER):
+            train_index = random.randint(
+                1, len(partitioned_and_coded_rnds_and_seqs)-1)
+            grad = approx_fprime(x0, f_dg, 1e-3, train_index)
+            grad_sq = p*grad_sq + (1-p)*(grad**2)
+            delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
+                grad_sq + e)*grad
+            delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
+            x0 += delta_x.clip(-2, 2) #grad #delta
+            train_lhd = -f_dg(x0, train_index)
+            test_lhd = -f_dg(x0, 0)
+            ref_energy, chem_pots, ddg_array = extract_data_from_array(x0)
+            
+            print ddg_array.consensus_seq()
+            print chem_pots
+            print "Ref:", ref_energy
+            print "Mean:", ref_energy + ddg_array.sum()/3
+            print "Min:", ddg_array.calc_min_energy(ref_energy)
+            print ddg_array.calc_base_contributions().round(2)
+            print "Train: ", train_lhd, "(%i)" % train_index
+            print "Test:", test_lhd
+            print math.sqrt((grad**2).sum())
+
+            train_lhds.append(train_lhd)
+            test_lhds.append(test_lhd)
+            xs.append(x0)
+            min_num_iter = 10
+            if i > 2*min_num_iter:
+                print sum(test_lhds[-2*min_num_iter:-min_num_iter])/min_num_iter, \
+                    sum(test_lhds[-min_num_iter:])/min_num_iter
+            if i > 2*min_num_iter and (
+                    sum(test_lhds[-2*min_num_iter:-min_num_iter])/min_num_iter
+                    > sum(test_lhds[-min_num_iter:])/min_num_iter ):
+                break
+
+        x_hat_index = np.argmax(np.array(test_lhds))
+        return xs[x_hat_index]
+    
+    bs_len = init_ddg_array.motif_len
+    n_bind_sites = partitioned_and_coded_rnds_and_seqs[0][0].get_value().shape[1]
+    
+    calc_log_lhd = calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs)
+
+    x0 = init_ddg_array.copy().astype('float32')
+    x0 = np.insert(x0, 0, init_ref_energy)
+    x = ada_delta(x0)
+
+    with open("LHDS.%i.txt" % bs_len, "w") as ofp:
+        for train, test in zip(train_lhds, test_lhds):
+            print >> ofp, train, test
+
+    ref_energy, chem_pots, ddg_array = extract_data_from_array(x)
+    test_lhd = calc_log_lhd(ref_energy, ddg_array, chem_pots, 0)
+
+    return ddg_array, ref_energy, test_lhd

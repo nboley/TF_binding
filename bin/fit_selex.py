@@ -12,9 +12,11 @@ import pyTFbindtools
 import pyTFbindtools.selex
 
 from pyTFbindtools.selex import (
-    find_pwm, code_seqs, estimate_dg_matrix, 
+    find_pwm, code_seqs, estimate_dg_matrix,
+    estimate_dg_matrix_with_adadelta,
     est_chem_potentials, bootstrap_lhds,
-    find_pwm_from_starting_alignment)
+    find_pwm_from_starting_alignment,
+    partition_and_code_all_seqs)
 from pyTFbindtools.motif_tools import (
     load_energy_data, load_motifs, load_motif_from_text,
     logistic, Motif, R, T,
@@ -223,27 +225,24 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
     opt_path = []
     for rnd_num in xrange(4):
         bs_len = ddg_array.motif_len
+        
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
-        coded_rnds_and_seqs = [ code_seqs(seqs, bs_len) 
-                                for seqs in rnds_and_seqs ]
-        pyTFbindtools.log("FINISHED Coding sequences", 'VERBOSE')
-        lhd_hat = -1e50
-        prev_lhd = -1e100
-        ddg_array_hat = ddg_array.copy()
-        ref_energy_hat = ref_energy
+        partitioned_and_coded_rnds_and_seqs = partition_and_code_all_seqs(
+            rnds_and_seqs, bs_len)
+
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        while lhd_hat > prev_lhd + 1.0:
-            prev_lhd = lhd_hat
-            ddg_array_hat, ref_energy_hat, lhd_hat = estimate_dg_matrix(
-                coded_rnds_and_seqs, ddg_array_hat, ref_energy_hat,
-                dna_conc, prot_conc)
-            for i in xrange(10):
-                print "="*100
-            break
+        (ddg_array, ref_energy, lhd_hat
+        ) = estimate_dg_matrix_with_adadelta(
+            partitioned_and_coded_rnds_and_seqs,
+            ddg_array, ref_energy,
+            dna_conc, prot_conc)
+        for i in xrange(10):
+            print "="*100
 
         # XXX this is messy, should be packaged into an object
         pyTFbindtools.log("checking quality of fit", 'VERBOSE')
-        sim_sizes = [len(seqs) for seqs in rnds_and_seqs]
+        sim_sizes = [seqs.get_value().shape[0]
+                     for seqs in partitioned_and_coded_rnds_and_seqs[0]]
         read_len = len(rnds_and_seqs[0][0])
         n_bind_sites = read_len - bs_len + 1
 
@@ -254,21 +253,21 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             len(sim_sizes))
 
         bs_lhds = bootstrap_lhds(
-            read_len, ddg_array_hat, ref_energy_hat, 
+            read_len, ddg_array, ref_energy, 
             chem_pots,
             sim_sizes=sim_sizes,
             pool_size=random_seq_pool_size )
         
         opt_path.append(
             (rnd_num,
-             ddg_array_hat, ref_energy_hat,
+             ddg_array, ref_energy,
              lhd_hat, (np.array(bs_lhds).mean(), np.array(bs_lhds).std())))
         
         print "BS MEAN", np.array(bs_lhds).mean(), "SD", np.array(bs_lhds).std()
         print lhd_hat
 
         ddg_array = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
-        ref_energy = ref_energy_hat
+        ref_energy = ref_energy
     
     return ddg_array, ref_energy
     
