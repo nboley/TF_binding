@@ -210,7 +210,8 @@ def calc_lhd_numerators(
         numerators.append(numerator)
     
     if CMP_LHD_NUMERATOR_CALCS:
-        print "NUMERATORS", "="*10, numerators
+        print "NUMERATORS", "="*10
+        print numerators
         print chem_affinities
         print ref_energy
         print
@@ -733,7 +734,10 @@ def bootstrap_lhd_numerators(initial_energy_pool, sim_sizes,
         print "NUMERATORS", "+"*10, numerators
         print chem_pots
         print ref_energy
-        print "ENERGIES", rnd_seq_ddgs
+        print ddg_array.calc_min_energy(ref_energy)
+        print "ENERGIES"
+        for rnd_ddgs in rnd_seq_ddgs:
+            print sum(rnd_ddgs)/len(rnd_ddgs)
         numerators = calc_lhd_numerators(
             rnd_seq_ddgs, chem_pots.astype('float32'), ref_energy) 
         print "NUMERATORS", "="*10, numerators
@@ -765,7 +769,7 @@ def bootstrap_lhds(read_len,
     initial_energy_pool, seqs = build_random_read_energies_pool(
         pool_size, read_len, ddg_array, ref_energy)
     lhds = []
-    for i in xrange(100):
+    for i in xrange(10):
         numerator = bootstrap_lhd_numerators(
             initial_energy_pool, sim_sizes, 
             chem_pots, ref_energy, ddg_array)
@@ -774,7 +778,7 @@ def bootstrap_lhds(read_len,
 
 def partition_data(seqs):
     assert len(seqs) > 150
-    n_partitions = max(5, len(seqs)/1000)
+    n_partitions = max(5, len(seqs)/10000)
     partitioned_seqs = [[] for i in xrange(n_partitions)]
     for i, seq in enumerate(seqs):
         partitioned_seqs[i%n_partitions].append(seq)

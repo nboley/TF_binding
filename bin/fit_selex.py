@@ -16,7 +16,7 @@ from pyTFbindtools.selex import (
     estimate_dg_matrix_with_adadelta,
     est_chem_potentials, bootstrap_lhds,
     find_pwm_from_starting_alignment,
-    partition_and_code_all_seqs)
+    partition_and_code_all_seqs, calc_log_lhd_factory)
 from pyTFbindtools.motif_tools import (
     load_energy_data, load_motifs, load_motif_from_text,
     logistic, Motif, R, T,
@@ -213,17 +213,14 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
     right_shift_score = (
         right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:])).sum()
     if left_shift_score < right_shift_score:
-        pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-        return np.insert(ddg_array, 0, np.zeros(3, dtype='float32')).view(
-            DeltaDeltaGArray)
+        return "LEFT"
     else:
-        pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-        return np.append(ddg_array, np.zeros(3, dtype='float32')).view(
-            DeltaDeltaGArray)
+        return "RIGHT"
 
 def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
     opt_path = []
-    for rnd_num in xrange(4):
+    prev_shift_type = None
+    for rnd_num in xrange(len(rnds_and_seqs[0][0])-ddg_array.motif_len+1):
         bs_len = ddg_array.motif_len
         
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
@@ -231,44 +228,60 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             rnds_and_seqs, bs_len)
 
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        (ddg_array, ref_energy, lhd_hat
+        ( ddg_array, ref_energy, lhd_hat
         ) = estimate_dg_matrix_with_adadelta(
             partitioned_and_coded_rnds_and_seqs,
             ddg_array, ref_energy,
             dna_conc, prot_conc)
+
+        if prev_shift_type != None:
+            pyTFbindtools.log("checking quality of fit", 'VERBOSE')
+            calc_log_lhd = calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs)
+            n_bind_sites = partitioned_and_coded_rnds_and_seqs[0][0].get_value().shape[1]
+            chem_pots = est_chem_potentials(
+                ddg_array, ref_energy, 
+                dna_conc, prot_conc, 
+                n_bind_sites,
+                len(partitioned_and_coded_rnds_and_seqs[0]))
+            alt_lhd = calc_log_lhd(ref_energy, ddg_array, chem_pots, 0)
+            train_lhds = [
+                calc_log_lhd(ref_energy, ddg_array, chem_pots, i)
+                for i in xrange(1, len(partitioned_and_coded_rnds_and_seqs)) ]
+            null_ddg_array = ddg_array.copy()
+            if prev_shift_type == 'LEFT':
+                null_ddg_array[:3] = 0
+            elif prev_shift_type == 'RIGHT':
+                null_ddg_array[-3:] = 0
+            chem_pots = est_chem_potentials(
+                ddg_array, ref_energy, 
+                dna_conc, prot_conc, 
+                n_bind_sites,
+                len(partitioned_and_coded_rnds_and_seqs[0]))
+            null_lhd = calc_log_lhd(ref_energy, null_ddg_array, chem_pots, 0)
+            print "Alt", alt_lhd, "Null", null_lhd
+            print "Alt SD:", np.std(np.array(train_lhds))
+            print "Alt Mean:", np.mean(np.array(train_lhds))
+            print train_lhds
+            # if the lhd change wasn't sufficeintly big, we are done
+            if null_lhd - alt_lhd < 10:
+                break
+            
+        shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
+        if shift_type == 'LEFT':
+            pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
+            ddg_array = np.insert(ddg_array, 0, np.zeros(3, dtype='float32')
+                              ).view(DeltaDeltaGArray)
+        elif shift_type == 'RIGHT':
+            pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
+            ddg_array = np.append(ddg_array, np.zeros(3, dtype='float32')).view(
+                DeltaDeltaGArray)
+        else:
+            assert False, "Unrecognized shift type '%s'" % shift_type
+        ref_energy = ref_energy
+        prev_shift_type = shift_type 
         for i in xrange(10):
             print "="*100
-
-        # XXX this is messy, should be packaged into an object
-        pyTFbindtools.log("checking quality of fit", 'VERBOSE')
-        sim_sizes = [seqs.get_value().shape[0]
-                     for seqs in partitioned_and_coded_rnds_and_seqs[0]]
-        read_len = len(rnds_and_seqs[0][0])
-        n_bind_sites = read_len - bs_len + 1
-
-        chem_pots = est_chem_potentials(
-            ddg_array, ref_energy, 
-            dna_conc, prot_conc, 
-            n_bind_sites,
-            len(sim_sizes))
-
-        bs_lhds = bootstrap_lhds(
-            read_len, ddg_array, ref_energy, 
-            chem_pots,
-            sim_sizes=sim_sizes,
-            pool_size=random_seq_pool_size )
-        
-        opt_path.append(
-            (rnd_num,
-             ddg_array, ref_energy,
-             lhd_hat, (np.array(bs_lhds).mean(), np.array(bs_lhds).std())))
-        
-        print "BS MEAN", np.array(bs_lhds).mean(), "SD", np.array(bs_lhds).std()
-        print lhd_hat
-
-        ddg_array = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
-        ref_energy = ref_energy
-    
+   
     return ddg_array, ref_energy
     
 def main():
