@@ -3,7 +3,7 @@ import math
 
 from itertools import product, izip, chain
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -42,6 +42,37 @@ MOMENTUM = None
 
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
+ShapeData = namedtuple(
+    'ShapeData', ['HelT', 'MGW', 'LProT', 'RProT', 'LRoll', 'RRoll'])
+
+def load_shape_data():
+    prefix = os.path.join(os.path.dirname(__file__), './shape_data/')
+    fivemer_fnames = ["all_fivemers.HelT", "all_fivemers.MGW"]
+    fourmer_fnames = ["all_fivemers.ProT", "all_fivemers.Roll"]
+    shape_params = defaultdict(list)
+    # load shape data for all of the fivemers 
+    for fname in chain(fivemer_fnames, fourmer_fnames):
+        shape_param_name = fname.split(".")[-1]
+        with open(os.path.join(prefix, fname)) as fp:
+            for data in fp.read().strip().split(">")[1:]:
+                seq, params = data.split()
+                param = params.split(";")
+                if len(param) == 5:
+                    shape_params[seq].append(float(param[2]))
+                elif len(param) == 4:
+                    shape_params[seq].append(float(param[1]))
+                    shape_params[seq].append(float(param[2]))
+    
+    # cast into a named tuple
+    for seq, values in shape_params.iteritems():
+        shape_params[seq] = ShapeData(*values)
+    
+    return dict(shape_params)
+
+shape_data = load_shape_data()
+#for seq, values in shape_data.iteritems():
+#    print seq, values
+#assert False
 
 def base_map(base):
     if base == 'N':
@@ -54,26 +85,65 @@ def enumerate_binding_sites(seq, bs_len):
         yield subseq
         yield "".join(RC_map[base] for base in reversed(subseq))
 
-def code_sequence(seq, motif_len):
+def iter_fivemers(seq):
+    for start in xrange(len(seq) - 5 + 1):
+        yield seq[start:start+5]
+    return
+
+def est_shape_params_for_subseq(subseq):
+    """Est shape params for a subsequence.
+
+    Assumes that the flanking sequence is included, so it returns 
+    a vector of length len(subseq) - 2 (because the encoding is done with 
+    fivemers)
+    """
+    res = np.zeros(6*(len(subseq)-4), dtype=theano.config.floatX)
+    for i, fivemer in enumerate(iter_fivemers(subseq)):
+        if 'N' in fivemer:
+            res[6*i:6*(i+1)] = 0
+        else:
+            res[6*i:6*(i+1)] = shape_data[fivemer]
+    return res
+
+def code_subseq(subseq, left_flank_dimer, right_flank_dimer, motif_len):
+    """Code a subsequence and it's reverse complement.
+    
+    """
+    if isinstance(subseq, str): subseq = subseq.upper()
+    # forward sequence
+    values = np.zeros(motif_len*(3+6), dtype=theano.config.floatX)
+    coded_subseq = np.array([
+        pos*3 + (base_map(base) - 1) 
+        for pos, base in enumerate(subseq)
+        if base_map(base) != 0], dtype=int)
+    values[coded_subseq] = 1
+    values[3*len(subseq):] = est_shape_params_for_subseq(
+        left_flank_dimer + subseq + right_flank_dimer)
+    return values
+
+
+def code_sequence(seq, motif_len,
+                  left_flank_dimer="NN", right_flank_dimer="NN"):
     # store all binding sites (subseqs and reverse complements of length 
     # motif )
     coded_bss = []
+    seq = left_flank_dimer + seq + right_flank_dimer
     #coded_seq = np.array([base_map[base] for base in seq.upper()])
-    for offset in xrange(0, len(seq)-motif_len+1):
+    for offset in xrange(2, len(seq)-motif_len+1-2):
         subseq = seq[offset:offset+motif_len]
-        if isinstance(subseq, str): subseq = subseq.upper()
-        # forward sequence
-        coded_subseq = [
-            pos*3 + (base_map(base) - 1) 
-            for pos, base in enumerate(subseq)
-            if base_map(base) != 0]
-        coded_bss.append(np.array(coded_subseq, dtype=int))
-        # reverse complement
-        coded_subseq = [
-            pos*3 + (2 - base_map(base)) 
-            for pos, base in enumerate(reversed(subseq))
-            if base_map(base) != 3]
-        coded_bss.append(np.array(coded_subseq, dtype=int))
+        left_flank = seq[offset-2:offset]
+        right_flank = seq[offset+motif_len:offset+motif_len+2]
+        values = code_subseq(subseq, left_flank, right_flank, motif_len)
+        coded_bss.append(values)
+
+        subseq = "".join(
+            RC_map[base] for base in reversed(seq[offset:offset+motif_len]))
+        left_flank = "".join(
+            RC_map[base] for base in reversed(seq[offset-2:offset]))
+        right_flank_flank = "".join(
+            RC_map[base] for base in reversed(seq[offset+motif_len:offset+motif_len+2]))
+        values = code_subseq(subseq, left_flank, right_flank, motif_len)
+        coded_bss.append(values)
 
     return coded_bss
 
@@ -83,11 +153,13 @@ def code_seqs(seqs, motif_len, n_seqs=None, ON_GPU=True):
     """
     if n_seqs == None: n_seqs = len(seqs)
     subseq0 = code_sequence(next(iter(seqs)), motif_len)
-    coded_seqs = np.zeros((n_seqs, len(subseq0), motif_len*3), 
+    # leave 3 rows for each sequence base, and 6 for the shape params
+    coded_seqs = np.zeros((n_seqs, len(subseq0), motif_len*(3+6)), 
                           dtype=theano.config.floatX)
     for i, seq in enumerate(seqs):
-        for j, subseq in enumerate(code_sequence(seq, motif_len)):
-            coded_seqs[i,j,subseq] = 1
+        for j, param_values in enumerate(code_sequence(seq, motif_len)):
+            coded_seqs[i, j, :] = param_values
+        
     if ON_GPU:
         return theano.shared(coded_seqs)
     else:
@@ -160,12 +232,13 @@ def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites):
     n_sims = 10000
     key = ('SIM', ddg_array.motif_len)
     if key not in cached_coded_seqs:
-        current_pool = np.array([np.random.randint(4, size=seq_len)
-                                 for i in xrange(n_sims)])
+        current_pool = ["".join(random.choice('ACGT') for j in xrange(seq_len))
+                        for i in xrange(n_sims)]
         coded_seqs = code_seqs(current_pool, ddg_array.motif_len, ON_GPU=False)
-
         cached_coded_seqs[key] = coded_seqs
     coded_seqs = cached_coded_seqs[key]
+    print "Args", ref_energy, ddg_array.shape, n_bind_sites, seq_len
+    print "Sampled Sim Shape:", coded_seqs.shape
     energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
     energies.sort()
     part_fn = np.ones(len(energies), dtype=float)/len(energies)
@@ -236,6 +309,8 @@ def calc_lhd_denominators(
 def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs):
     n_bind_sites = partitioned_and_coded_rnds_and_seqs[
         0][0].get_value().shape[1]
+    print "coded_shape", partitioned_and_coded_rnds_and_seqs[
+        0][0].get_value().shape
     
     calc_energy_fns = []
     sym_e = TT.vector()
@@ -449,6 +524,7 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
     """
     
     ddg_array = init_ddg_array.copy()
+    print "Initial DDG Array Shape:", ddg_array.shape
     ref_energy = np.array(init_ref_energy)
     iteration_number = 0
     tol = 1e-2
@@ -814,6 +890,7 @@ def estimate_dg_matrix_with_adadelta(
     def extract_data_from_array(x):
         ref_energy = x[0]
         ddg_array = x[1:].astype('float32').view(DeltaDeltaGArray)
+        print "ddg array shape", ddg_array.shape
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy, dna_conc, prot_conc,
             n_bind_sites, len(partitioned_and_coded_rnds_and_seqs[0]))
@@ -882,6 +959,7 @@ def estimate_dg_matrix_with_adadelta(
     calc_log_lhd = calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs)
 
     x0 = init_ddg_array.copy().astype('float32')
+    x0 = np.append(x0, np.zeros(6*(len(x0)/3)))
     x0 = np.insert(x0, 0, init_ref_energy)
     x = ada_delta(x0)
 
