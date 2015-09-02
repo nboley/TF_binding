@@ -3,7 +3,7 @@ import gzip
 
 from itertools import izip
 
-sys.path.insert(0, "/home/nboley/src/TF_binding/")
+sys.path.insert(0, "/users/nboley/src/TF_binding/")
 
 import numpy as np
 
