@@ -264,7 +264,8 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             print "Alt Mean:", np.mean(np.array(train_lhds))
             print train_lhds
             # if the lhd change wasn't sufficeintly big, we are done
-            if null_lhd - alt_lhd < 10:
+            if null_lhd + 10 > alt_lhd:
+                print "NO INCREASE IN MODEL"
                 break
             
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
