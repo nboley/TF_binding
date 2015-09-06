@@ -3,7 +3,7 @@ import gzip
 
 from itertools import izip
 
-sys.path.insert(0, "/users/nboley/src/TF_binding/")
+sys.path.insert(0, "/home/nboley/src/TF_binding/")
 
 import numpy as np
 
@@ -16,7 +16,7 @@ from pyTFbindtools.selex import (
     estimate_dg_matrix_with_adadelta,
     est_chem_potentials, bootstrap_lhds,
     find_pwm_from_starting_alignment,
-    partition_and_code_all_seqs, calc_log_lhd_factory)
+    PartitionedAndCodedSeqs, calc_log_lhd_factory, base_map)
 from pyTFbindtools.motif_tools import (
     load_energy_data, load_motifs, load_motif_from_text,
     logistic, Motif, R, T,
@@ -144,7 +144,7 @@ def parse_arguments():
 
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
-    parser.add_argument( '--random-seq-pool-size', type=float, default=1e5,
+    parser.add_argument( '--random-seq-pool-size', type=float, default=1e6,
         help='The random pool size for the bootstrap.')
 
 
@@ -197,7 +197,7 @@ def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
     occs = calc_occ(energies, ref_energy, chem_pot)
     for seq, occ in izip(seqs, occs):
         for base_pos, base in enumerate(seq):
-            pwm[base_pos,base] += occ
+            pwm[base_pos,base_map(base)] += occ
     pwm = pwm.T/pwm.sum(1)
     return pwm
 
@@ -222,9 +222,8 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
     prev_shift_type = None
     for rnd_num in xrange(len(rnds_and_seqs[0][0])-ddg_array.motif_len+1):
         bs_len = ddg_array.motif_len
-        
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
-        partitioned_and_coded_rnds_and_seqs = partition_and_code_all_seqs(
+        partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
 
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
@@ -241,7 +240,8 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             chem_pots = est_chem_potentials(
                 ddg_array, ref_energy, 
                 dna_conc, prot_conc, 
-                n_bind_sites,
+                partitioned_and_coded_rnds_and_seqs.n_bind_sites,
+                partitioned_and_coded_rnds_and_seqs.seq_length,
                 len(partitioned_and_coded_rnds_and_seqs[0]))
             alt_lhd = calc_log_lhd(ref_energy, ddg_array, chem_pots, 0)
             train_lhds = [
@@ -255,7 +255,8 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             chem_pots = est_chem_potentials(
                 ddg_array, ref_energy, 
                 dna_conc, prot_conc, 
-                n_bind_sites,
+                partitioned_and_coded_rnds_and_seqs.n_bind_sites,
+                partitioned_and_coded_rnds_and_seqs.seq_length,
                 len(partitioned_and_coded_rnds_and_seqs[0]))
             null_lhd = calc_log_lhd(ref_energy, null_ddg_array, chem_pots, 0)
             print "Alt", alt_lhd, "Null", null_lhd

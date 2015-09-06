@@ -37,6 +37,8 @@ CONSTRAIN_MEAN_ENERGY = True
 CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 8.0
 
+USE_SHAPE = False
+
 # during optimization, how much to account for previous values
 MOMENTUM = None
 
@@ -111,14 +113,18 @@ def code_subseq(subseq, left_flank_dimer, right_flank_dimer, motif_len):
     """
     if isinstance(subseq, str): subseq = subseq.upper()
     # forward sequence
-    values = np.zeros(motif_len*(3+6), dtype=theano.config.floatX)
+    len_per_base = 3
+    if USE_SHAPE: 
+        len_per_base += 6 
+    values = np.zeros(motif_len*len_per_base, dtype=theano.config.floatX)
     coded_subseq = np.array([
         pos*3 + (base_map(base) - 1) 
         for pos, base in enumerate(subseq)
         if base_map(base) != 0], dtype=int)
     values[coded_subseq] = 1
-    values[3*len(subseq):] = est_shape_params_for_subseq(
-        left_flank_dimer + subseq + right_flank_dimer)
+    if USE_SHAPE:
+        values[3*len(subseq):] = est_shape_params_for_subseq(
+            left_flank_dimer + subseq + right_flank_dimer)
     return values
 
 
@@ -154,18 +160,20 @@ def code_seqs(seqs, motif_len, n_seqs=None, ON_GPU=True):
     if n_seqs == None: n_seqs = len(seqs)
     subseq0 = code_sequence(next(iter(seqs)), motif_len)
     # leave 3 rows for each sequence base, and 6 for the shape params
-    coded_seqs = np.zeros((n_seqs, len(subseq0), motif_len*(3+6)), 
+    len_per_base = 3
+    if USE_SHAPE:
+        len_per_base += 6
+    coded_seqs = np.zeros((n_seqs, len(subseq0), motif_len*len_per_base), 
                           dtype=theano.config.floatX)
     for i, seq in enumerate(seqs):
         for j, param_values in enumerate(code_sequence(seq, motif_len)):
             coded_seqs[i, j, :] = param_values
-        
     if ON_GPU:
         return theano.shared(coded_seqs)
     else:
         return coded_seqs
 
-def est_partition_fn_fft(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
+def est_partition_fn_fft(ref_energy, ddg_array, n_bind_sites, seq_len, n_bins=2**12):
     # make sure the number of bins is a power of two. This is two aboid extra
     # padding during the fft convolution
     if (n_bins & (n_bins-1)):
@@ -209,7 +217,7 @@ def est_partition_fn_fft(ref_energy, ddg_array, n_bind_sites, n_bins=2**12):
 
 
 cached_coded_seqs = {}
-def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites):
+def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites, seq_len):
     assert ddg_array.motif_len <= 8
     if ddg_array.motif_len not in cached_coded_seqs:
         cached_coded_seqs[ddg_array.motif_len] = code_seqs(
@@ -227,8 +235,7 @@ def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites):
     min_pdf = np.array(np.diff(min_cdf), dtype='float32')
     return energies, min_cdf
 
-def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites):
-    seq_len = n_bind_sites + ddg_array.motif_len - 1
+def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites, seq_len):
     n_sims = 10000
     key = ('SIM', ddg_array.motif_len)
     if key not in cached_coded_seqs:
@@ -237,8 +244,6 @@ def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites):
         coded_seqs = code_seqs(current_pool, ddg_array.motif_len, ON_GPU=False)
         cached_coded_seqs[key] = coded_seqs
     coded_seqs = cached_coded_seqs[key]
-    print "Args", ref_energy, ddg_array.shape, n_bind_sites, seq_len
-    print "Sampled Sim Shape:", coded_seqs.shape
     energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
     energies.sort()
     part_fn = np.ones(len(energies), dtype=float)/len(energies)
@@ -292,12 +297,12 @@ def calc_lhd_numerators(
     return numerators
 
 def calc_lhd_denominators(
-        ref_energy, ddg_array, chem_affinities, n_bind_sites):
+        ref_energy, ddg_array, chem_affinities, seq_len, n_bind_sites):
     # now calculate the denominator (the normalizing factor for each round)
     # calculate the expected bin counts in each energy level for round 0
     energies, partition_fn = est_partition_fn(
-        ref_energy, ddg_array, n_bind_sites)
-    expected_cnts = (4**(ddg_array.motif_len+n_bind_sites-1))*partition_fn 
+        ref_energy, ddg_array, seq_len, n_bind_sites)
+    expected_cnts = (4**seq_len)*partition_fn 
     curr_occupancies = np.ones(len(energies), dtype='float32')
     denominators = []
     for rnd, chem_affinity in enumerate(chem_affinities):
@@ -306,12 +311,7 @@ def calc_lhd_denominators(
     #print denominators
     return denominators
 
-def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs):
-    n_bind_sites = partitioned_and_coded_rnds_and_seqs[
-        0][0].get_value().shape[1]
-    print "coded_shape", partitioned_and_coded_rnds_and_seqs[
-        0][0].get_value().shape
-    
+def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs):    
     calc_energy_fns = []
     sym_e = TT.vector()
     for rnds_and_coded_seqs in partitioned_and_coded_rnds_and_seqs:
@@ -340,7 +340,9 @@ def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs):
 
         # calcualte the denominators
         denominators = calc_lhd_denominators(
-            ref_energy, ddg_array, rnds_and_chem_affinities, n_bind_sites)
+            ref_energy, ddg_array, rnds_and_chem_affinities, 
+            partitioned_and_coded_rnds_and_seqs.seq_length,
+            partitioned_and_coded_rnds_and_seqs.n_bind_sites)
 
         lhd = 0.0
         for rnd_num, rnd_denom, rnd_seq_ddgs in izip(
@@ -418,7 +420,8 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
         ddg_array[3*base_pos:3*(base_pos+1)] += x
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
+            n_bind_sites, 
+            len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
         penalty = calc_penalty(ref_energy, ddg_array, chem_pots)        
         ddg_array[3*base_pos:3*(base_pos+1)] -= x
@@ -429,7 +432,8 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
         ddg_array = x[1:].astype('float32').view(DeltaDeltaGArray)
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
+            n_bind_sites, 
+            len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy, ddg_array, chem_pots)
         penalty = calc_penalty(ref_energy, ddg_array, chem_pots)
         
@@ -449,7 +453,8 @@ def estimate_dg_matrix(rnds_and_seqs, init_ddg_array, init_ref_energy,
     def f_ref_energy(x):
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy+x, dna_conc, prot_conc,
-            n_bind_sites, len(rnds_and_seqs))
+            n_bind_sites, 
+            len(rnds_and_seqs))
         rv = calc_log_lhd(ref_energy+x, ddg_array, chem_pots)
         penalty = calc_penalty(ref_energy+x, ddg_array, chem_pots)
 
@@ -675,9 +680,9 @@ def est_chem_potential(
     return rv
 
 def est_chem_potentials(ddg_array, ref_energy, dna_conc, prot_conc,
-                        n_bind_sites, num_rnds):
+                        n_bind_sites, seq_len, num_rnds):
     energy_grid, partition_fn = est_partition_fn(
-        ref_energy, ddg_array, n_bind_sites)
+        ref_energy, ddg_array, n_bind_sites, seq_len)
     chem_pots = []
     for rnd in xrange(num_rnds):
         chem_pot = est_chem_potential(
@@ -760,12 +765,13 @@ def build_random_read_energies_pool(pool_size, read_len, ddg_array, ref_energy,
     for i in xrange(pool_size):
         if i%10000 == 0: 
             pyTFbindtools.log("Bootstrapped %i reads." % i, level='VERBOSE')
-        seq = np.random.randint(4, size=read_len)
+        seq = "".join(random.choice('ACGT') for j in xrange(read_len))
+        # np.random.randint(4, size=read_len)
         if store_seqs: seqs.append(seq)
         coded_seq = code_sequence(seq, ddg_array.motif_len)
         energy = 1e100
         for subseq in coded_seq:
-            energy = min(energy, ddg_array[subseq].sum())
+            energy = min(energy, ddg_array.dot(subseq))
         energies[i] = energy
     return energies, seqs
 
@@ -852,19 +858,23 @@ def bootstrap_lhds(read_len,
         lhds.append( numerator - normalizing_constant )
     return lhds
 
-def partition_data(seqs):
-    assert len(seqs) > 150
-    n_partitions = max(5, len(seqs)/10000)
-    partitioned_seqs = [[] for i in xrange(n_partitions)]
-    for i, seq in enumerate(seqs):
-        partitioned_seqs[i%n_partitions].append(seq)
-    return partitioned_seqs
+class PartitionedAndCodedSeqs(list):
+    @staticmethod
+    def partition_data(seqs):
+        assert len(seqs) > 150
+        n_partitions = max(5, len(seqs)/10000)
+        partitioned_seqs = [[] for i in xrange(n_partitions)]
+        for i, seq in enumerate(seqs):
+            partitioned_seqs[i%n_partitions].append(seq)
+        return partitioned_seqs
 
-def partition_and_code_all_seqs(rnds_and_seqs, bs_len):
-    return zip(*[
-        [ code_seqs(rnd_seqs, bs_len)
-          for rnd_seqs in partition_data(seqs)]
-        for seqs in rnds_and_seqs])
+    def __init__(self, rnds_and_seqs, bs_len):
+        self.seq_length = len(rnds_and_seqs[0][0])
+        self.extend(zip(*[
+            [ code_seqs(rnd_seqs, bs_len)
+              for rnd_seqs in self.partition_data(seqs)]
+            for seqs in rnds_and_seqs]))
+        self.n_bind_sites = self[0][0].get_value().shape[1]
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
@@ -890,10 +900,11 @@ def estimate_dg_matrix_with_adadelta(
     def extract_data_from_array(x):
         ref_energy = x[0]
         ddg_array = x[1:].astype('float32').view(DeltaDeltaGArray)
-        print "ddg array shape", ddg_array.shape
         chem_pots = est_chem_potentials(
             ddg_array, ref_energy, dna_conc, prot_conc,
-            n_bind_sites, len(partitioned_and_coded_rnds_and_seqs[0]))
+            partitioned_and_coded_rnds_and_seqs.n_bind_sites, 
+            partitioned_and_coded_rnds_and_seqs.seq_length, 
+            len(partitioned_and_coded_rnds_and_seqs[0]))
         return ref_energy, chem_pots, ddg_array
     
     def f_dg(x, train_index):
@@ -953,13 +964,12 @@ def estimate_dg_matrix_with_adadelta(
         x_hat_index = np.argmax(np.array(test_lhds))
         return xs[x_hat_index]
     
-    bs_len = init_ddg_array.motif_len
-    n_bind_sites = partitioned_and_coded_rnds_and_seqs[0][0].get_value().shape[1]
-    
+    bs_len = init_ddg_array.motif_len    
     calc_log_lhd = calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs)
 
     x0 = init_ddg_array.copy().astype('float32')
-    x0 = np.append(x0, np.zeros(6*(len(x0)/3)))
+    if USE_SHAPE:
+        x0 = np.append(x0, np.zeros(6*(len(x0)/3)))
     x0 = np.insert(x0, 0, init_ref_energy)
     x = ada_delta(x0)
 

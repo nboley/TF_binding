@@ -109,7 +109,7 @@ class DeltaDeltaGArray(np.ndarray):
 
     @property
     def motif_len(self):
-        return len(self)/9
+        return len(self)/3
 
     def consensus_seq(self):
         base_contribs = self.calc_base_contributions()
