@@ -938,7 +938,8 @@ def estimate_dg_matrix_with_adadelta(
             train_lhd = -f_dg(x0, train_index)
             test_lhd = -f_dg(x0, 0)
             ref_energy, chem_pots, ddg_array = extract_data_from_array(x0)
-            
+
+            """
             print ddg_array.consensus_seq()
             print chem_pots
             print "Ref:", ref_energy
@@ -948,7 +949,8 @@ def estimate_dg_matrix_with_adadelta(
             print "Train: ", train_lhd, "(%i)" % train_index
             print "Test:", test_lhd
             print math.sqrt((grad**2).sum())
-
+            """
+            
             train_lhds.append(train_lhd)
             test_lhds.append(test_lhd)
             xs.append(x0)

@@ -237,6 +237,15 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             ddg_array, ref_energy,
             dna_conc, prot_conc)
         opt_path.append([bs_len, lhd_hat, ddg_array, ref_energy])
+
+        pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
+        pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
+        pyTFbindtools.log(
+            "Mean: %s" % (ref_energy + ddg_array.sum()/3), 'VERBOSE')
+        pyTFbindtools.log(
+            "Min: %s" % ddg_array.calc_min_energy(ref_energy), 'VERBOSE')
+        pyTFbindtools.log(
+            str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
         
         if prev_lhd != None and prev_lhd + 10 > lhd_hat:
             pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
@@ -261,9 +270,6 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             assert False, "Unrecognized shift type '%s'" % shift_type
         ref_energy = ref_energy
         
-        for i in xrange(10):
-            print "="*100
-
     for entry in opt_path:
         print entry
     
