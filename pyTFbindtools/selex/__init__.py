@@ -955,9 +955,6 @@ def estimate_dg_matrix_with_adadelta(
             test_lhds.append(test_lhd)
             xs.append(x0)
             min_num_iter = 10
-            if i > 2*min_num_iter:
-                print sum(test_lhds[-2*min_num_iter:-min_num_iter])/min_num_iter, \
-                    sum(test_lhds[-min_num_iter:])/min_num_iter
             if i > 2*min_num_iter and (
                     sum(test_lhds[-2*min_num_iter:-min_num_iter])/min_num_iter
                     > sum(test_lhds[-min_num_iter:])/min_num_iter ):
