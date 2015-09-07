@@ -14,7 +14,6 @@ import pyTFbindtools.selex
 from pyTFbindtools.selex import (
     find_pwm, code_seqs, 
     estimate_dg_matrix_with_adadelta,
-    est_chem_potentials, bootstrap_lhds,
     find_pwm_from_starting_alignment,
     PartitionedAndCodedSeqs, calc_log_lhd_factory, base_map)
 from pyTFbindtools.motif_tools import (
@@ -194,13 +193,16 @@ def parse_arguments():
     return motif, rnds_and_seqs, int(args.random_seq_pool_size)
 
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
-    from pyTFbindtools.selex import build_random_read_energies_pool, calc_occ
-    pwm = np.zeros((len(ddg_array)/3, 4))
-    energies, seqs = build_random_read_energies_pool(
-        10000, len(ddg_array)/3, ddg_array, ref_energy, store_seqs=True)
+    from pyTFbindtools.selex import random_seqs, code_seqs, calc_occ
+    random_coded_seqs = code_seqs(
+        random_seqs, ddg_array.motif_len, ON_GPU=False)
+    energies = random_coded_seqs.dot(ddg_array).min(1)
+    min_energy_offsets = np.argmin(random_coded_seqs.dot(ddg_array), 1)
     occs = calc_occ(energies, ref_energy, chem_pot)
-    for seq, occ in izip(seqs, occs):
-        for base_pos, base in enumerate(seq):
+    pwm = np.zeros((ddg_array.motif_len, 4))
+
+    for seq, offset, occ in izip(random_seqs, min_energy_offsets, occs):
+        for base_pos, base in enumerate(seq[offset:offset+ddg_array.motif_len]):
             pwm[base_pos,base_map(base)] += occ
     pwm = pwm.T/pwm.sum(1)
     return pwm
@@ -225,6 +227,11 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
     else:
         return "RIGHT"
 
+def calc_log_lhd(partitioned_and_coded_rnds_and_seqs, ddg_array, ref_energy):
+    calc_log_lhd = calc_log_lhd_factory(
+        partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
+    return calc_log_lhd(ref_energy, ddg_array, 0)
+
 def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
     opt_path = []
     prev_lhd = None
@@ -235,14 +242,16 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
         partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
 
+        prev_lhd = calc_log_lhd(
+            partitioned_and_coded_rnds_and_seqs, ddg_array, ref_energy)
+        pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
+        
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
         ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
                 ddg_array, ref_energy,
                 dna_conc, prot_conc)
-
-        opt_path.append([bs_len, lhd_hat, ddg_array, ref_energy])
 
         pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
         pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
@@ -253,13 +262,15 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
         pyTFbindtools.log(
             str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
 
-        ## Old stop criterion
-        #if prev_lhd != None and prev_lhd + 10 > lhd_hat:
+        new_lhd = calc_log_lhd(
+            partitioned_and_coded_rnds_and_seqs, ddg_array, ref_energy)
+
+        opt_path.append([bs_len, new_lhd, ddg_array, ref_energy])
 
         pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
-            lhd_path[0], lhd_path[-1], lhd_path[0]-lhd_path[-1]), 'VERBOSE')
+            prev_lhd, new_lhd, new_lhd-prev_lhd), 'VERBOSE')
 
-        if lhd_path[0] + 10 > lhd_path[-1]:        
+        if prev_lhd + 10 > lhd_hat:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break
         

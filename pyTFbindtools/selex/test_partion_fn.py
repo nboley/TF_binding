@@ -11,6 +11,98 @@ from scipy.signal import fftconvolve
 
 NBINS = 500
 
+def calc_lhd_denominators(
+        ref_energy, ddg_array, chem_affinities, seq_len, n_bind_sites):
+    # now calculate the denominator (the normalizing factor for each round)
+    # calculate the expected bin counts in each energy level for round 0
+    energies, partition_fn = est_partition_fn(
+        ref_energy, ddg_array, seq_len, n_bind_sites)
+    expected_cnts = (4**seq_len)*partition_fn 
+    curr_occupancies = np.ones(len(energies), dtype='float32')
+    denominators = []
+    for rnd, chem_affinity in enumerate(chem_affinities):
+        curr_occupancies *= logistic(-(-chem_affinity+energies)/(R*T))
+        denominators.append( np.log((expected_cnts*curr_occupancies).sum()) )
+    #print denominators
+    return denominators
+
+def est_partition_fn_sampling(ref_energy, ddg_array, n_bind_sites, seq_len):
+    n_sims = PARTITION_FN_SAMPLE_SIZE
+    key = ('SIM', ddg_array.motif_len)
+    if key not in cached_coded_seqs:
+        current_pool = ["".join(random.choice('ACGT') for j in xrange(seq_len))
+                        for i in xrange(n_sims)]
+        coded_seqs = code_seqs(current_pool, ddg_array.motif_len, ON_GPU=False)
+        cached_coded_seqs[key] = coded_seqs
+    coded_seqs = cached_coded_seqs[key]
+    energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
+    energies.sort()
+    part_fn = np.ones(len(energies), dtype=float)/len(energies)
+    return energies, part_fn
+
+def est_partition_fn_fft(ref_energy, ddg_array, n_bind_sites, seq_len, n_bins=2**12):
+    # make sure the number of bins is a power of two. This is two aboid extra
+    # padding during the fft convolution
+    if (n_bins & (n_bins-1)):
+        raise ValueError, "The number of bins must be a power of two"
+
+    # reset the motif data so that the minimum value in each column is 0
+    min_energy = ddg_array.calc_min_energy(ref_energy)
+    max_energy = ddg_array.calc_max_energy(ref_energy)
+    step_size = (max_energy-min_energy+1e-6)/(n_bins-ddg_array.motif_len)
+    
+    # build the polynomial for each base
+    fft_product = np.zeros(n_bins, dtype='float32')
+    new_poly = np.zeros(n_bins, dtype='float32')
+    # for each base, add to the polynomial
+    for base_i, base_energies in enumerate(
+            ddg_array.calc_base_contributions()):
+        # add 1e-12 to avoid rounding errors
+        nonzero_bins = np.array(
+            ((base_energies-base_energies.min()+1e-6)/step_size).round(), 
+            dtype=int)
+        new_poly[nonzero_bins] = 0.25
+        freq_poly = rfft(new_poly, n_bins)
+        new_poly[nonzero_bins] = 0
+        
+        if base_i == 0:
+            fft_product = freq_poly
+        else:
+            fft_product *= freq_poly
+    
+    # move back into polynomial coefficient space
+    part_fn = irfft(fft_product, n_bins)
+    ## Account for the energy being the minimum over multiple binding sites
+    # insert a leading zero for the cumsum
+    min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
+    min_cdf = np.insert(min_cdf, 0, 0.0)
+    min_pdf = np.array(np.diff(min_cdf), dtype='float32')
+    # build the energy grid
+    x = np.linspace(min_energy, min_energy+step_size*n_bins, n_bins);
+    assert len(x) == n_bins
+    return x, min_pdf
+
+
+cached_coded_seqs = {}
+def est_partition_fn_brute(ref_energy, ddg_array, n_bind_sites, seq_len):
+    assert ddg_array.motif_len <= 8
+    if ddg_array.motif_len not in cached_coded_seqs:
+        cached_coded_seqs[ddg_array.motif_len] = code_seqs(
+            product('ACGT', repeat=ddg_array.motif_len), 
+            ddg_array.motif_len, 
+            n_seqs=4**ddg_array.motif_len, 
+            ON_GPU=False)
+    coded_seqs = cached_coded_seqs[ddg_array.motif_len]
+    
+    energies = ref_energy + coded_seqs.dot(ddg_array).min(1)
+    energies.sort()
+    part_fn = np.ones(len(energies), dtype=float)/len(energies)
+    min_cdf = 1 - (1 - part_fn.cumsum())**n_bind_sites
+    #min_cdf = np.insert(min_cdf, 0, 0.0)
+    min_pdf = np.array(np.diff(min_cdf), dtype='float32')
+    return energies, min_cdf
+
+
 def bin_energies(energies, min_energy, max_energy, n_bins=NBINS):
     energy_range = max_energy - min_energy + 1e-12
     step_size = energy_range/(n_bins-1)
