@@ -208,10 +208,14 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
         rnds_and_seqs[-1], np.hstack((np.zeros((4,1)), pwm.T)))    
     right_shift_pwm = find_pwm_from_starting_alignment(
         rnds_and_seqs[-1], np.hstack((pwm.T, np.zeros((4,1)))))    
-    left_shift_score = (
+    # calculate the entropies, and shift int he direction that gives the
+    # smallest entropy
+    left_shift_score = -(
         left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:])).sum()
-    right_shift_score = (
+    right_shift_score = -(
         right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:])).sum()
+    pyTFbindtools.log("Left shift entropy: %.2e" % left_shift_score, 'VERBOSE')
+    pyTFbindtools.log("Right shift entropy: %.2e" % right_shift_score,'VERBOSE')
     if left_shift_score < right_shift_score:
         return "LEFT"
     else:
@@ -219,55 +223,31 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
 
 def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
     opt_path = []
-    prev_shift_type = None
-    for rnd_num in xrange(len(rnds_and_seqs[0][0])-ddg_array.motif_len+1):
+    prev_lhd = None
+    for rnd_num in xrange(min(20, 
+                              len(rnds_and_seqs[0][0])-ddg_array.motif_len+1)):
         bs_len = ddg_array.motif_len
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
         partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
 
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, lhd_hat
-        ) = estimate_dg_matrix_with_adadelta(
+        ( ddg_array, ref_energy, lhd_hat ) = estimate_dg_matrix_with_adadelta(
             partitioned_and_coded_rnds_and_seqs,
             ddg_array, ref_energy,
             dna_conc, prot_conc)
-
-        if prev_shift_type != None:
-            pyTFbindtools.log("checking quality of fit", 'VERBOSE')
-            calc_log_lhd = calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs)
-            n_bind_sites = partitioned_and_coded_rnds_and_seqs[0][0].get_value().shape[1]
-            chem_pots = est_chem_potentials(
-                ddg_array, ref_energy, 
-                dna_conc, prot_conc, 
-                partitioned_and_coded_rnds_and_seqs.n_bind_sites,
-                partitioned_and_coded_rnds_and_seqs.seq_length,
-                len(partitioned_and_coded_rnds_and_seqs[0]))
-            alt_lhd = calc_log_lhd(ref_energy, ddg_array, chem_pots, 0)
-            train_lhds = [
-                calc_log_lhd(ref_energy, ddg_array, chem_pots, i)
-                for i in xrange(1, len(partitioned_and_coded_rnds_and_seqs)) ]
-            null_ddg_array = ddg_array.copy()
-            if prev_shift_type == 'LEFT':
-                null_ddg_array[:3] = 0
-            elif prev_shift_type == 'RIGHT':
-                null_ddg_array[-3:] = 0
-            chem_pots = est_chem_potentials(
-                ddg_array, ref_energy, 
-                dna_conc, prot_conc, 
-                partitioned_and_coded_rnds_and_seqs.n_bind_sites,
-                partitioned_and_coded_rnds_and_seqs.seq_length,
-                len(partitioned_and_coded_rnds_and_seqs[0]))
-            null_lhd = calc_log_lhd(ref_energy, null_ddg_array, chem_pots, 0)
-            print "Alt", alt_lhd, "Null", null_lhd
-            print "Alt SD:", np.std(np.array(train_lhds))
-            print "Alt Mean:", np.mean(np.array(train_lhds))
-            print train_lhds
-            # if the lhd change wasn't sufficeintly big, we are done
-            if null_lhd + 10 > alt_lhd:
-                print "NO INCREASE IN MODEL"
-                break
-            
+        opt_path.append([bs_len, lhd_hat, ddg_array, ref_energy])
+        
+        if prev_lhd != None and prev_lhd + 10 > lhd_hat:
+            pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
+                prev_lhd, lhd_hat, lhd_hat-prev_lhd), 'VERBOSE')
+            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
+            break
+        
+        # update hte previous likelihood
+        prev_lhd = lhd_hat
+        
+        pyTFbindtools.log("Finding best shift", 'VERBOSE')
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
         if shift_type == 'LEFT':
             pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
@@ -280,23 +260,18 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
         else:
             assert False, "Unrecognized shift type '%s'" % shift_type
         ref_energy = ref_energy
-        prev_shift_type = shift_type 
+        
         for i in xrange(10):
             print "="*100
-   
+
+    for entry in opt_path:
+        print entry
+    
     return ddg_array, ref_energy
     
 def main():
     motif, rnds_and_seqs, random_seq_pool_size = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
-    #pwm = find_pwm_from_starting_alignment(
-    #    rnds_and_seqs, ddg_array.base_contributions())
-    #print pwm
-    #print build_pwm_from_energies(ddg_array, ref_energy, -12)
-    #assert False
-    #from pyTFbindtools.selex import est_partition_fn
-    #est_partition_fn(ref_energy, ddg_array, 2)
-    #return
     ddg_array_hat, ref_energy_hat = fit_model(
         rnds_and_seqs, ddg_array, ref_energy,
         random_seq_pool_size)
