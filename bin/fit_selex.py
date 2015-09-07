@@ -12,7 +12,7 @@ import pyTFbindtools
 import pyTFbindtools.selex
 
 from pyTFbindtools.selex import (
-    find_pwm, code_seqs, estimate_dg_matrix,
+    find_pwm, code_seqs, 
     estimate_dg_matrix_with_adadelta,
     est_chem_potentials, bootstrap_lhds,
     find_pwm_from_starting_alignment,
@@ -70,7 +70,7 @@ sample for sequencing.
 n_dna_seq = 7.5e-8/(1.079734e-21*119) # molecules  - g/( g/oligo * oligo/molecule)
 dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
 prot_conc = dna_conc/25 # mol/L (should be 25)
-#prot_conc /= 1000
+#prot_conc *= 10
 
 def load_text_file(fp):
     seqs = []
@@ -150,12 +150,16 @@ def parse_arguments():
 
     parser.add_argument( '--verbose', default=False, action='store_true',
                          help='Print extra status information.')
+    parser.add_argument( '--debug-verbose', default=False, action='store_true',
+                         help='Print debug information.')
     
     args = parser.parse_args()
     assert not (args.starting_pwm and args.starting_energy_model), \
             "Can not set both --starting-pwm and --starting-energy_model"
 
-    pyTFbindtools.VERBOSE = args.verbose
+    pyTFbindtools.VERBOSE = args.verbose or args.debug_verbose
+    pyTFbindtools.DEBUG = args.debug_verbose
+
     pyTFbindtools.selex.CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     pyTFbindtools.selex.MAX_NUM_ITER = int(args.max_iter)
     assert args.momentum < 1 and args.momentum >= 0
@@ -232,10 +236,12 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             rnds_and_seqs, bs_len)
 
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, lhd_hat ) = estimate_dg_matrix_with_adadelta(
-            partitioned_and_coded_rnds_and_seqs,
-            ddg_array, ref_energy,
-            dna_conc, prot_conc)
+        ( ddg_array, ref_energy, lhd_path, lhd_hat 
+            ) = estimate_dg_matrix_with_adadelta(
+                partitioned_and_coded_rnds_and_seqs,
+                ddg_array, ref_energy,
+                dna_conc, prot_conc)
+
         opt_path.append([bs_len, lhd_hat, ddg_array, ref_energy])
 
         pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
@@ -246,15 +252,19 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
             "Min: %s" % ddg_array.calc_min_energy(ref_energy), 'VERBOSE')
         pyTFbindtools.log(
             str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
-        
-        if prev_lhd != None and prev_lhd + 10 > lhd_hat:
-            pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
-                prev_lhd, lhd_hat, lhd_hat-prev_lhd), 'VERBOSE')
+
+        ## Old stop criterion
+        #if prev_lhd != None and prev_lhd + 10 > lhd_hat:
+
+        pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
+            lhd_path[0], lhd_path[-1], lhd_path[0]-lhd_path[-1]), 'VERBOSE')
+
+        if lhd_path[0] + 10 > lhd_path[-1]:        
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break
         
         # update hte previous likelihood
-        prev_lhd = lhd_hat
+        #prev_lhd = lhd_hat
         
         pyTFbindtools.log("Finding best shift", 'VERBOSE')
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)

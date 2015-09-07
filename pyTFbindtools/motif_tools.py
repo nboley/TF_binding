@@ -106,7 +106,11 @@ class DeltaDeltaGArray(np.ndarray):
     def calc_max_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()
         return ref_energy + base_contribs.max(1).sum()
-
+    
+    @property
+    def mean_energy(self):
+        return self.sum()/(len(self)/self.motif_len)
+    
     @property
     def motif_len(self):
         return len(self)/3
