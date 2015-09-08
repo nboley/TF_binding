@@ -98,6 +98,13 @@ class DeltaDeltaGArray(np.ndarray):
         base_contribs = np.zeros((len(self)/3, 4))
         base_contribs[:,1:4] = self.reshape((len(self)/3,3))
         return base_contribs
+
+    def calc_normalized_base_conts(self, ref_energy):
+        base_contribs = self.calc_base_contributions()
+        ref_energy += base_contribs.min(1).sum()
+        for i, min_energy in enumerate(base_contribs.min(1)):
+            base_contribs[i,:] -= min_energy
+        return ref_energy, base_contribs
     
     def calc_min_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()

@@ -3,7 +3,7 @@ import gzip
 
 from itertools import izip
 
-sys.path.insert(0, "/home/nboley/src/TF_binding/")
+sys.path.insert(0, "/users/nboley/src/TF_binding/")
 
 import numpy as np
 
@@ -236,7 +236,7 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
             rnds_and_seqs, bs_len)
 
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, lhd_path, lhd_hat 
+        ( ddg_array, ref_energy, chem_pots, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
                 ddg_array, ref_energy,
