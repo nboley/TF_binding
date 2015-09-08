@@ -31,7 +31,7 @@ PARTITION_FN_SAMPLE_SIZE = 10000
 CMP_LHD_NUMERATOR_CALCS = False
 RANDOM_POOL_SIZE = None
 CONVERGENCE_MAX_LHD_CHANGE = None
-MAX_NUM_ITER = None
+MAX_NUM_ITER = 1000
 
 EXPECTED_MEAN_ENERGY = -3.0
 CONSTRAIN_MEAN_ENERGY = True
@@ -691,4 +691,4 @@ def estimate_dg_matrix_with_adadelta(
     ref_energy, chem_pots, ddg_array = extract_data_from_array(x)
     test_lhd = calc_log_lhd(ref_energy, ddg_array, chem_pots, 0)
 
-    return ddg_array, ref_energy, test_lhds, test_lhd
+    return ddg_array, ref_energy, chem_pots, test_lhds, test_lhd
