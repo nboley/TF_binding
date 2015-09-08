@@ -7,6 +7,9 @@ import psycopg2
 
 from pysam import FastaFile, TabixFile
 
+import pyximport; pyximport.install()
+import score_seq
+
 from collections import namedtuple
 PwmModel = namedtuple('PwmModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
@@ -61,5 +64,13 @@ def main():
     print "Loaded regions"
     motifs = load_all_motifs()
     print "Loaded motifs"
+
+    for region in regions:
+        seq = genome.fetch(*region)
+        print region
+        for motif in motifs:
+            score = score_seq.score_seq_from_pwm(bytes(seq), motif.pwm)
+            print region, score
+            return
     
 main()
