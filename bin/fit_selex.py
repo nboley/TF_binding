@@ -225,7 +225,7 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
     else:
         return "RIGHT"
 
-def fit_model(rnds_and_seqs, ddg_array, ref_energy, random_seq_pool_size):
+def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     opt_path = []
     prev_lhd = None
     for rnd_num in xrange(min(20, 
