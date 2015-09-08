@@ -289,8 +289,7 @@ def main():
     motif, rnds_and_seqs, random_seq_pool_size = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
     ddg_array_hat, ref_energy_hat = fit_model(
-        rnds_and_seqs, ddg_array, ref_energy,
-        random_seq_pool_size)
+        rnds_and_seqs, ddg_array, ref_energy )
     
     with open(motif.name + ".SELEX.txt", "w") as ofp:
         write_output(motif, ddg_array_hat, ref_energy_hat, ofp)
