@@ -1,4 +1,6 @@
-cdef code_base(char base):
+import numpy as np
+
+def code_base(base):
     if base == 'A':
         return 0
     if base == 'a':
@@ -15,9 +17,13 @@ cdef code_base(char base):
         return 3
     if base == 't':
         return 3
-    return -1
+    return 4
 
-def score_seq_from_pwm(char* seq, pwm):
-    print pwm
-    print [code_base(base) for base in seq]
-    return 0
+def code_seq(seq):
+    coded_seq = np.zeros((5,len(seq)), dtype=np.int)
+    print coded_seq.shape
+    print coded_seq[0,0]
+    for i, base in enumerate(seq):
+        coded_base = code_base(base)
+        coded_seq[i, coded_base] = 1
+    return coded_seq
