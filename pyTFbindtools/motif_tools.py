@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from scipy.optimize import brute, bisect
+from scipy.signal import convolve
 
 from collections import defaultdict, namedtuple
 
@@ -34,6 +35,7 @@ PwmModel = namedtuple('PwmModel', [
 #    "../data/motifs/human_and_mouse_motifs.pickle.obj")
 
 def load_pwms_from_db(tf_names=None):
+    import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
     query = """
@@ -46,7 +48,7 @@ def load_pwms_from_db(tf_names=None):
         cur.execute(query)
     else:
         query += "   AND tf_name in %s"
-        cur.execute(query, tuple(tf_names))
+        cur.execute(query, [tuple(tf_names),])
     
     motifs = []
     for data in cur.fetchall():
@@ -82,17 +84,16 @@ def code_seq(seq):
         coded_seq[coded_base, i] = 1
     return coded_seq
 
-def score_region(ofp, region, genome, motifs):
-    seq = genome.fetch(*region)
-    res = ["_".join(str(x) for x in region).ljust(30),]
+def score_region(region, genome, motifs):
+    seq = genome.fetch(region[0], region[1], region[2])
+    motifs_scores = []
     for motif in motifs:
         N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
         extended_pwm = np.hstack((motif.pwm, N_row))
         coded_seq = code_seq(bytes(seq))
         scores = convolve(coded_seq, extended_pwm.T, mode='valid')
-        res.append( ("%.4f" % (scores.sum()/len(scores))).ljust(15) )
-    ofp.write(" ".join(res) + "\n")
-
+        motifs_scores.append(scores)
+    return motifs_scores
 
 def load_energy_data(fname):
     def load_energy(mo_text):

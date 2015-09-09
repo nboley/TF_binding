@@ -29,10 +29,15 @@ def load_regions_in_bed(fp):
     return regions
 
 def score_regions_worker(ofp, genome, regions_queue, motifs):
+    genome = FastaFile(genome.filename)
     while regions_queue.qsize() > 0:
         region = regions_queue.get()
         print regions_queue.qsize()
-        score_region(ofp, region, genome, motifs)
+        res_str = ["_".join(str(x) for x in region).ljust(30),]
+        motifs_scores = score_region(region, genome, motifs)
+        res_str.append( ("%.4f" % (scores.sum()/len(scores))).ljust(15) 
+                        for scores in motifs_scores )
+        ofp.write(" ".join(res_str) + "\n")
 
 def score_regions(ofp, genome, regions, motifs):
     ofp.write("region".ljust(30) + " " + " ".join(
