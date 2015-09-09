@@ -5,7 +5,7 @@ from collections import defaultdict
 from pysam import FastaFile, TabixFile
 from peaks import load_narrow_peaks
 
-from motif_tools import load_pwms_from_db, score_region
+from motif_tools import load_pwms_from_db, load_selex_models_from_db, score_region
 
 import multiprocessing
 import grit
@@ -86,18 +86,18 @@ def parse_arguments():
     all_peaks = []
     for peaks_fp in args.peaks:
         sample_id = os.path.basename(peaks_fp.name).split('-')[0]
-        peaks = load_narrow_peaks(peaks_fp.name, None) #100)
+        peaks = load_narrow_peaks(peaks_fp.name, None) #1000
         for peak in peaks:
             all_peaks.append((sample_id, peak))
     
     # load the motifs
-    motifs = load_pwms_from_db(args.tf_names)
+    motifs = load_selex_models_from_db(args.tf_names)
 
     return (motifs, fasta, all_peaks)
 
 def load_summary_stats(peak, fasta, motifs):
     header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
-    header = ['region',] + ["label_%s" % motif.tf_name for motif in motifs]
+    header = ['region',] + ["label_%s" % motif.tf_name for motif in motifs] + ["access_score",]
     quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]
     summary_stats = []
     seq_peak = (peak.contig, 
@@ -154,21 +154,27 @@ def extract_data_worker(ofp, peak_cntr, motifs, fasta, peaks):
         if index >= len(peaks): break
         sample, peak = peaks[index]
         if peak.contig == 'chrM': continue
-        header, scores = load_summary_stats(peak, fasta, motifs)
-        labels = classify_peak(peak, sample, motifs)
+        try: 
+            header, scores = load_summary_stats(peak, fasta, motifs)
+            labels = classify_peak(peak, sample, motifs)
+        except: 
+            continue
         if index%1000 == 0:
             print "%i/%i" % (index, len(peaks))
-        ofp.write("%s_%s\t%s\t%s\n" % (
+        ofp.write("%s_%s\t%s\t%.4f\t%s\n" % (
             sample, "_".join(str(x) for x in peak).ljust(30), 
             "\t".join(str(x) for x in labels), 
+            peak[-1],
             "\t".join("%.4e" % x for x in scores)))
     return
 
 def main():
     motifs, fasta, peaks = parse_arguments()
     peak_cntr = Counter()
-    output_fname = 'predictors.E116_E117_E118.CTCF_REST.txt'
-    #output_fname = 'output.txt'
+    #output_fname = 'predictors.E116_E117_E118.CTCF_REST.txt'
+    #output_fname = 'SELEX.output.txt'
+    output_fname = 'SELEX.predictors.YY1.txt'
+
     header, stats = load_summary_stats(peaks[100][1], fasta, motifs)
     with ThreadSafeFile(output_fname, 'w') as ofp:
         ofp.write("\t".join(header) + "\n")
