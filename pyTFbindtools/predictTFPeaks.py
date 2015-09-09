@@ -97,7 +97,7 @@ def parse_arguments():
 
 def load_summary_stats(peak, fasta, motifs):
     header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
-    header = ['region', 'label']
+    header = ['region',] + ["label_%s" % motif.tf_name for motif in motifs]
     quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]
     summary_stats = []
     seq_peak = (peak.contig, 
@@ -155,12 +155,12 @@ def extract_data_worker(ofp, peak_cntr, motifs, fasta, peaks):
         sample, peak = peaks[index]
         if peak.contig == 'chrM': continue
         header, scores = load_summary_stats(peak, fasta, motifs)
-        label = classify_peak(peak, sample, motifs)[0]
+        labels = classify_peak(peak, sample, motifs)
         if index%1000 == 0:
             print "%i/%i" % (index, len(peaks))
         ofp.write("%s_%s\t%s\t%s\n" % (
             sample, "_".join(str(x) for x in peak).ljust(30), 
-            label, 
+            "\t".join(str(x) for x in labels), 
             "\t".join("%.4e" % x for x in scores)))
     return
 
