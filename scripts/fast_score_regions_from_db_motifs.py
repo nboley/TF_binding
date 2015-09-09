@@ -61,10 +61,10 @@ def load_regions_in_bed(fp):
     return regions
 
 def load_all_motifs():
-    try: 
-        with open(pickled_motifs_fname, "r") as fp:
-            return pickle.load(fp)
-    except: pass
+    #try: 
+    #    with open(pickled_motifs_fname, "r") as fp:
+    #        return pickle.load(fp)
+    #except: pass
 
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
@@ -77,11 +77,11 @@ def load_all_motifs():
     motifs = []
     for data in cur.fetchall():
         data = list(data)
-        data[-1] = np.log2(np.array(data[-1]) + 1e-4)
+        data[-1] = -(np.array(data[-1]) + 1e-4)*(np.log2(np.array(data[-1]) + 1e-4))
         motifs.append( PwmModel(*data) )
 
     with open(pickled_motifs_fname, "w") as fp:
-        return pickle.dump(motifs, fp)
+        pickle.dump(motifs, fp)
 
     return motifs
 
@@ -89,13 +89,17 @@ def score_region(ofp, region, genome, motifs):
     seq = genome.fetch(*region)
     res = ["_".join(str(x) for x in region).ljust(30),]
     for motif in motifs:
-        N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
-        extended_pwm = np.hstack((motif.pwm, N_row))
-        coded_seq = code_seq(bytes(seq))
-        scores = convolve(coded_seq, extended_pwm.T, mode='valid')
-        res.append( ("%.4f" % (scores.sum()/len(scores))).ljust(15) )
+        try:
+            N_row = np.zeros((len(motif.pwm), 1)) - 0.25*np.log2(0.25)
+            extended_pwm = np.hstack((motif.pwm, N_row))
+            coded_seq = code_seq(bytes(seq))
+            scores = convolve(coded_seq, extended_pwm.T, mode='valid')
+            #print scores
+            res.append( ("%.4f" % (scores.sum()/len(seq))).ljust(15) )
+        except:
+            res.append("0.5000".ljust(15))
     ofp.write(" ".join(res) + "\n")
-
+        
 def score_regions_worker(ofp, genome, regions_queue, motifs):
     while regions_queue.qsize() > 0:
         region = regions_queue.get()
@@ -111,7 +115,7 @@ def score_regions(ofp, genome, regions, motifs):
     regions_queue.cancel_join_thread()
     for region in regions:
         regions_queue.put(region)
-    fork_and_wait(4, score_regions_worker, (ofp, genome, regions_queue, motifs))
+    fork_and_wait(36, score_regions_worker, (ofp, genome, regions_queue, motifs))
     regions_queue.close()
     
 def main():
