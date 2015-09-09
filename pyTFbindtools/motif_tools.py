@@ -6,7 +6,7 @@ import numpy as np
 
 from scipy.optimize import brute, bisect
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
@@ -25,6 +25,74 @@ def logistic(x):
     except: e_x = np.exp(-x)
     return 1/(1+e_x)
     #return e_x/(1+e_x)
+
+PwmModel = namedtuple('PwmModel', [
+    'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
+
+#pickled_motifs_fname = os.path.join(
+#    os.path.dirname(__file__), 
+#    "../data/motifs/human_and_mouse_motifs.pickle.obj")
+
+def load_pwms_from_db(tf_names=None):
+    conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
+    cur = conn.cursor()    
+    query = """
+    SELECT tf_id, motif_id, tf_name, tf_species, pwm 
+      FROM related_motifs_mv NATURAL JOIN pwms 
+     WHERE tf_species in ('Mus_musculus', 'Homo_sapiens') 
+       AND rank = 1 
+    """
+    if tf_names == None:
+        cur.execute(query)
+    else:
+        query += "   AND tf_name in %s"
+        cur.execute(query, tuple(tf_names))
+    
+    motifs = []
+    for data in cur.fetchall():
+        data = list(data)
+        data[-1] = np.log2(np.array(data[-1]) + 1e-4)
+        motifs.append( PwmModel(*data) )
+
+    return motifs
+
+def code_base(base):
+    if base == 'A':
+        return 0
+    if base == 'a':
+        return 0
+    if base == 'C':
+        return 1
+    if base == 'c':
+        return 1
+    if base == 'G':
+        return 2
+    if base == 'g':
+        return 2
+    if base == 'T':
+        return 3
+    if base == 't':
+        return 3
+    return 4
+
+def code_seq(seq):
+    coded_seq = np.zeros((5,len(seq)))
+    for i, base in enumerate(seq):
+        coded_base = code_base(base)
+        coded_seq[coded_base, i] = 1
+    return coded_seq
+
+def score_region(ofp, region, genome, motifs):
+    seq = genome.fetch(*region)
+    res = ["_".join(str(x) for x in region).ljust(30),]
+    for motif in motifs:
+        N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
+        extended_pwm = np.hstack((motif.pwm, N_row))
+        coded_seq = code_seq(bytes(seq))
+        scores = convolve(coded_seq, extended_pwm.T, mode='valid')
+        res.append( ("%.4f" % (scores.sum()/len(scores))).ljust(15) )
+    ofp.write(" ".join(res) + "\n")
+
 
 def load_energy_data(fname):
     def load_energy(mo_text):
@@ -53,6 +121,7 @@ def load_energy_data(fname):
         motif.update_energy_array(ddg_array, consensus_energy)
     
     return motif
+
 def estimate_unbnd_conc_in_region(
         motif, score_cov, atacseq_cov, chipseq_rd_cov,
         frag_len, max_chemical_affinity_change):
