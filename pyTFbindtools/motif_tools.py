@@ -53,7 +53,7 @@ def load_pwms_from_db(tf_names=None):
     motifs = []
     for data in cur.fetchall():
         data = list(data)
-        data[-1] = np.log2(np.array(data[-1]) + 1e-4)
+        data[-1] = np.log2(1 - (np.array(data[-1]) + 1e-4))
         motifs.append( PwmModel(*data) )
 
     return motifs
@@ -91,7 +91,7 @@ def score_region(region, genome, motifs):
         N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
         extended_pwm = np.hstack((motif.pwm, N_row))
         coded_seq = code_seq(bytes(seq))
-        scores = convolve(coded_seq, extended_pwm.T, mode='valid')
+        scores = -convolve(coded_seq, extended_pwm.T, mode='valid')
         motifs_scores.append(scores)
     return motifs_scores
 

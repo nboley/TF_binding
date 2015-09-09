@@ -11,6 +11,8 @@ import multiprocessing
 import grit
 from grit.lib.multiprocessing_utils import fork_and_wait, ThreadSafeFile
 
+from scipy.stats.mstats import mquantiles
+
 NTHREADS = 1
 
 term_name_RMID_mapping = {
@@ -69,8 +71,8 @@ def parse_arguments():
     parser.add_argument( '--tf-names', nargs='+',
                          help='A list of human TF names')
 
-    parser.add_argument( '--peaks', type=file,  required=True,
-        help='Narrowpeak file containing peaks to predict on.')
+    parser.add_argument( '--peaks', type=file, nargs='+',
+        help='Narrowpeak file(s) containing peaks to predict on.')
 
     parser.add_argument( '--threads', '-t', default=1, type=int,
                          help='The number of threads to run.')
@@ -81,21 +83,42 @@ def parse_arguments():
 
     fasta = FastaFile(args.fasta.name)
 
-    peaks = load_narrow_peaks(args.peaks.name, None) #100)
+    all_peaks = []
+    for peaks_fp in args.peaks:
+        sample_id = os.path.basename(peaks_fp.name).split('-')[0]
+        peaks = load_narrow_peaks(peaks_fp.name, None) #100)
+        for peak in peaks:
+            all_peaks.append((sample_id, peak))
     
     # load the motifs
     motifs = load_pwms_from_db(args.tf_names)
 
-    # load the chipseq peaks
-    
-    return (motifs, fasta, peaks)
+    return (motifs, fasta, all_peaks)
 
-def load_summary_scores(peak, fasta, motifs):
+def load_summary_stats(peak, fasta, motifs):
+    header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
+    header = ['region', 'label']
+    quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]
+    summary_stats = []
     seq_peak = (peak.contig, 
                 peak.start+peak.summit-800, 
                 peak.start+peak.summit+800)
-    region_scores = score_region(seq_peak, fasta, motifs)
-    return [x.mean()/len(x) for x in region_scores]
+    region_motifs_scores = score_region(seq_peak, fasta, motifs)
+    for motif, motif_scores in zip(motifs, region_motifs_scores):
+        header.extend("%s_%i_%s" % (motif.tf_name, 1600, label) 
+                      for label in header_base)
+        summary_stats.append(motif_scores.mean()/len(motif_scores))
+        summary_stats.append(motif_scores.max())
+        for quantile in mquantiles(motif_scores, prob=quantile_probs):
+            summary_stats.append(quantile)
+        motif_scores = motif_scores[:,500:-500]
+        header.extend("%s_%i_%s" % (motif.tf_name, 600, label) 
+                      for label in header_base)
+        summary_stats.append(motif_scores.mean()/len(motif_scores))
+        summary_stats.append(motif_scores.max())
+        for quantile in mquantiles(motif_scores, quantile_probs):
+            summary_stats.append(quantile)
+    return header, summary_stats
 
 def classify_peak(peak, sample, motifs):
     pc_peak = (peak.contig, 
@@ -129,19 +152,26 @@ def extract_data_worker(ofp, peak_cntr, motifs, fasta, peaks):
     while True:
         index = peak_cntr.return_and_increment()
         if index >= len(peaks): break
-        peak = peaks[index]
+        sample, peak = peaks[index]
         if peak.contig == 'chrM': continue
-        score = load_summary_scores(peak, fasta, motifs)[0]
-        label = classify_peak(peak, 'E122', motifs)[0]
-        print "%i/%i" % (index, len(peaks)), score, label
-        ofp.write("%s\t%s\t%s\n" % (
-            "_".join(str(x) for x in peak).ljust(30), score, label))
+        header, scores = load_summary_stats(peak, fasta, motifs)
+        label = classify_peak(peak, sample, motifs)[0]
+        if index%1000 == 0:
+            print "%i/%i" % (index, len(peaks))
+        ofp.write("%s_%s\t%s\t%s\n" % (
+            sample, "_".join(str(x) for x in peak).ljust(30), 
+            label, 
+            "\t".join("%.4e" % x for x in scores)))
     return
 
 def main():
     motifs, fasta, peaks = parse_arguments()
     peak_cntr = Counter()
-    ofp = ThreadSafeFile('output.txt', 'w')
-    fork_and_wait(24, extract_data_worker, (ofp, peak_cntr, motifs, fasta, peaks))
+    output_fname = 'predictors.E116_E117_E118.CTCF_REST.txt'
+    #output_fname = 'output.txt'
+    header, stats = load_summary_stats(peaks[100][1], fasta, motifs)
+    with ThreadSafeFile(output_fname, 'w') as ofp:
+        ofp.write("\t".join(header) + "\n")
+        fork_and_wait(NTHREADS, extract_data_worker, (ofp, peak_cntr, motifs, fasta, peaks))
 
 main()
