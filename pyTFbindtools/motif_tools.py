@@ -121,7 +121,10 @@ def score_region(region, genome, motifs):
             N_row = np.zeros((len(motif.ddg_array), 1))
             extended_mat = np.hstack((motif.ddg_array, N_row))
         coded_seq = code_seq(bytes(seq))
-        scores = -convolve(coded_seq, extended_mat.T, mode='valid')
+        FWD_scores = -convolve(coded_seq, extended_mat.T, mode='valid')
+        RC_scores = -convolve(
+            coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
+        scores = np.vastack(FWD_scores, RC_scores).min(1)
         motifs_scores.append(scores)
     return motifs_scores
 
