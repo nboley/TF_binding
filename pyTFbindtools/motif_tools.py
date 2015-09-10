@@ -124,7 +124,7 @@ def score_region(region, genome, motifs):
         FWD_scores = -convolve(coded_seq, extended_mat.T, mode='valid')
         RC_scores = -convolve(
             coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
-        scores = np.vastack(FWD_scores, RC_scores).min(1)
+        scores = np.vstack((FWD_scores, RC_scores)).max(0)
         motifs_scores.append(scores)
     return motifs_scores
 

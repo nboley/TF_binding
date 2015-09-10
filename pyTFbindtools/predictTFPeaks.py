@@ -60,41 +60,6 @@ def load_tf_peaks_fnames(
 
 tf_peak_fnames = load_tf_peaks_fnames()
 
-def parse_arguments():
-    import argparse
-    parser = argparse.ArgumentParser(
-        description='Estimate tf binding from sequence and chromatin accessibility data.')
-
-    parser.add_argument( '--fasta', type=file, required=True,
-        help='Fasta containing genome sequence.')
-
-    parser.add_argument( '--tf-names', nargs='+',
-                         help='A list of human TF names')
-
-    parser.add_argument( '--peaks', type=file, nargs='+',
-        help='Narrowpeak file(s) containing peaks to predict on.')
-
-    parser.add_argument( '--threads', '-t', default=1, type=int,
-                         help='The number of threads to run.')
-
-    args = parser.parse_args()
-    global NTHREADS
-    NTHREADS = args.threads
-
-    fasta = FastaFile(args.fasta.name)
-
-    all_peaks = []
-    for peaks_fp in args.peaks:
-        sample_id = os.path.basename(peaks_fp.name).split('-')[0]
-        peaks = load_narrow_peaks(peaks_fp.name, None) #1000
-        for peak in peaks:
-            all_peaks.append((sample_id, peak))
-    
-    # load the motifs
-    motifs = load_selex_models_from_db(args.tf_names)
-
-    return (motifs, fasta, all_peaks)
-
 def load_summary_stats(peak, fasta, motifs):
     header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
     header = ['region',] + ["label_%s" % motif.tf_name for motif in motifs] + ["access_score",]
@@ -111,7 +76,7 @@ def load_summary_stats(peak, fasta, motifs):
         summary_stats.append(motif_scores.max())
         for quantile in mquantiles(motif_scores, prob=quantile_probs):
             summary_stats.append(quantile)
-        motif_scores = motif_scores[:,500:-500]
+        motif_scores = motif_scores[500:-500]
         header.extend("%s_%i_%s" % (motif.tf_name, 600, label) 
                       for label in header_base)
         summary_stats.append(motif_scores.mean()/len(motif_scores))
@@ -168,12 +133,72 @@ def extract_data_worker(ofp, peak_cntr, motifs, fasta, peaks):
             "\t".join("%.4e" % x for x in scores)))
     return
 
+def parse_arguments():
+    def find_dnase_peak_fnames(args):
+        assert args.peaks == None or args.roadmap_sample_ids == None, \
+            "if --roadmap-sample-ids is set --peaks is inferred from it (so it doesn't make sense to set both)" 
+        peak_fnames = []
+        if args.peaks != None:
+            assert args.roadmap_sample_ids == None
+            peak_fnames.extend(fp.name for fp in args.peaks)
+        else:
+            for sample_id in args.roadmap_sample_ids:
+                # check if the sample id is valid
+                try:
+                    assert sample_id[0] == 'E' and int(sample_id[1:]) >= 0 and int(sample_id[1:]) < 1000
+                except:
+                    raise ValueError, "Invalid Roadmap Sample ID '%s' (must be in form E000)" % sample_id 
+                fname = "/mnt/data/epigenomeRoadmap/peaks/consolidated/narrowPeak/%s-DNase.macs2.narrowPeak.gz" % sample_id
+                try: 
+                    fp = open(fname)
+                    fp.close()
+                except IOError:
+                    raise ValueError, "Can't open DNASE peak file for roadmap sample id '%s'" % sample_id
+                peak_fnames.append(fname)
+        return peak_fnames
+
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Estimate tf binding from sequence and chromatin accessibility data.')
+
+    parser.add_argument( '--fasta', type=file, required=True,
+        help='Fasta containing genome sequence.')
+
+    parser.add_argument( '--tf-names', nargs='+',
+                         help='A list of human TF names')
+
+    parser.add_argument( '--peaks', type=file, nargs='*',
+        help='Narrowpeak file(s) containing peaks to predict on.')
+    parser.add_argument( '--roadmap-sample-ids', nargs='*',
+        help='Specify the peak fieles with roadmap sample ids (eg E123)')
+
+    parser.add_argument( '--threads', '-t', default=1, type=int,
+                         help='The number of threads to run.')
+
+    args = parser.parse_args()
+    global NTHREADS
+    NTHREADS = args.threads
+
+    fasta = FastaFile(args.fasta.name)
+
+    all_peaks = []
+    for peaks_fname in find_dnase_peak_fnames(args):
+        sample_id = os.path.basename(peaks_fname).split('-')[0]
+        peaks = load_narrow_peaks(peaks_fname, 10000) #None) #1000
+        for peak in peaks:
+            all_peaks.append((sample_id, peak))
+    
+    # load the motifs
+    motifs = load_selex_models_from_db(args.tf_names)
+
+    return (motifs, fasta, all_peaks)
+
 def main():
     motifs, fasta, peaks = parse_arguments()
     peak_cntr = Counter()
     #output_fname = 'predictors.E116_E117_E118.CTCF_REST.txt'
     #output_fname = 'SELEX.output.txt'
-    output_fname = 'SELEX.predictors.YY1.txt'
+    output_fname = 'test.YY1.txt'
 
     header, stats = load_summary_stats(peaks[100][1], fasta, motifs)
     with ThreadSafeFile(output_fname, 'w') as ofp:
