@@ -140,12 +140,16 @@ def parse_arguments():
         peak_fnames = []
         if args.peaks != None:
             assert args.roadmap_sample_ids == None
-            peak_fnames.extend(fp.name for fp in args.peaks)
+            for fp in args.peaks:
+                fname = fp.name
+                sample_id = os.path.basename(fname).split('-')[0]
+                peak_fnames.append((sample_id, fname))
         else:
             for sample_id in args.roadmap_sample_ids:
                 # check if the sample id is valid
                 try:
-                    assert sample_id[0] == 'E' and int(sample_id[1:]) >= 0 and int(sample_id[1:]) < 1000
+                    assert ( sample_id[0] == 'E' and int(sample_id[1:]) >= 0 
+                             and int(sample_id[1:]) < 1000 )
                 except:
                     raise ValueError, "Invalid Roadmap Sample ID '%s' (must be in form E000)" % sample_id 
                 fname = "/mnt/data/epigenomeRoadmap/peaks/consolidated/narrowPeak/%s-DNase.macs2.narrowPeak.gz" % sample_id
@@ -154,7 +158,7 @@ def parse_arguments():
                     fp.close()
                 except IOError:
                     raise ValueError, "Can't open DNASE peak file for roadmap sample id '%s'" % sample_id
-                peak_fnames.append(fname)
+                peak_fnames.append((sample_id, fname))
         return peak_fnames
 
     import argparse
@@ -172,6 +176,14 @@ def parse_arguments():
     parser.add_argument( '--roadmap-sample-ids', nargs='*',
         help='Specify the peak fieles with roadmap sample ids (eg E123)')
 
+    score_type_options = ['ddG','logOdds']
+    parser.add_argument( '--score-type', type=str, default='ddG',
+                         choices=score_type_options,
+                         help='Motif scoring method.')
+
+    parser.add_argument( '--ofprefix', type=str, default='peakscores',
+                         help='Output file prefix (default peakscores)')
+
     parser.add_argument( '--threads', '-t', default=1, type=int,
                          help='The number of threads to run.')
 
@@ -180,29 +192,41 @@ def parse_arguments():
     NTHREADS = args.threads
 
     fasta = FastaFile(args.fasta.name)
-
-    all_peaks = []
-    for peaks_fname in find_dnase_peak_fnames(args):
-        sample_id = os.path.basename(peaks_fname).split('-')[0]
-        peaks = load_narrow_peaks(peaks_fname, 10000) #None) #1000
-        for peak in peaks:
-            all_peaks.append((sample_id, peak))
+    print "Finished initializing fasta."
     
     # load the motifs
-    motifs = load_selex_models_from_db(args.tf_names)
+    if args.score_type == 'ddG':
+        motifs = load_selex_models_from_db(args.tf_names)
+    elif args.score_type == 'logOdds':
+        motifs = load_pwms_from_db(args.tf_names)
+    print "Finished loading motifs."
+    
+    # load all of the peaks
+    peak_samples_and_fnames = find_dnase_peak_fnames(args)
+    all_peaks = []
+    for sample_id, peaks_fname in peak_samples_and_fnames:
+        peaks = load_narrow_peaks(peaks_fname, None) #None) #1000
+        for peak in peaks:
+            all_peaks.append((sample_id, peak))
+    print "Finished loading peaks."
 
-    return (motifs, fasta, all_peaks)
+    ofname = "{prefix}.{scoring_type}.{motifs}.{sample_ids}.txt".format(
+        prefix=args.ofprefix, scoring_type=args.score_type,
+        motifs="_".join(sorted(motif.tf_name for motif in motifs)),
+        sample_ids="_".join(sorted(
+            sample for sample, fname in peak_samples_and_fnames))
+    )
+    
+    return (motifs, fasta, all_peaks, ofname)
 
 def main():
-    motifs, fasta, peaks = parse_arguments()
+    motifs, fasta, peaks, output_fname = parse_arguments()
+    print "Writing output to '%s'" % output_fname
     peak_cntr = Counter()
-    #output_fname = 'predictors.E116_E117_E118.CTCF_REST.txt'
-    #output_fname = 'SELEX.output.txt'
-    output_fname = 'test.YY1.txt'
-
     header, stats = load_summary_stats(peaks[100][1], fasta, motifs)
     with ThreadSafeFile(output_fname, 'w') as ofp:
         ofp.write("\t".join(header) + "\n")
-        fork_and_wait(NTHREADS, extract_data_worker, (ofp, peak_cntr, motifs, fasta, peaks))
+        fork_and_wait(NTHREADS, extract_data_worker, (
+            ofp, peak_cntr, motifs, fasta, peaks))
 
 main()

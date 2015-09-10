@@ -1,10 +1,12 @@
 import os, sys
 
+import math
+
 import itertools
 
 import pandas as pd
 import numpy as np
-np.random.seed(0)
+#np.random.seed(0)
 
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier
@@ -23,32 +25,38 @@ def load_data(fname):
         if len(label_columns) > 1:
             return data[(data[label_columns] != 0).all(1)]
         else:
-            pos = data[(data[label_columns] == 1).all(1)]
+            pos_full = data[(data[label_columns] == 1).all(1)]
             neg_full = data[(data[label_columns] == -1).all(1)]
+            sample_size = min(pos_full.shape[0], neg_full.shape[0])
+            pos = pos_full.loc[
+                np.random.choice(pos_full.index, sample_size, replace=False)]
             neg = neg_full.loc[
-                np.random.choice(neg_full.index, pos.shape[0], replace=False)]
+                np.random.choice(neg_full.index, sample_size, replace=False)]
             return pos.append(neg)
-    """
-    E114
-    E116
-    E117
-    E118
-    """
-    train_cells = ['E114', 'E123', 'E126']
-    test_cells = ['E118']
+
+    sample_ids = fname.split(".")[-2].split("_")
+    sample_ids.sort(key=lambda x:int(x[1:]))
+    tf_names = fname.split(".")[-3].split("_")
+    if len(sample_ids) == 1:
+        train_samples = sample_ids
+        validation_samples = sample_ids
+    else:
+        num_validation_samples = int(math.ceil(len(sample_ids)/4.0))
+        validation_samples = sample_ids[:num_validation_samples]
+        train_samples = sample_ids[num_validation_samples:]
 
     data = pd.read_csv(fname, sep="\s+", index_col=0)
     train_chrs = ['chr%i' %i for i in xrange(5, 23)]
-    train = subset_data(data, train_cells, train_chrs)
+    train = subset_data(data, train_samples, train_chrs)
 
-    test_chrs = ['chr%i' %i for i in xrange(3, 5)]
-    test = subset_data(data, test_cells, test_chrs)
-    return balance_data(train), balance_data(test)
+    validation_chrs = ['chr%i' %i for i in xrange(3, 5)]
+    validation = subset_data(data, validation_samples, validation_chrs)
+    return balance_data(train), balance_data(validation)
 
-train, test = load_data(sys.argv[1])
-clf_1 = DecisionTreeClassifier(max_depth=20)
-clf_1 = RandomForestClassifier(max_depth=20)
-clf_1 = GradientBoostingClassifier(n_estimators=25)
+train, validation = load_data(sys.argv[1])
+#clf_1 = DecisionTreeClassifier(max_depth=20)
+#clf_1 = RandomForestClassifier(max_depth=15)
+clf_1 = GradientBoostingClassifier(n_estimators=250)
 
 predictors = [ x for x in train.columns
                if not x.startswith('label') ]
@@ -58,10 +66,10 @@ for label in [x for x in train.columns if x.startswith('label')]:
     mo = clf_1.fit(train[predictors], train[label])
     y_hat = mo.predict(train[predictors])
     print label, 'train', (train[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)
-    y_hat = mo.predict(test[predictors])
-    positives = np.array(test[label] == 1)
-    negatives = np.array(test[label] == -1)
+    y_hat = mo.predict(validation[predictors])
+    positives = np.array(validation[label] == 1)
+    negatives = np.array(validation[label] == -1)
     print "pos frac", (y_hat[positives] == 1).sum()/float(positives.sum()), positives.sum()
     print "neg frac", (y_hat[negatives] == -1).sum()/float(negatives.sum()), negatives.sum()
-    print 'test', (test[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)
+    print 'validation', (validation[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)
     print
