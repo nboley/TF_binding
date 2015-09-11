@@ -15,9 +15,12 @@ from scipy.stats.mstats import mquantiles
 
 NTHREADS = 1
 
+ROADMAP_PEAKS_DIR = "/mnt/data/epigenomeRoadmap/peaks/consolidated/narrowPeak/"
+ENCODE_CHIPSEQ_PEAKS_DIR = '/mnt/data/TF_binding/in_vivo/nathans_ENCODE_tfs/'
+
 term_name_RMID_mapping = {
     'A549': 'E114',
-    'T-cell-acute-lymphoblastic-leukemia': 'E115',
+    #'T-cell-acute-lymphoblastic-leukemia': 'E115',
     'GM12878': 'E116',
     'HeLa-S3': 'E117',
     'HepG2': 'E118',
@@ -25,7 +28,13 @@ term_name_RMID_mapping = {
     'skeletal-muscle-myoblast': 'E120',
     'myotube': 'E121',
     'endothelial-cell-of-umbilical-vein': 'E122',
-    'K562': 'E123' 
+    'K562': 'E123',
+    'CD14-positive-monocyte': 'E124',
+    'astrocyte': 'E125',
+    'fibroblast-of-dermis': 'E126',
+    'keratinocyte': 'E127',
+    'fibroblast-of-lung': 'E128',
+    #'osteoblast': 'E129'
 }
 
 class Counter(object):
@@ -43,9 +52,8 @@ RMID_term_name_mapping = {}
 for term_name, RMID in term_name_RMID_mapping.items():
     RMID_term_name_mapping[RMID] = term_name
 
-def load_tf_peaks_fnames(
-        base_dir='/mnt/data/TF_binding/in_vivo/nathans_ENCODE_tfs/'):
-    tf_peaks = defaultdict(list)
+def load_tf_peaks_fnames(base_dir=ENCODE_CHIPSEQ_PEAKS_DIR):
+    tf_peaks = defaultdict(lambda: defaultdict(list))
     fnames = os.listdir(base_dir)
     for fname in fnames:
         if not fname.endswith(".bgz"): continue
@@ -54,15 +62,25 @@ def load_tf_peaks_fnames(
         peak_type = meta_data[2]
         term_name = meta_data[3]
         if peak_type != 'UniformlyProcessedPeakCalls': continue
-        tf_peaks[(factor_name, term_name)].append(
+        tf_peaks[factor_name][term_name].append(
             os.path.join(base_dir, fname))
     return tf_peaks
 
 tf_peak_fnames = load_tf_peaks_fnames()
+all_tfs = sorted(tf_peak_fnames.keys())
+
+def load_matching_roadmap_samples(tf_name):
+    chipseq_samples = sorted(tf_peak_fnames[tf_name].iterkeys())
+    roadmap_sample_ids = set()
+    for sample in chipseq_samples:
+        if sample in term_name_RMID_mapping:
+            roadmap_sample_ids.add( term_name_RMID_mapping[sample] )
+    return sorted(roadmap_sample_ids)
 
 def load_summary_stats(peak, fasta, motifs):
     header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
-    header = ['region',] + ["label_%s" % motif.tf_name for motif in motifs] + ["access_score",]
+    header = ['region',] + [
+        "label_%s" % motif.tf_name for motif in motifs] + ["access_score",]
     quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]
     summary_stats = []
     seq_peak = (peak.contig, 
@@ -85,7 +103,10 @@ def load_summary_stats(peak, fasta, motifs):
             summary_stats.append(quantile)
     return header, summary_stats
 
+tabix_file_cache = {}
+
 def classify_peak(peak, sample, motifs):
+    pid = os.getppid()
     pc_peak = (peak.contig, 
                peak.start+peak.summit-300, 
                peak.start+peak.summit+300)
@@ -94,21 +115,32 @@ def classify_peak(peak, sample, motifs):
                peak.start+peak.summit+2000)
     status = []
     for motif in motifs:
-        fname = tf_peak_fnames[
-            (motif.tf_name, RMID_term_name_mapping[sample])][0]
-        fp = TabixFile(fname)
-        if peak[0] not in fp.contigs: 
-            status.append(0)
-            continue
-        pc_peaks = list(fp.fetch(*pc_peak))
-        if len(pc_peaks) > 0:
-            status.append(1)
-            continue
-        nc_peaks = list(fp.fetch(*nc_peak))
-        if len(nc_peaks) == 0:
-            status.append(-1)
+        if sample in RMID_term_name_mapping:
+            sample_name = RMID_term_name_mapping[sample]
         else:
-            status.append(0)
+            sample_name = 'DEFAULT'
+        fnames = tf_peak_fnames[motif.tf_name][sample_name]
+        motif_status = []
+        for fname in fnames:
+            try: 
+                fp = tabix_file_cache[(pid, fname)]
+            except KeyError:
+                fp = TabixFile(fname)
+                tabix_file_cache[(pid, fname)] = fp
+            
+            if peak[0] not in fp.contigs: 
+                motif_status.append(0)
+                continue
+            pc_peaks = list(fp.fetch(*pc_peak))
+            if len(pc_peaks) > 0:
+                motif_status.append(1)
+                continue
+            nc_peaks = list(fp.fetch(*nc_peak))
+            if len(nc_peaks) == 0:
+                motif_status.append(-1)
+            else:
+                motif_status.append(0)
+        status.append(",".join(str(x) for x in motif_status))
     return status
 
 def extract_data_worker(ofp, peak_cntr, motifs, fasta, peaks):
@@ -122,7 +154,8 @@ def extract_data_worker(ofp, peak_cntr, motifs, fasta, peaks):
         try: 
             header, scores = load_summary_stats(peak, fasta, motifs)
             labels = classify_peak(peak, sample, motifs)
-        except: 
+        except Exception, inst: 
+            #print "ERROR", inst
             continue
         if index%1000 == 0:
             print "%i/%i" % (index, len(peaks))
@@ -137,28 +170,38 @@ def parse_arguments():
     def find_dnase_peak_fnames(args):
         assert args.peaks == None or args.roadmap_sample_ids == None, \
             "if --roadmap-sample-ids is set --peaks is inferred from it (so it doesn't make sense to set both)" 
+
         peak_fnames = []
         if args.peaks != None:
             assert args.roadmap_sample_ids == None
             for fp in args.peaks:
                 fname = fp.name
                 sample_id = os.path.basename(fname).split('-')[0]
+                sample_id = 'DEFAULT'
                 peak_fnames.append((sample_id, fname))
-        else:
+        elif args.roadmap_sample_ids != None:
             for sample_id in args.roadmap_sample_ids:
                 # check if the sample id is valid
                 try:
                     assert ( sample_id[0] == 'E' and int(sample_id[1:]) >= 0 
                              and int(sample_id[1:]) < 1000 )
                 except:
-                    raise ValueError, "Invalid Roadmap Sample ID '%s' (must be in form E000)" % sample_id 
-                fname = "/mnt/data/epigenomeRoadmap/peaks/consolidated/narrowPeak/%s-DNase.macs2.narrowPeak.gz" % sample_id
+                    raise ValueError, \
+                        "Invalid Roadmap Sample ID '%s' (must be in form E000)"\
+                    % sample_id 
+                fname = os.path.join(ROADMAP_PEAKS_DIR, 
+                                     "%s-DNase.macs2.narrowPeak.gz" % sample_id)
                 try: 
                     fp = open(fname)
                     fp.close()
                 except IOError:
-                    raise ValueError, "Can't open DNASE peak file for roadmap sample id '%s'" % sample_id
+                    raise ValueError, \
+                        "Can't open DNASE peak file for roadmap sample id '%s' (%s)"\
+                        % (sample_id, fname)
                 peak_fnames.append((sample_id, fname))
+        else:
+            assert False
+        
         return peak_fnames
 
     import argparse
@@ -168,7 +211,7 @@ def parse_arguments():
     parser.add_argument( '--fasta', type=file, required=True,
         help='Fasta containing genome sequence.')
 
-    parser.add_argument( '--tf-names', nargs='+',
+    parser.add_argument( '--tf-names', nargs='+', required=True,
                          help='A list of human TF names')
 
     parser.add_argument( '--peaks', type=file, nargs='*',
@@ -193,26 +236,36 @@ def parse_arguments():
 
     fasta = FastaFile(args.fasta.name)
     print "Finished initializing fasta."
-    
+
     # load the motifs
+    if args.tf_names == ['ALL',]:
+        args.tf_names = all_tfs
+    
     if args.score_type == 'ddG':
         motifs = load_selex_models_from_db(args.tf_names)
     elif args.score_type == 'logOdds':
         motifs = load_pwms_from_db(args.tf_names)
     print "Finished loading motifs."
-    
+
     # load all of the peaks
+    if args.peaks == None and args.roadmap_sample_ids == None:
+        print "No sample list provided - selecting all samples with matching ChIP-seq data"
+        assert len(args.tf_names) == 1
+        args.roadmap_sample_ids = load_matching_roadmap_samples(
+            args.tf_names[0])
+        print "Selected samples: %s" % args.roadmap_sample_ids
+
     peak_samples_and_fnames = find_dnase_peak_fnames(args)
     all_peaks = []
     for sample_id, peaks_fname in peak_samples_and_fnames:
-        peaks = load_narrow_peaks(peaks_fname, None) #None) #1000
+        peaks = load_narrow_peaks(peaks_fname, None) #1000
         for peak in peaks:
             all_peaks.append((sample_id, peak))
     print "Finished loading peaks."
 
     ofname = "{prefix}.{scoring_type}.{motifs}.{sample_ids}.txt".format(
         prefix=args.ofprefix, scoring_type=args.score_type,
-        motifs="_".join(sorted(motif.tf_name for motif in motifs)),
+        motifs="_".join(sorted(motif.tf_name for motif in motifs)) if len(motifs) < 10 else 'MANY',
         sample_ids="_".join(sorted(
             sample for sample, fname in peak_samples_and_fnames))
     )

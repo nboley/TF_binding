@@ -35,8 +35,15 @@ def load_data(fname):
             return pos.append(neg)
 
     sample_ids = fname.split(".")[-2].split("_")
-    sample_ids.sort(key=lambda x:int(x[1:]))
-    tf_names = fname.split(".")[-3].split("_")
+    #sample_ids.sort(key=lambda x:int(x[1:]))
+    with open(fname) as fp:
+        header = fp.readline()
+        data = header.split()
+        tf_names = [
+            x.split("_")[1] for x in header.split() if x.startswith('label')]
+    #tf_names = fname.split(".")[-3].split("_")
+    print tf_names
+    assert False
     if len(sample_ids) == 1:
         train_samples = sample_ids
         validation_samples = sample_ids
@@ -58,11 +65,12 @@ train, validation = load_data(sys.argv[1])
 #clf_1 = RandomForestClassifier(max_depth=15)
 clf_1 = GradientBoostingClassifier(n_estimators=250)
 
-predictors = [ x for x in train.columns
-               if not x.startswith('label') ]
-#               and x != 'access_score' ]
+all_predictors = [ x for x in train.columns
+                   if not x.startswith('label')
+                   and x != 'access_score' ]
+predictors = all_predictors
 for label in [x for x in train.columns if x.startswith('label')]:
-    print label
+    print label, predictor
     mo = clf_1.fit(train[predictors], train[label])
     y_hat = mo.predict(train[predictors])
     print label, 'train', (train[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)

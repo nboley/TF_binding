@@ -56,7 +56,7 @@ def load_pwms_from_db(tf_names=None):
     motifs = []
     for data in cur.fetchall():
         data = list(data)
-        data[-1] = np.log2(1 - (np.array(data[-1]) + 1e-4))
+        data[-1] = np.log2(np.clip(1 - np.array(data[-1]), 1e-4, 1-1e-4))
         motifs.append( PwmModel(*data) )
 
     return motifs
