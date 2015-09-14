@@ -34,8 +34,6 @@ def load_tfname_tfid_mapping():
         tfname_id_map[res.tf_name] = res.array_agg
     return tfname_id_map
 
-
-
 def load_regions_in_bed(fp):
     regions = []
     for line in fp:

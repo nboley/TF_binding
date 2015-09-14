@@ -5,8 +5,9 @@ import math
 import numpy as np
 
 from scipy.optimize import brute, bisect
+from scipy.signal import convolve
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
@@ -25,6 +26,107 @@ def logistic(x):
     except: e_x = np.exp(-x)
     return 1/(1+e_x)
     #return e_x/(1+e_x)
+
+PwmModel = namedtuple('PwmModel', [
+    'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
+SelexModel = namedtuple('PwmModel', [
+    'tf_id', 'selex_motif_id', 'tf_name', 'tf_species', 
+    'consensus_energy', 'ddg_array']) 
+
+#pickled_motifs_fname = os.path.join(
+#    os.path.dirname(__file__), 
+#    "../data/motifs/human_and_mouse_motifs.pickle.obj")
+
+def load_pwms_from_db(tf_names=None):
+    import psycopg2
+    conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
+    cur = conn.cursor()    
+    query = """
+    SELECT tf_id, motif_id, tf_name, tf_species, pwm 
+      FROM related_motifs_mv NATURAL JOIN pwms 
+     WHERE tf_species in ('Mus_musculus', 'Homo_sapiens') 
+       AND rank = 1 
+    """
+    if tf_names == None:
+        cur.execute(query)
+    else:
+        query += "   AND tf_name in %s"
+        cur.execute(query, [tuple(tf_names),])
+    
+    motifs = []
+    for data in cur.fetchall():
+        data = list(data)
+        data[-1] = np.log2(1 - (np.array(data[-1]) + 1e-4))
+        motifs.append( PwmModel(*data) )
+
+    return motifs
+
+def load_selex_models_from_db(tf_names=None):
+    import psycopg2
+    conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
+    cur = conn.cursor()    
+    query = """
+    SELECT tf_id, selex_motif_id, tf_name, tf_species, consensus_energy, ddg_array 
+      FROM best_selex_models
+    """
+    if tf_names == None:
+        cur.execute(query)
+    else:
+        query += " WHERE tf_name in %s"
+        cur.execute(query, [tuple(tf_names),])
+    
+    motifs = []
+    for record in cur.fetchall():
+        data = list(record)
+        data[-1] = np.array(data[-1])
+        data[-1][0,:] += record[4]
+        motifs.append( SelexModel(*data) )
+
+    return motifs
+
+def code_base(base):
+    if base == 'A':
+        return 0
+    if base == 'a':
+        return 0
+    if base == 'C':
+        return 1
+    if base == 'c':
+        return 1
+    if base == 'G':
+        return 2
+    if base == 'g':
+        return 2
+    if base == 'T':
+        return 3
+    if base == 't':
+        return 3
+    return 4
+
+def code_seq(seq):
+    coded_seq = np.zeros((5,len(seq)))
+    for i, base in enumerate(seq):
+        coded_base = code_base(base)
+        coded_seq[coded_base, i] = 1
+    return coded_seq
+
+def score_region(region, genome, motifs):
+    seq = genome.fetch(region[0], region[1], region[2])
+    motifs_scores = []
+    for motif in motifs:
+        if isinstance(motif, PwmModel):
+            N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
+            extended_mat = np.hstack((motif.pwm, N_row))
+        elif isinstance(motif, SelexModel):
+            N_row = np.zeros((len(motif.ddg_array), 1))
+            extended_mat = np.hstack((motif.ddg_array, N_row))
+        coded_seq = code_seq(bytes(seq))
+        FWD_scores = -convolve(coded_seq, extended_mat.T, mode='valid')
+        RC_scores = -convolve(
+            coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
+        scores = np.vastack(FWD_scores, RC_scores).min(1)
+        motifs_scores.append(scores)
+    return motifs_scores
 
 def load_energy_data(fname):
     def load_energy(mo_text):
@@ -53,6 +155,7 @@ def load_energy_data(fname):
         motif.update_energy_array(ddg_array, consensus_energy)
     
     return motif
+
 def estimate_unbnd_conc_in_region(
         motif, score_cov, atacseq_cov, chipseq_rd_cov,
         frag_len, max_chemical_affinity_change):
@@ -98,6 +201,13 @@ class DeltaDeltaGArray(np.ndarray):
         base_contribs = np.zeros((len(self)/3, 4))
         base_contribs[:,1:4] = self.reshape((len(self)/3,3))
         return base_contribs
+
+    def calc_normalized_base_conts(self, ref_energy):
+        base_contribs = self.calc_base_contributions()
+        ref_energy += base_contribs.min(1).sum()
+        for i, min_energy in enumerate(base_contribs.min(1)):
+            base_contribs[i,:] -= min_energy
+        return ref_energy, base_contribs
     
     def calc_min_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()
