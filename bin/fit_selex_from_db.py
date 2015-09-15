@@ -7,6 +7,10 @@ import numpy as np
 from fit_selex import (
     estimate_dg_matrix_with_adadelta, find_pwm, load_sequences, 
     Motif, PartitionedAndCodedSeqs, pyTFbindtools, find_best_shift, DeltaDeltaGArray )
+import fit_selex
+fit_selex.pyTFbindtools.VERBOSE = True
+fit_selex.pyTFbindtools.DEBUG = True
+
 
 def insert_model_into_db(exp_id, motif_len, 
                          ref_energy, ddg_array, 
@@ -41,9 +45,7 @@ def insert_model_into_db(exp_id, motif_len,
     return
 
 def fit_model(exp_id, rnds_and_seqs, ddg_array, ref_energy, dna_conc, prot_conc):
-    for rnd_num in xrange(
-            min(20-ddg_array.motif_len+1, 
-                len(rnds_and_seqs[0][0])-ddg_array.motif_len+1)):
+    while True:
         bs_len = ddg_array.motif_len
         partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
@@ -56,6 +58,10 @@ def fit_model(exp_id, rnds_and_seqs, ddg_array, ref_energy, dna_conc, prot_conc)
         insert_model_into_db(exp_id, bs_len, ref_energy, ddg_array,
                              lhd_hat, lhd_path)
         
+        if ( bs_len >= 20 
+             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+            break
+
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
         if shift_type == 'LEFT':
             ddg_array = np.insert(ddg_array, 0, np.zeros(3, dtype='float32')
@@ -95,19 +101,42 @@ def get_dna_and_prot_conc(exp_id):
     assert len(concs) == 1
     return concs.pop()
 
+def get_experiment_to_process():
+    conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
+    cur = conn.cursor()
+    query = """
+    LOCK TABLE pending_selex_experiment IN ACCESS EXCLUSIVE MODE;
+    SELECT * FROM pending_selex_experiment LIMIT 1;
+    """
+    cur.execute(query)
+    exp_ids = [x[0] for x in cur.fetchall()]
+    if len(exp_ids) == 0:
+        conn.commit()
+        return None
+    else:
+        exp_id = int(exp_ids[0])
+        query = "DELETE FROM pending_selex_experiment WHERE selex_exp_id = '%s'"
+        cur.execute(query, [exp_id,])
+        conn.commit()
+        return exp_id
+
 def main():
     pyTFbindtools.VERBOSE = True
-    pyTFbindtools.DEBUG_VERBOSE = True
-    exp_id = int(sys.argv[1])
-    selex_fnames = get_fnames(exp_id)
-    dna_conc, prot_conc = get_dna_and_prot_conc(exp_id)
-    rnds_and_seqs = load_sequences(selex_fnames)
-    initial_binding_site_len = 6
-    pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
-    motif = Motif('SELEXexp%i' % exp_id, str(exp_id), pwm)
-    ref_energy, ddg_array = motif.build_ddg_array()
-    ddg_array_hat, ref_energy_hat = fit_model(
-        exp_id, rnds_and_seqs, ddg_array, ref_energy, dna_conc, prot_conc )
+    #pyTFbindtools.DEBUG_VERBOSE = True
+    #exp_id = int(sys.argv[1])
+    while True:
+        exp_id = get_experiment_to_process()
+        if exp_id == None: break
+        print "Processing experiment %i" % exp_id
+        selex_fnames = get_fnames(exp_id)
+        dna_conc, prot_conc = get_dna_and_prot_conc(exp_id)
+        rnds_and_seqs = load_sequences(selex_fnames)
+        initial_binding_site_len = 6
+        pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
+        motif = Motif('SELEXexp%i' % exp_id, str(exp_id), pwm)
+        ref_energy, ddg_array = motif.build_ddg_array()
+        fit_model(
+            exp_id, rnds_and_seqs, ddg_array, ref_energy, dna_conc, prot_conc )
     return
 
 main()

@@ -3,7 +3,7 @@ import gzip
 
 from itertools import izip
 
-sys.path.insert(0, "/home/nboley/src/TF_binding/")
+sys.path.insert(0, "/users/nboley/src/TF_binding/")
 
 import numpy as np
 
@@ -98,7 +98,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp)[:1000] ) # [:1000]
+            rnds_and_seqs.append( loader(fp) ) # [:1000]
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -237,14 +237,11 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
 def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     opt_path = []
     prev_lhd = None
-    for rnd_num in xrange(20):
+    while True:
         bs_len = ddg_array.motif_len
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
-        try:
-            partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
-                rnds_and_seqs, bs_len)
-        except ValueError:
-            break
+        partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
+            rnds_and_seqs, bs_len)
         
         calc_log_lhd = calc_log_lhd_factory(
             partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
@@ -280,8 +277,9 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break
         
-        # update hte previous likelihood
-        #prev_lhd = lhd_hat
+        if ( bs_len >= 20 
+             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+            break
         
         pyTFbindtools.log("Finding best shift", 'VERBOSE')
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
