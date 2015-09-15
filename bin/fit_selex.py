@@ -3,7 +3,7 @@ import gzip
 
 from itertools import izip
 
-sys.path.insert(0, "/users/nboley/src/TF_binding/")
+sys.path.insert(0, "/home/nboley/src/TF_binding/")
 
 import numpy as np
 
@@ -86,12 +86,18 @@ def load_fastq(fp):
 
 def load_sequences(fnames):
     rnds_and_seqs = []
-    for fname in sorted(fnames,
-                        key=lambda x: int(x.split("_")[-1].split(".")[0])):
+    rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
+    rnds_and_fnames = dict(zip(rnd_nums, fnames))
+    for rnd in range(1, max(rnd_nums)+1):
+        if rnd not in rnds_and_fnames:
+            rnds_and_seqs.append([])
+            continue
+        else:
+            fname = rnds_and_fnames[rnd]
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp) ) # [:1000]
+            rnds_and_seqs.append( loader(fp)[:1000] ) # [:1000]
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -237,8 +243,10 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
         partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
 
-        prev_lhd = calc_log_lhd(
-            partitioned_and_coded_rnds_and_seqs, ddg_array, ref_energy)
+        calc_log_lhd = calc_log_lhd_factory(
+            partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
+        
+        prev_lhd = calc_log_lhd(ref_energy, ddg_array, 0)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
@@ -258,7 +266,7 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
             str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
 
         new_lhd = calc_log_lhd(
-            partitioned_and_coded_rnds_and_seqs, ddg_array, ref_energy)
+            ref_energy, ddg_array, 0)
 
         opt_path.append([bs_len, new_lhd, ddg_array, ref_energy])
 

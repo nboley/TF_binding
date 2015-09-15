@@ -6,6 +6,8 @@ from itertools import product, izip, chain
 from collections import defaultdict, namedtuple
 
 import numpy as np
+np.random.seed(0)
+
 import matplotlib.pyplot as plt
 
 import theano
@@ -175,68 +177,36 @@ def code_seqs(seqs, motif_len, n_seqs=None, ON_GPU=True):
     else:
         return coded_seqs
 
-sym_cons_dg = TT.scalar('cons_dg')
-sym_chem_pot = TT.scalar('chem_pot')
-sym_ddg = TT.vector('ddg')
-
-# calculate the sum of log occupancies for a particular round, given a 
-# set of energies
-calc_rnd_lhd_num = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
-    TT.log(1.0 + TT.exp(
-        (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
-)
-
-def calc_lhd_numerators(
-        seq_ddgs, chem_affinities, ref_energy):
-    # the occupancies of each rnd are a function of the chemical affinity of
-    # the round in which there were sequenced and each previous round. We 
-    # loop through each sequenced round, and calculate the numerator of the log 
-    # lhd 
-    numerators = []
-    for sequencing_rnd, seq_ddgs in enumerate(seq_ddgs):
-        chem_affinity = chem_affinities[0]
-        #numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
-        numerator = calc_rnd_lhd_num(chem_affinity, ref_energy, seq_ddgs)
-        for rnd in xrange(1, sequencing_rnd+1):
-            #numerator += np.log(
-            #    logistic(-(-chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
-            numerator += calc_rnd_lhd_num(
-                chem_affinities[rnd], ref_energy, seq_ddgs)
-        numerators.append(numerator)
-    
-    if CMP_LHD_NUMERATOR_CALCS:
-        print "NUMERATORS", "="*10
-        print numerators
-        print chem_affinities
-        print ref_energy
-        print
-    
-    return numerators
-
 def sample_random_seqs(n_sims, seq_len):
     return ["".join(random.choice('ACGT') for j in xrange(seq_len))
             for i in xrange(n_sims)]
 
 random_seqs = sample_random_seqs(PARTITION_FN_SAMPLE_SIZE, 20)
 
-def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc):
+def calc_log_lhd_factory(
+        partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc):
     dna_conc = np.array(dna_conc).astype('float32')
     prot_conc = np.array(prot_conc).astype('float32')
+    
+    sym_occ = TT.vector()
+    sym_part_fn = TT.vector()
+    sym_u = TT.scalar('u')
+    sym_cons_dg = TT.scalar('cons_dg')
+    sym_chem_pot = TT.scalar('chem_pot')
+    sym_ddg = TT.vector('ddg')
+    sym_e = TT.vector()
 
     calc_energy_fns = []
-    sym_e = TT.vector()
     for rnds_and_coded_seqs in partitioned_and_coded_rnds_and_seqs:
         calc_energy_fns.append([])
         for x in rnds_and_coded_seqs:
-            #calc_energy_fns.append(
-            #    theano.function([sym_e], theano.sandbox.cuda.basic_ops.gpu_from_host(
-            #        x.dot(sym_e).min(1)) ) )
             calc_energy_fns[-1].append(
                 theano.function([sym_e], x.dot(sym_e).min(1)) )
 
     random_coded_seqs = code_seqs(
         random_seqs, partitioned_and_coded_rnds_and_seqs.bs_len, ON_GPU=True)
-    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/len(random_seqs)
+    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/len(
+        random_seqs)
 
     calc_bg_energies = theano.function(
         [sym_e], random_coded_seqs.dot(sym_e).min(1))
@@ -244,17 +214,44 @@ def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs, dna_conc, prot_con
         1 / (1 + TT.exp((-sym_chem_pot+sym_e)/(R*T)))
     )
     
-    sym_occ = TT.vector()
     calc_denom = theano.function([sym_occ], 
         (sym_occ*expected_cnts).sum()
     )
 
-    sym_part_fn = TT.vector()
-    sym_u = TT.scalar('u')
     calc_chem_pot_sum_term = theano.function([sym_part_fn, sym_e, sym_u], 
-        (sym_part_fn*dna_conc/(1+TT.exp(sym_e-sym_u))).sum()
+        (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)/(R*T)))).sum()
     )
 
+
+    # calculate the sum of log occupancies for a particular round, given a 
+    # set of energies
+    calc_rnd_lhd_num = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
+        TT.log(1.0 + TT.exp(
+            (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
+    )
+
+    @profile
+    def calc_lhd_numerators(
+            seq_ddgs, chem_affinities, ref_energy):
+        # the occupancies of each rnd are a function of the chemical affinity of
+        # the round in which there were sequenced and each previous round. We 
+        # loop through each sequenced round, and calculate the numerator of the log 
+        # lhd 
+        numerators = []
+        for sequencing_rnd, seq_ddgs in enumerate(seq_ddgs):
+            chem_affinity = chem_affinities[0]
+            #numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
+            numerator = calc_rnd_lhd_num(chem_affinity, ref_energy, seq_ddgs)
+            for rnd in xrange(1, sequencing_rnd+1):
+                #numerator += np.log(
+                #    logistic(-(-chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
+                numerator += calc_rnd_lhd_num(
+                    chem_affinities[rnd], ref_energy, seq_ddgs)
+            numerators.append(numerator)
+
+        return numerators
+
+    @profile
     def est_chem_potential(
             partition_fn, energies, dna_conc, prot_conc ):
         """Estimate chemical affinity for round 1.
@@ -262,6 +259,7 @@ def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs, dna_conc, prot_con
         [TF] - [TF]_0 - \sum{all seq}{ [s_i]_0[TF](1/{[TF]+exp(delta_g)}) = 0  
         exp{u} - [TF]_0 - \sum{i}{ 1/(1+exp(G_i)exp(-)
         """
+        @profile
         def f(u):
             sum_term = calc_chem_pot_sum_term(partition_fn, energies, u)
             #sum_terms = partition_fn*dna_conc/(1+np.exp(energies-u))
@@ -271,6 +269,7 @@ def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs, dna_conc, prot_con
         rv = brentq(f, min_u, max_u, xtol=1e-4)
         return rv
 
+    @profile
     def calc_lhd_denominators_and_chem_pots(
             ref_energy, ddg_array, seq_len, n_bind_sites):
         # now calculate the denominator (the normalizing factor for each round)
@@ -288,7 +287,8 @@ def calc_log_lhd_factory(partitioned_and_coded_rnds_and_seqs, dna_conc, prot_con
             curr_occupancies *= calc_occ(chem_affinity, energies)
             denominators.append(np.log(calc_denom(curr_occupancies)))
         return chem_pots, denominators
-    
+
+    @profile
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      partition_index):
