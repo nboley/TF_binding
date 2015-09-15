@@ -224,8 +224,8 @@ def calc_log_lhd_factory(
     )
 
     calc_chem_pot_sum_term = theano.function([sym_part_fn, sym_e, sym_u], 
-        (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)))).sum()
-    ) # XXX /(R*T)
+        (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)/(R*T)))).sum()
+    ) 
 
 
     # calculate the sum of log occupancies for a particular round, given a 
