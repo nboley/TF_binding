@@ -210,8 +210,7 @@ def calc_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.bs_len, 
         len(random_seqs[0]), 
         ON_GPU=True)
-    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/len(
-        random_seqs)
+    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/float(len(random_seqs))
 
     calc_bg_energies = theano.function(
         [sym_e], random_coded_seqs.dot(sym_e).min(1))
@@ -219,10 +218,6 @@ def calc_log_lhd_factory(
         1 / (1 + TT.exp((-sym_chem_pot+sym_e)/(R*T)))
     )
     
-    calc_denom = theano.function([sym_occ], 
-        (sym_occ*expected_cnts).sum()
-    )
-
     calc_chem_pot_sum_term = theano.function([sym_part_fn, sym_e, sym_u], 
         (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)/(R*T)))).sum()
     ) 
@@ -280,7 +275,7 @@ def calc_log_lhd_factory(
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
         energies = ref_energy + calc_bg_energies(ddg_array)
-        curr_occupancies = np.ones(len(energies), dtype='float32')
+        curr_occupancies = expected_cnts*np.ones(len(energies), dtype='float32')
         
         denominators = []
         chem_pots = []
@@ -290,11 +285,7 @@ def calc_log_lhd_factory(
                 dna_conc, prot_conc )
             chem_pots.append(chem_affinity)
             curr_occupancies *= calc_occ(chem_affinity, energies)
-            curr_occupancies = curr_occupancies/curr_occupancies.sum()
-            denom = calc_denom(curr_occupancies)
-            #print "DENOM", rnd, denom
-            #print curr_occupancies.sum()
-            denominators.append(np.log(denom))
+            denominators.append(np.log(curr_occupancies.sum()))
         return chem_pots, denominators
 
     #@profile
@@ -322,7 +313,7 @@ def calc_log_lhd_factory(
         for rnd_num, rnd_denom, rnd_seq_ddgs in izip(
                 numerators, denominators, rnds_and_seq_ddgs):
             lhd += rnd_num - len(rnd_seq_ddgs)*rnd_denom
-        
+
         try:
             assert np.isfinite(lhd)
         except:
