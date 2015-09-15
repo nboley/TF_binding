@@ -202,7 +202,7 @@ def parse_arguments():
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
     from pyTFbindtools.selex import random_seqs, code_seqs, calc_occ
     random_coded_seqs = code_seqs(
-        random_seqs, ddg_array.motif_len, ON_GPU=False)
+        random_seqs, ddg_array.motif_len, len(random_seqs[0]), ON_GPU=False)
     energies = random_coded_seqs.dot(ddg_array).min(1)
     min_energy_offsets = np.argmin(random_coded_seqs.dot(ddg_array), 1)
     occs = calc_occ(energies, ref_energy, chem_pot)
