@@ -157,17 +157,19 @@ def code_sequence(seq, motif_len,
 
     return coded_bss
 
-def code_seqs(seqs, motif_len, n_seqs=None, ON_GPU=True):
+def code_seqs(seqs, motif_len, seq_len, n_seqs=None, ON_GPU=True):
     """Load SELEX data and encode all the subsequences. 
 
     """
     if n_seqs == None: n_seqs = len(seqs)
-    subseq0 = code_sequence(next(iter(seqs)), motif_len)
     # leave 3 rows for each sequence base, and 6 for the shape params
     len_per_base = 3
     if USE_SHAPE:
         len_per_base += 6
-    coded_seqs = np.zeros((n_seqs, len(subseq0), motif_len*len_per_base), 
+    coded_seqs = np.zeros((n_seqs, 
+                           # number of binding sites*2 for reverse complement 
+                           2*(seq_len-motif_len+1), 
+                           motif_len*len_per_base), 
                           dtype=theano.config.floatX)
     for i, seq in enumerate(seqs):
         for j, param_values in enumerate(code_sequence(seq, motif_len)):
@@ -389,19 +391,21 @@ def calc_occ(seq_ddgs, ref_energy, chem_affinity):
 class PartitionedAndCodedSeqs(list):
     @staticmethod
     def partition_data(seqs):
-        assert len(seqs) > 150
+        assert len(seqs) == 0 or len(seqs) > 150
         n_partitions = max(5, len(seqs)/10000)
         partitioned_seqs = [[] for i in xrange(n_partitions)]
         for i, seq in enumerate(seqs):
             partitioned_seqs[i%n_partitions].append(seq)
         return partitioned_seqs
-
+    
     def __init__(self, rnds_and_seqs, bs_len):
-        self.seq_length = len(rnds_and_seqs[0][0])
+        self.seq_length = next(len(x[0]) for x in rnds_and_seqs if len(x) > 0)
         self.bs_len = bs_len
+        if self.bs_len > self.seq_length:
+            raise ValueError, "Binding site length longer than sequence length"
         
         self.extend(zip(*[
-            [ code_seqs(rnd_seqs, bs_len)
+            [ code_seqs(rnd_seqs, self.bs_len, self.seq_length)
               for rnd_seqs in self.partition_data(seqs)]
             for seqs in rnds_and_seqs]))
         self.validation = self[0]

@@ -85,6 +85,7 @@ def load_fastq(fp):
     return seqs
 
 def load_sequences(fnames):
+    fnames = list(fnames)
     rnds_and_seqs = []
     rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
     rnds_and_fnames = dict(zip(rnd_nums, fnames))
@@ -236,13 +237,15 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
 def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     opt_path = []
     prev_lhd = None
-    for rnd_num in xrange(min(20, 
-                              len(rnds_and_seqs[0][0])-ddg_array.motif_len+1)):
+    for rnd_num in xrange(20):
         bs_len = ddg_array.motif_len
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
-        partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
-            rnds_and_seqs, bs_len)
-
+        try:
+            partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
+                rnds_and_seqs, bs_len)
+        except ValueError:
+            break
+        
         calc_log_lhd = calc_log_lhd_factory(
             partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
         
