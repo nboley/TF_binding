@@ -525,4 +525,4 @@ def estimate_dg_matrix_with_adadelta(
     ref_energy, ddg_array = extract_data_from_array(x)
     test_lhd = calc_log_lhd(ref_energy, ddg_array, 1)
 
-    return ddg_array, ref_energy, chem_pots, test_lhds, test_lhd
+    return ddg_array, ref_energy, test_lhds, test_lhd

@@ -98,7 +98,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp) ) # [:1000]
+            rnds_and_seqs.append( loader(fp)[:1000] ) # [:1000]
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -253,7 +253,7 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, chem_pots, lhd_path, lhd_hat 
+        ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
                 ddg_array, ref_energy,

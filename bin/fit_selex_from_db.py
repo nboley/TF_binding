@@ -10,7 +10,6 @@ from fit_selex import (
 
 def insert_model_into_db(exp_id, motif_len, 
                          ref_energy, ddg_array, 
-                         chem_affinities, 
                          validation_lhd, lhd_path):
     """
                 Table "public.selex_models"
@@ -32,11 +31,10 @@ def insert_model_into_db(exp_id, motif_len,
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
     query = """
-    INSERT INTO selex_models (selex_exp_id, motif_len, consensus_energy, ddg_array, chem_affinities, validation_lhd, test_lhd_path) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING key
+    INSERT INTO selex_models (selex_exp_id, motif_len, consensus_energy, ddg_array, validation_lhd, test_lhd_path) VALUES (%s, %s, %s, %s, %s, %s) RETURNING key
     """
     cur.execute(query, (
         exp_id, motif_len, float(consensus_energy), base_contributions.tolist(),
-        chem_affinities.tolist(), 
         float(validation_lhd), lhd_path))
     conn.commit()
     conn.close()
@@ -50,13 +48,13 @@ def fit_model(exp_id, rnds_and_seqs, ddg_array, ref_energy, dna_conc, prot_conc)
         partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
 
-        ( ddg_array, ref_energy, chem_affinities, lhd_path, lhd_hat 
+        ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
                 ddg_array, ref_energy,
                 dna_conc, prot_conc)
         insert_model_into_db(exp_id, bs_len, ref_energy, ddg_array,
-                             chem_affinities, lhd_hat, lhd_path)
+                             lhd_hat, lhd_path)
         
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
         if shift_type == 'LEFT':
