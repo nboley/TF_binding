@@ -206,7 +206,10 @@ def calc_log_lhd_factory(
                 theano.function([sym_e], x.dot(sym_e).min(1)) )
 
     random_coded_seqs = code_seqs(
-        random_seqs, partitioned_and_coded_rnds_and_seqs.bs_len, ON_GPU=True)
+        random_seqs, 
+        partitioned_and_coded_rnds_and_seqs.bs_len, 
+        len(random_seqs[0]), 
+        ON_GPU=True)
     expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/len(
         random_seqs)
 
@@ -232,7 +235,7 @@ def calc_log_lhd_factory(
             (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
     )
 
-    @profile
+    #@profile
     def calc_lhd_numerators(
             seq_ddgs, chem_affinities, ref_energy):
         # the occupancies of each rnd are a function of the chemical affinity of
@@ -253,7 +256,7 @@ def calc_log_lhd_factory(
 
         return numerators
 
-    @profile
+    #@profile
     def est_chem_potential(
             partition_fn, energies, dna_conc, prot_conc ):
         """Estimate chemical affinity for round 1.
@@ -261,7 +264,7 @@ def calc_log_lhd_factory(
         [TF] - [TF]_0 - \sum{all seq}{ [s_i]_0[TF](1/{[TF]+exp(delta_g)}) = 0  
         exp{u} - [TF]_0 - \sum{i}{ 1/(1+exp(G_i)exp(-)
         """
-        @profile
+        #@profile
         def f(u):
             sum_term = calc_chem_pot_sum_term(partition_fn, energies, u)
             #sum_terms = partition_fn*dna_conc/(1+np.exp(energies-u))
@@ -271,7 +274,7 @@ def calc_log_lhd_factory(
         rv = brentq(f, min_u, max_u, xtol=1e-4)
         return rv
 
-    @profile
+    #@profile
     def calc_lhd_denominators_and_chem_pots(
             ref_energy, ddg_array, seq_len, n_bind_sites):
         # now calculate the denominator (the normalizing factor for each round)
@@ -281,16 +284,20 @@ def calc_log_lhd_factory(
         
         denominators = []
         chem_pots = []
-        for rnd in xrange(len(partitioned_and_coded_rnds_and_seqs)):
+        for rnd in xrange(partitioned_and_coded_rnds_and_seqs.n_rounds):
             chem_affinity = est_chem_potential(
                 energies, curr_occupancies/curr_occupancies.sum(),
                 dna_conc, prot_conc )
             chem_pots.append(chem_affinity)
             curr_occupancies *= calc_occ(chem_affinity, energies)
-            denominators.append(np.log(calc_denom(curr_occupancies)))
+            curr_occupancies = curr_occupancies/curr_occupancies.sum()
+            denom = calc_denom(curr_occupancies)
+            #print "DENOM", rnd, denom
+            #print curr_occupancies.sum()
+            denominators.append(np.log(denom))
         return chem_pots, denominators
 
-    @profile
+    #@profile
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      partition_index):
@@ -316,6 +323,12 @@ def calc_log_lhd_factory(
                 numerators, denominators, rnds_and_seq_ddgs):
             lhd += rnd_num - len(rnd_seq_ddgs)*rnd_denom
         
+        try:
+            assert np.isfinite(lhd)
+        except:
+            print numerators
+            print denominators
+            raise
         return lhd
     
     return calc_log_lhd        
@@ -413,6 +426,7 @@ class PartitionedAndCodedSeqs(list):
         self.training = self[2:]
 
         self.n_bind_sites = self.validation[0].get_value().shape[1]
+        self.n_rounds = len(self.validation)
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
