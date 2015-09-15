@@ -245,6 +245,7 @@ def parse_arguments():
         motifs = load_selex_models_from_db(args.tf_names)
     elif args.score_type == 'logOdds':
         motifs = load_pwms_from_db(args.tf_names)
+    assert len(motifs) > 0
     print "Finished loading motifs."
 
     # load all of the peaks
@@ -282,4 +283,5 @@ def main():
         fork_and_wait(NTHREADS, extract_data_worker, (
             ofp, peak_cntr, motifs, fasta, peaks))
 
-main()
+if __name__ == '__main__':
+    main()
