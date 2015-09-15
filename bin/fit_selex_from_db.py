@@ -8,9 +8,6 @@ from fit_selex import (
     estimate_dg_matrix_with_adadelta, find_pwm, load_sequences, 
     Motif, PartitionedAndCodedSeqs, pyTFbindtools, find_best_shift, DeltaDeltaGArray )
 import fit_selex
-fit_selex.pyTFbindtools.VERBOSE = True
-fit_selex.pyTFbindtools.DEBUG = True
-
 
 def insert_model_into_db(exp_id, motif_len, 
                          ref_energy, ddg_array, 

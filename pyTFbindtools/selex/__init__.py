@@ -33,7 +33,7 @@ PARTITION_FN_SAMPLE_SIZE = 10000
 CMP_LHD_NUMERATOR_CALCS = False
 RANDOM_POOL_SIZE = None
 CONVERGENCE_MAX_LHD_CHANGE = None
-MAX_NUM_ITER = 2000
+MAX_NUM_ITER = 10000
 
 EXPECTED_MEAN_ENERGY = -3.0
 CONSTRAIN_MEAN_ENERGY = True
@@ -224,8 +224,8 @@ def calc_log_lhd_factory(
     )
 
     calc_chem_pot_sum_term = theano.function([sym_part_fn, sym_e, sym_u], 
-        (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)/(R*T)))).sum()
-    )
+        (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)))).sum()
+    ) # XXX /(R*T)
 
 
     # calculate the sum of log occupancies for a particular round, given a 
@@ -404,7 +404,7 @@ def calc_occ(seq_ddgs, ref_energy, chem_affinity):
 class PartitionedAndCodedSeqs(list):
     @staticmethod
     def partition_data(seqs):
-        assert len(seqs) == 0 or len(seqs) > 150
+        #assert len(seqs) == 0 or len(seqs) > 150
         n_partitions = max(5, len(seqs)/10000)
         partitioned_seqs = [[] for i in xrange(n_partitions)]
         for i, seq in enumerate(seqs):
