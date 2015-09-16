@@ -224,9 +224,9 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
     # calculate the entropies, and shift int he direction that gives the
     # smallest entropy
     left_shift_score = -(
-        left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:])).sum()
+        left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:]+1e-6)).sum()
     right_shift_score = -(
-        right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:])).sum()
+        right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:]+1e-6)).sum()
     pyTFbindtools.log("Left shift entropy: %.2e" % left_shift_score, 'VERBOSE')
     pyTFbindtools.log("Right shift entropy: %.2e" % right_shift_score,'VERBOSE')
     if left_shift_score < right_shift_score:

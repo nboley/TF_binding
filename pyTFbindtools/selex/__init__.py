@@ -285,7 +285,16 @@ def calc_log_lhd_factory(
                 dna_conc, prot_conc )
             chem_pots.append(chem_affinity)
             curr_occupancies *= calc_occ(chem_affinity, energies)
-            denominators.append(np.log(curr_occupancies.sum()))
+            occs_sum = curr_occupancies.sum()
+            if occs_sum > 0:
+                denominators.append(np.log(occs_sum))
+            elif len(denominators) > 1:
+                denominators.append(
+                    denominators[-1] - (denominators[-1] - denominators[-2]))
+            elif len(denominators) > 0:
+                denominators.append(denominators[-1])
+            else:
+                raise ValueError, "Minimum precision exceeded"
         return chem_pots, denominators
 
     #@profile
