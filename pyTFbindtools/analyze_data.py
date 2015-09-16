@@ -1,5 +1,7 @@
 import os, sys
 
+import gzip
+
 import math
 
 import itertools
@@ -34,16 +36,14 @@ def load_data(fname):
                 np.random.choice(neg_full.index, sample_size, replace=False)]
             return pos.append(neg)
 
-    sample_ids = fname.split(".")[-2].split("_")
+    sample_ids = fname.split(".")[-3].split("_")
     #sample_ids.sort(key=lambda x:int(x[1:]))
-    with open(fname) as fp:
+    with gzip.open(fname) as fp:
         header = fp.readline()
         data = header.split()
         tf_names = [
             x.split("_")[1] for x in header.split() if x.startswith('label')]
-    #tf_names = fname.split(".")[-3].split("_")
-    print tf_names
-    assert False
+
     if len(sample_ids) == 1:
         train_samples = sample_ids
         validation_samples = sample_ids
@@ -52,10 +52,20 @@ def load_data(fname):
         validation_samples = sample_ids[:num_validation_samples]
         train_samples = sample_ids[num_validation_samples:]
 
-    data = pd.read_csv(fname, sep="\s+", index_col=0)
+    data = pd.read_csv(fname, sep="\s+", index_col=0, compression='infer')
+    label_columns = [x for x in data.columns if x.startswith('label')]
+    for label_column in label_columns:
+        new_labels = np.zeros(len(data), dtype=int)
+        for i, x in enumerate(data[label_column]):
+            if isinstance(x, int):
+                val = x
+            else:
+                val = int(x.split(",")[0])
+            new_labels[i] = -1 if val <= 0 else 1
+        data[label_column] = new_labels
+
     train_chrs = ['chr%i' %i for i in xrange(5, 23)]
     train = subset_data(data, train_samples, train_chrs)
-
     validation_chrs = ['chr%i' %i for i in xrange(3, 5)]
     validation = subset_data(data, validation_samples, validation_chrs)
     return balance_data(train), balance_data(validation)
@@ -63,14 +73,14 @@ def load_data(fname):
 train, validation = load_data(sys.argv[1])
 #clf_1 = DecisionTreeClassifier(max_depth=20)
 #clf_1 = RandomForestClassifier(max_depth=15)
-clf_1 = GradientBoostingClassifier(n_estimators=250)
+clf_1 = GradientBoostingClassifier(n_estimators=25)
 
 all_predictors = [ x for x in train.columns
                    if not x.startswith('label')
                    and x != 'access_score' ]
 predictors = all_predictors
 for label in [x for x in train.columns if x.startswith('label')]:
-    print label, predictor
+    print label, predictors
     mo = clf_1.fit(train[predictors], train[label])
     y_hat = mo.predict(train[predictors])
     print label, 'train', (train[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)
