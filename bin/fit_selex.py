@@ -3,7 +3,7 @@ import gzip
 
 from itertools import izip
 
-sys.path.insert(0, "/users/nboley/src/TF_binding/")
+sys.path.insert(0, "/home/nboley/src/TF_binding/")
 
 import numpy as np
 
@@ -14,7 +14,6 @@ import pyTFbindtools.selex
 from pyTFbindtools.selex import (
     find_pwm, code_seqs, 
     estimate_dg_matrix_with_adadelta,
-    est_chem_potentials, bootstrap_lhds,
     find_pwm_from_starting_alignment,
     PartitionedAndCodedSeqs, calc_log_lhd_factory, base_map)
 from pyTFbindtools.motif_tools import (
@@ -86,9 +85,16 @@ def load_fastq(fp):
     return seqs
 
 def load_sequences(fnames):
+    fnames = list(fnames)
     rnds_and_seqs = []
-    for fname in sorted(fnames,
-                        key=lambda x: int(x.split("_")[-1].split(".")[0])):
+    rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
+    rnds_and_fnames = dict(zip(rnd_nums, fnames))
+    for rnd in range(1, max(rnd_nums)+1):
+        if rnd not in rnds_and_fnames:
+            rnds_and_seqs.append([])
+            continue
+        else:
+            fname = rnds_and_fnames[rnd]
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
@@ -194,13 +200,16 @@ def parse_arguments():
     return motif, rnds_and_seqs, int(args.random_seq_pool_size)
 
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
-    from pyTFbindtools.selex import build_random_read_energies_pool, calc_occ
-    pwm = np.zeros((len(ddg_array)/3, 4))
-    energies, seqs = build_random_read_energies_pool(
-        10000, len(ddg_array)/3, ddg_array, ref_energy, store_seqs=True)
+    from pyTFbindtools.selex import random_seqs, code_seqs, calc_occ
+    random_coded_seqs = code_seqs(
+        random_seqs, ddg_array.motif_len, len(random_seqs[0]), ON_GPU=False)
+    energies = random_coded_seqs.dot(ddg_array).min(1)
+    min_energy_offsets = np.argmin(random_coded_seqs.dot(ddg_array), 1)
     occs = calc_occ(energies, ref_energy, chem_pot)
-    for seq, occ in izip(seqs, occs):
-        for base_pos, base in enumerate(seq):
+    pwm = np.zeros((ddg_array.motif_len, 4))
+
+    for seq, offset, occ in izip(random_seqs, min_energy_offsets, occs):
+        for base_pos, base in enumerate(seq[offset:offset+ddg_array.motif_len]):
             pwm[base_pos,base_map(base)] += occ
     pwm = pwm.T/pwm.sum(1)
     return pwm
@@ -215,9 +224,9 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
     # calculate the entropies, and shift int he direction that gives the
     # smallest entropy
     left_shift_score = -(
-        left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:])).sum()
+        left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:]+1e-6)).sum()
     right_shift_score = -(
-        right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:])).sum()
+        right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:]+1e-6)).sum()
     pyTFbindtools.log("Left shift entropy: %.2e" % left_shift_score, 'VERBOSE')
     pyTFbindtools.log("Right shift entropy: %.2e" % right_shift_score,'VERBOSE')
     if left_shift_score < right_shift_score:
@@ -228,21 +237,24 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
 def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     opt_path = []
     prev_lhd = None
-    for rnd_num in xrange(min(20, 
-                              len(rnds_and_seqs[0][0])-ddg_array.motif_len+1)):
+    while True:
         bs_len = ddg_array.motif_len
         pyTFbindtools.log("Coding sequences", 'VERBOSE')
         partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
             rnds_and_seqs, bs_len)
-
+        
+        calc_log_lhd = calc_log_lhd_factory(
+            partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
+        
+        prev_lhd = calc_log_lhd(ref_energy, ddg_array, 0)
+        pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
+        
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, chem_pots, lhd_path, lhd_hat 
+        ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
                 ddg_array, ref_energy,
                 dna_conc, prot_conc)
-
-        opt_path.append([bs_len, lhd_hat, ddg_array, ref_energy])
 
         pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
         pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
@@ -253,18 +265,21 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
         pyTFbindtools.log(
             str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
 
-        ## Old stop criterion
-        #if prev_lhd != None and prev_lhd + 10 > lhd_hat:
+        new_lhd = calc_log_lhd(
+            ref_energy, ddg_array, 0)
+
+        opt_path.append([bs_len, new_lhd, ddg_array, ref_energy])
 
         pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
-            lhd_path[0], lhd_path[-1], lhd_path[0]-lhd_path[-1]), 'VERBOSE')
+            prev_lhd, new_lhd, new_lhd-prev_lhd), 'VERBOSE')
 
-        if lhd_path[0] + 10 > lhd_path[-1]:        
+        if prev_lhd + 10 > lhd_hat:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break
         
-        # update hte previous likelihood
-        #prev_lhd = lhd_hat
+        if ( bs_len >= 20 
+             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+            break
         
         pyTFbindtools.log("Finding best shift", 'VERBOSE')
         shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
