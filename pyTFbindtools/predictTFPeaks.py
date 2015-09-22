@@ -5,7 +5,8 @@ from collections import defaultdict
 from pysam import FastaFile, TabixFile
 from peaks import load_narrow_peaks
 
-from motif_tools import load_pwms_from_db, load_selex_models_from_db, score_region
+from motif_tools import (
+    load_pwms_from_db, load_selex_models_from_db, score_region )
 
 import multiprocessing
 import grit

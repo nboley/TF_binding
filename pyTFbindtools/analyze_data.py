@@ -52,7 +52,7 @@ def load_data(fname):
         validation_samples = sample_ids[:num_validation_samples]
         train_samples = sample_ids[num_validation_samples:]
 
-    data = pd.read_csv(fname, sep="\s+", index_col=0, compression='infer')
+    data = pd.read_csv(fname, sep="\s+", index_col=0, compression='gzip')
     label_columns = [x for x in data.columns if x.startswith('label')]
     for label_column in label_columns:
         new_labels = np.zeros(len(data), dtype=int)
@@ -76,8 +76,8 @@ train, validation = load_data(sys.argv[1])
 clf_1 = GradientBoostingClassifier(n_estimators=25)
 
 all_predictors = [ x for x in train.columns
-                   if not x.startswith('label')
-                   and x != 'access_score' ]
+                   if not x.startswith('label') ]
+                   #and x != 'access_score' ]
 predictors = all_predictors
 for label in [x for x in train.columns if x.startswith('label')]:
     print label, predictors

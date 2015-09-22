@@ -65,6 +65,20 @@ def load_selex_models_from_db(tf_names=None):
     import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
+    all_lens_query = """
+     SELECT selex_models.key AS selex_motif_id,
+        tfs.tf_id,
+        tfs.tf_name,
+        tfs.tf_species,
+        selex_models.validation_lhd,
+        selex_models.motif_len,
+        selex_models.ddg_array,
+        selex_models.consensus_energy
+       FROM selex_models
+         JOIN selex_experiments USING (selex_exp_id)
+         JOIN tfs USING (tf_id),
+    """
+
     query = """
     SELECT tf_id, selex_motif_id, tf_name, tf_species, consensus_energy, ddg_array 
       FROM best_selex_models
