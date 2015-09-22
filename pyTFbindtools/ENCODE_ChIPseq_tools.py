@@ -2,7 +2,9 @@ import os, sys, time
 
 import requests, json
 
-import urllib
+from warnings import warn
+
+import urllib2
 
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")
@@ -17,8 +19,9 @@ import gzip, io
 
 from multiprocessing import Value
 
-ExperimentFile = namedtuple('PeakFiles', [
-    'exp_id', 'target_id', 
+ExperimentFile = namedtuple('ExperimentFile', [
+    'exp_id', 'assay',
+    'target_id', 
     'sample_type', 'rep_key', 'bsid', 
     'assembly',
     'file_format', 'file_format_type', 'output_type', 'file_loc'])
@@ -31,12 +34,23 @@ BASE_URL = "https://www.encodeproject.org/"
 #
 ################################################################################
 
-def find_experiment_files(experiment_id):
+def find_ENCODE_DCC_experiment_files(experiment_id):
+    """Iterate over files associated with an ENCODE experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to find files for. 
+    Returns: iterator yielding ExperimentFile objects
+    """
     URL = "https://www.encodeproject.org/experiments/{}/".format(experiment_id)
     response = requests.get(URL, headers={'accept': 'application/json'})
     response_json_dict = response.json()
 
-    target_id = response_json_dict['target']['@id']
+    assay = response_json_dict['assay_term_name']
+    
+    try: target_id = response_json_dict['target']['@id']
+    except KeyError: target_id = None
+
+    sample_type = response_json_dict['biosample_term_name']
 
     # build the replicate mapping
     replicates = {}
@@ -45,11 +59,11 @@ def find_experiment_files(experiment_id):
                rep_rec['technical_replicate_number'])
         replicates[key] = rep_rec
 
-    sample_type = response_json_dict['biosample_term_name']
 
     for file_rec in response_json_dict['files']:
         file_format = file_rec['file_format']
-        file_format_type = file_rec['file_format_type']
+        try: file_format_type = file_rec['file_format_type']
+        except KeyError: file_format_type = None
         output_type = file_rec['output_type']
 
         if 'replicate' not in file_rec: 
@@ -60,89 +74,129 @@ def find_experiment_files(experiment_id):
                        file_rec['replicate']['technical_replicate_number'] )
             bsid = replicates[rep_key]['library']['biosample']['accession']
         file_loc = file_rec['href']
-        assembly = file_rec['assembly']
-
-        yield PeakFile(experiment_id, target_id, 
-                       sample_type, rep_key, bsid,
-                       assembly,
-                       file_format, file_format_type, output_type, file_loc)
+        try: assembly = file_rec['assembly']
+        except KeyError: assembly = None 
+            
+        yield ExperimentFile(
+            experiment_id, assay,
+            target_id, 
+            sample_type, rep_key, bsid,
+            assembly,
+            file_format, file_format_type, output_type, file_loc)
 
     return 
 
-def find_bams(experiment_id):
-    for experiment_file in find_experiment_files(experiment_id):
-        if experiment_file.file_type == 'bam':
+def find_ENCODE_DCC_bams(experiment_id):
+    """Iterate over all bams associated with an ENCODE experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to find bams for. 
+    Returns: iterator yielding ExperimentFile objects
+    """
+    for experiment_file in find_ENCODE_DCC_experiment_files(experiment_id):
+        if experiment_file.file_format == 'bam':
             yield experiment_file
     return
 
-def find_peaks(experiment_id):
-    for experiment_file in find_experiment_files(experiment_id):
-        if experiment_file.file_type == 'bed':
+def find_ENCODE_DCC_peaks(experiment_id):
+    """Iterate over all bed peak files associated with an experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to peaks for. 
+    Returns: iterator yield ExperimentFile objects
+    """
+    for experiment_file in find_ENCODE_DCC_experiment_files(experiment_id):
+        if ( experiment_file.file_format == 'bed' 
+             and experiment_file.output_type in (
+                 'peaks', 'optimal idr thresholded peaks')):
             yield experiment_file
     return
 
-def find_merged_TF_peaks(experiment_id):
-    for experiment_file in find_peaks(experiment_id):
+def find_ENCODE_DCC_replicate_merged_peaks(experiment_id):
+    """Iterate over all bed peak files from merged replicates associated with an experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to peaks for. 
+    Returns: iterator yielding ExperimentFile objects
+    """
+    for experiment_file in find_ENCODE_DCC_peaks(experiment_id):
         if experiment_file.bsid == 'merged':
             yield experiment_file
     return
 
-def find_IDR_optimal_TF_peaks(experiment_id):
-    for experiment_file in find_merged_TF_peaks(experiment_id):
-        if experiment_file.output_type == 'UniformlyProcessedPeakCalls':
+def find_ENCODE_DCC_IDR_optimal_peaks(experiment_id):
+    """Iterate over all bed 'optimal idr thresholded peaks' files associated with an experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to peaks for. 
+    Returns: iterator yielding ExperimentFile objects
+    """
+    for experiment_file in find_ENCODE_DCC_replicate_merged_peaks(experiment_id):
+        if experiment_file.output_type == 'optimal idr thresholded peaks':
             yield experiment_file
     return
 
-def find_peaks_and_group_by_target(
-        only_merged=True, prefer_uniformly_processed=True):
-    # find all chipseq experiments and group them by target
-    targets = defaultdict(list)
-    chipseq_exps = list(find_chipseq_experiments())
-    for i, exp_id in enumerate(chipseq_exps):
-        #if i > 10: break
-        print( i, len(chipseq_exps), exp_id )
-        for rep_i, res in enumerate(find_called_peaks(exp_id, True)):
-            targets[res.target_id].append(res)
-            #print i, find_target_info(res.target_id)
+def find_best_ENCODE_DCC_replicate_merged_peak(experiment_id, assembly):
+    """Returns a single peak file from merged replicates, prefering optimal IDR peaks when available.
 
-    # remove redudant experiments
-    for i, (target, file_data) in enumerate(targets.items()):
-        any_uniformly_processed = any(
-            f.output_type == 'UniformlyProcessedPeakCalls'
-            for f in file_data )
-
-        new_file_data = [
-            f for f in file_data 
-            if (not prefer_uniformly_processed 
-                or not any_uniformly_processed 
-                or f.output_type=='UniformlyProcessedPeakCalls')
-            and (
-                    not only_merged
-                    or f.bsid == 'merged'
-            )
-        ]
-        print( i, len(targets), target )
-        yield target, new_file_data
-    return
+    Arguments:
+    experiment_id: ENCODE experiment for which to find peak. 
+    Returns: ExperimentFile object, or None if no merged peak files exist
+    """
+    peak_files = [pk_file for pk_file 
+                  in find_ENCODE_DCC_replicate_merged_peaks(experiment_id)
+                  if pk_file.assembly == assembly]
+    idr_optimal_pk_files = [
+        pk_file for pk_file in peak_files 
+        if pk_file.output_type == 'optimal idr thresholded peaks']
+    if len(idr_optimal_pk_files) > 0:
+        if len(idr_optimal_pk_files) > 1:
+            warn("Multiple idr optimal peak files for experiment '%s'" % experiment_id)
+        return idr_optimal_pk_files[0]
+    elif len(idr_optimal_pk_files) == 0 and len(peak_files) > 0:
+        if len(peak_files) > 1:
+            warn("Multiple merged peak files for experiment '%s'" % experiment_id)
+        return peak_files[0]
+    return None
 
 ################################################################################
 #
 # Find ENCODE experiment IDs
 #
 ################################################################################
+def find_ENCODE_chipseq_experiment_ids(assemblies):
+    """Find all ENCODE chipseq experiments from the DCC.  
 
+    """
 
-def find_chipseq_experiments(assemblies=['mm9', 'hg19']): # 'hg19', 
+    # if we pass a string as the assembly, we probably just want that assembly
+    # rather than the string iterator
+    if isinstance(assemblies, str): assemblies = [assemblies,]
+    
     URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=ChIP-seq&{}&target.investigated_as=transcription%20factor&limit=all&format=json".format(
         "&".join("assembly=%s"%x for x in assemblies) )
-        
     response = requests.get(URL, headers={'accept': 'application/json'})
     response_json_dict = response.json()
-    biosamples = set()
     for experiment in response_json_dict['@graph']:
         yield experiment['@id'].split("/")[-2]
     return 
 
+
+def find_ENCODE_DNASE_experiment_ids(assemblies):
+    """Find all ENCODE DNASE experiments from the DCC.  
+
+    """
+    # if we pass a string as the assembly, we probably just want that assembly
+    # rather than the string iterator
+    if isinstance(assemblies, str): assemblies = [assemblies,]
+    
+    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=DNase-seq&{}&limit=all&format=json".format(
+        "&".join("assembly=%s"%x for x in assemblies) )
+    response = requests.get(URL, headers={'accept': 'application/json'})
+    response_json_dict = response.json()
+    for experiment in response_json_dict['@graph']:
+        yield experiment['@id'].split("/")[-2]
+    return 
 
 ################################################################################
 #
@@ -183,6 +237,13 @@ def find_target_info(target_id):
                     cisbp_id)
     return rv
 
+def get_ensemble_genes_associated_with_uniprot_id(uniprot_id):
+    ens_id_pat = '<property type="gene ID" value="(ENS.*?)"/>'
+    res = urllib2.urlopen(
+        "http://www.uniprot.org/uniprot/%s.xml" % uniprot_id)
+    #print( res.read().decode('utf-8') )
+    gene_ids = set(re.findall(ens_id_pat, res.read().decode('utf-8')))
+    return sorted(gene_ids)
 
 def find_cisbp_tfids(species, tf_name, uniprot_ids, ensemble_ids):
     cur = conn.cursor()
@@ -210,16 +271,6 @@ def find_cisbp_tfids(species, tf_name, uniprot_ids, ensemble_ids):
         rv = [x[0] for x in cur.fetchall()]
         
     return rv
-
-
-http = urllib3.PoolManager()
-def get_ensemble_genes_associated_with_uniprot_id(uniprot_id):
-    ens_id_pat = '<property type="gene ID" value="(ENS.*?)"/>'
-    res = http.request(
-        "GET", "http://www.uniprot.org/uniprot/%s.xml" % uniprot_id)
-    #print( res.read().decode('utf-8') )
-    gene_ids = set(re.findall(ens_id_pat, res.read().decode('utf-8')))
-    return sorted(gene_ids)
 
 ################################################################################
 #
@@ -444,13 +495,20 @@ def insert_chipseq_experiment_into_db(exp_id):
     conn.commit()
     return
 
-                
+def iterate_hg19_chipseq_experiments():
+    """This is just an example of iterating through the chipseq experiments.
+
+    """
+    for experiment_id in find_ENCODE_chipseq_experiment_ids('hg19'):
+        print experiment_id
+        print find_best_ENCODE_DCC_replicate_merged_peak(
+                experiment_id, 'hg19')
+        print
+    return
+
+def main():
+    iterate_hg19_chipseq_experiments()
+    
+
 if __name__ == '__main__':
-    experiments = find_chipseq_experiments('hg19')
-    for exp_id, exp_meta_data in experiments:
-        biosample_type = exp_meta_data['biosample_term_name']
-        TF = exp_meta_data['target']['label']
-        if biosample_type != 'GM12878': continue
-        print exp_id, biosample_type, TF
-        #for data in find_bams(exp):
-        #    print data
+    main()
