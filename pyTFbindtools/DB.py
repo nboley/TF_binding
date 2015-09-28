@@ -170,6 +170,33 @@ def sync_ENCODE_chipseq_peak_files():
 
 ################################################################################
 #
+# Insert roadmap meta-data into the local database
+#
+################################################################################
+
+def sync_roadmap_DNASE_peak_files():
+    """Add local dnase files tot he DB. 
+    
+    This is just a stub to get some of the predictuion code working.
+    """
+    cur = conn.cursor()
+    base_dir = "/mnt/data/epigenomeRoadmap/peaks/consolidated/narrowPeak/"
+    for fname in os.listdir(base_dir):
+        if "DNase.macs2" not in fname: continue
+        sample_name = fname.split("-")[0]
+        if int(sample_name[1:]) < 114: continue
+        query = """
+        INSERT INTO roadmap_dnase_files 
+        (roadmap_sample_id, file_type, local_filename) 
+        VALUES 
+        (%s, 'optimal_peak', %s);
+        """
+        cur.execute(query, [sample_name, os.path.join(base_dir, fname)])
+    conn.commit()
+    return
+
+################################################################################
+#
 # Get data from the local database
 #
 ################################################################################
