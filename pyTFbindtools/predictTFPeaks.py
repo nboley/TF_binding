@@ -218,7 +218,7 @@ def parse_arguments():
     parser.add_argument( '--peaks', type=file, nargs='*',
         help='Narrowpeak file(s) containing peaks to predict on.')
     parser.add_argument( '--roadmap-sample-ids', nargs='*',
-        help='Specify the peak fieles with roadmap sample ids (eg E123)')
+        help='Specify the peak files with roadmap sample ids (eg E123)')
 
     score_type_options = ['ddG','logOdds']
     parser.add_argument( '--score-type', type=str, default='ddG',

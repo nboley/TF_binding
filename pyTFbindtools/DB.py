@@ -222,6 +222,3 @@ def encode_chipseq_exp_is_in_db(exp_id):
 
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")
-
-if __name__ == '__main__':
-    sync_ENCODE_chipseq_peak_files()
