@@ -1,3 +1,5 @@
+import os
+
 ################################################################################
 #
 # Insert ENCODE meta-data into the local database
@@ -98,15 +100,72 @@ def insert_chipseq_experiment_into_db(exp_id):
     conn.commit()
     return
 
+def build_local_ENCODE_peak_fname(peak_id):
+    from ENCODE_ChIPseq_tools import chipseq_peaks_base_dir
+    cur = conn.cursor()
+    query = """
+    SELECT file_output_type, sample_type, bsid, encode_target_id 
+      FROM encode_chipseq_peak_files, 
+           encode_chipseq_experiments, 
+           chipseq_targets 
+     WHERE chipseq_targets.chipseq_target_id 
+           = encode_chipseq_experiments.target 
+       AND encode_chipseq_peak_files.encode_experiment_id 
+           = encode_chipseq_experiments.encode_experiment_id
+       AND encode_chipseq_peak_key = %s;
+    """
+    cur.execute(query, [peak_id,])
+    res = cur.fetchall()
+    if len(res) == 0: return None
+    # encode_chipseq_peak_key is the primary key, so we shouldn't get multiple 
+    # results
+    assert len(res) == 1
+    output_fname_template = "ChIPseq.{peak_type}.{sample_type}.{target_name}.ENCODECHIPSEQPK{peak_id}.bed.gz"
+    peak_type, sample_type, bsid, encode_target_id = res[0]
+    if peak_type == 'optimal idr thresholded peaks':
+        peak_type = 'idr_optimal'
+    elif peak_type == 'peaks' and bsid == 'merged':
+        peak_type = 'replicate_merged'
+    elif peak_type == 'peaks':
+        peak_type = 'single_replicate'
+    elif peak_type == 'hotspots':
+        peak_type = 'hotspots'
+    else:
+        raise ValueError, "Unrecognized peak type: '%s'" % peak_type
+    sample_type = sample_type.replace(" ", "__").replace("/", "-")
+    target_name = encode_target_id.strip().split("/")[-2].replace("/", "-")
+    return os.path.join( 
+        chipseq_peaks_base_dir, 
+        output_fname_template.format(
+            peak_type=peak_type, sample_type=sample_type, 
+            peak_id=peak_id, target_name=target_name) )
+
 def sync_ENCODE_chipseq_peak_files():
+    from ENCODE_ChIPseq_tools import download_and_index_peak_file
     # find all files in the database that don't have local copies
     cur = conn.cursor()
     query = """
-    SELECT * FROM encode_chipseq_peak_files WHERE local_filename is NULL;
+    SELECT encode_chipseq_peak_key, remote_filename 
+      FROM encode_chipseq_peak_files 
+     WHERE local_filename is NULL;
     """
     cur.execute(query)
-    for res in cur.fetchall():
-        print res
+    all_peaks = cur.fetchall()
+    for i, (peak_id, remote_filename) in enumerate(all_peaks):
+        print "Processing peak_id '%i' (%i/%i)" % (peak_id, i, len(all_peaks))
+        new_local_fname = build_local_ENCODE_peak_fname(peak_id)
+        rv = download_and_index_peak_file(remote_filename, new_local_fname)
+        if rv == 0:
+            query = """
+            UPDATE encode_chipseq_peak_files 
+            SET local_filename = %s 
+            WHERE encode_chipseq_peak_key = %s;
+            """
+            cur.execute(query, [new_local_fname, peak_id])
+            conn.commit()
+        else:
+            raise ValueError, "Failed to sync encode TF peak id %s (%s)" % (
+                peak_id, remote_filename)
     return
 
 ################################################################################
@@ -162,8 +221,7 @@ def encode_chipseq_exp_is_in_db(exp_id):
     return False
 
 import psycopg2
-#conn = psycopg2.connect("host=mitra dbname=cisbp")
-conn = psycopg2.connect("host=localhost dbname=cisbp")
+conn = psycopg2.connect("host=mitra dbname=cisbp")
 
 if __name__ == '__main__':
     sync_ENCODE_chipseq_peak_files()

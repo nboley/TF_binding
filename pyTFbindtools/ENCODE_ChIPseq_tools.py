@@ -25,6 +25,8 @@ ExperimentFile = namedtuple('ExperimentFile', [
 
 BASE_URL = "https://www.encodeproject.org/"
 
+chipseq_peaks_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_ChIPseq_peaks/"
+
 ################################################################################
 #
 # Find files associated with a particular ENCODE experiment ID
@@ -247,6 +249,22 @@ def get_ensemble_genes_associated_with_uniprot_id(uniprot_id):
 # Download ENCODE Data locally
 #
 ################################################################################
+
+def download_and_index_peak_file(location, output_fname):
+    #print "Downloading %i/%i" % (i+1, len(chipseq_exps))
+    download_cmd = "wget --quiet {URL}"
+    sort_and_compress_cmd = \
+        "zcat {FNAME} | sort -k1,1 -k2n -k3n | bgzip -c > {HR_FNAME}"
+    mv_cmd = "rm {FNAME}"
+    index_cmd = "tabix -p bed {HR_FNAME}"
+    
+    cmd = " && ".join(
+        (download_cmd, sort_and_compress_cmd, mv_cmd, index_cmd)
+    ).format(URL=location, 
+             FNAME=location.split("/")[-1], 
+             HR_FNAME=output_fname )
+    return os.system(cmd)
+    
 
 def download_sort_and_index_tfs():
     res = []
