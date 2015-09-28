@@ -1,6 +1,3 @@
-import psycopg2
-conn = psycopg2.connect("host=mitra dbname=cisbp")
-
 ################################################################################
 #
 # Insert ENCODE meta-data into the local database
@@ -101,6 +98,17 @@ def insert_chipseq_experiment_into_db(exp_id):
     conn.commit()
     return
 
+def sync_ENCODE_chipseq_peak_files():
+    # find all files in the database that don't have local copies
+    cur = conn.cursor()
+    query = """
+    SELECT * FROM encode_chipseq_peak_files WHERE local_filename is NULL;
+    """
+    cur.execute(query)
+    for res in cur.fetchall():
+        print res
+    return
+
 ################################################################################
 #
 # Get data from the local database
@@ -152,3 +160,10 @@ def encode_chipseq_exp_is_in_db(exp_id):
     if len(res) == 1:
         return True
     return False
+
+import psycopg2
+#conn = psycopg2.connect("host=mitra dbname=cisbp")
+conn = psycopg2.connect("host=localhost dbname=cisbp")
+
+if __name__ == '__main__':
+    sync_ENCODE_chipseq_peak_files()
