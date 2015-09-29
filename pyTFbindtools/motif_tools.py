@@ -29,15 +29,15 @@ def logistic(x):
 
 PwmModel = namedtuple('PwmModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
-SelexModel = namedtuple('PwmModel', [
-    'tf_id', 'selex_motif_id', 'tf_name', 'tf_species', 
+SelexModel = namedtuple('SelexModel', [
+    'tf_id', 'motif_id', 'tf_name', 'tf_species', 
     'consensus_energy', 'ddg_array']) 
 
 #pickled_motifs_fname = os.path.join(
 #    os.path.dirname(__file__), 
 #    "../data/motifs/human_and_mouse_motifs.pickle.obj")
 
-def load_pwms_from_db(tf_names=None):
+def load_pwms_from_db(tf_names=None, tf_ids=None):
     import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
@@ -47,11 +47,16 @@ def load_pwms_from_db(tf_names=None):
      WHERE tf_species in ('Mus_musculus', 'Homo_sapiens') 
        AND rank = 1 
     """
-    if tf_names == None:
+    if tf_names == None and tf_ids == None:
         cur.execute(query)
-    else:
-        query += "   AND tf_name in %s"
+    elif tf_names != None and tf_ids == None:
+        query += " AND tf_name in %s"
         cur.execute(query, [tuple(tf_names),])
+    elif tf_ids != None and tf_names == None:
+        query += " AND tf_id in %s"
+        cur.execute(query, [tuple(tf_ids),])
+    else:
+        raise ValueError, "tf_ids and tf_names can not both be set."
     
     motifs = []
     for data in cur.fetchall():
@@ -61,34 +66,39 @@ def load_pwms_from_db(tf_names=None):
 
     return motifs
 
-def load_selex_models_from_db(tf_names=None):
+def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
-    all_lens_query = """
-     SELECT selex_models.key AS selex_motif_id,
-        tfs.tf_id,
+    query = """
+     SELECT tfs.tf_id,
+        format('SELEX_%%s', selex_models.key) AS motif_id,
         tfs.tf_name,
         tfs.tf_species,
-        selex_models.validation_lhd,
-        selex_models.motif_len,
-        selex_models.ddg_array,
-        selex_models.consensus_energy
+        selex_models.consensus_energy,
+        selex_models.ddg_array
        FROM selex_models
          JOIN selex_experiments USING (selex_exp_id)
-         JOIN tfs USING (tf_id),
+         JOIN tfs USING (tf_id)
     """
 
-    query = """
-    SELECT tf_id, selex_motif_id, tf_name, tf_species, consensus_energy, ddg_array 
-      FROM best_selex_models
-    """
-    if tf_names == None:
+    #query = """
+    #SELECT tf_id, selex_motif_id, tf_name, tf_species, consensus_energy, ddg_array 
+    #  FROM best_selex_models
+    #"""
+    if tf_names == None and tf_ids == None and motif_ids == None:
         cur.execute(query)
-    else:
+    elif tf_names != None and tf_ids == None and motif_ids == None:
         query += " WHERE tf_name in %s"
         cur.execute(query, [tuple(tf_names),])
-    
+    elif tf_ids != None and motif_ids == None and tf_names == None:
+        query += " WHERE tf_id in %s"
+        cur.execute(query, [tuple(tf_ids),])
+    elif motif_ids != None and tf_ids == None and tf_names == None:
+        query += " WHERE selex_models.key in %s"
+        cur.execute(query, [tuple(motif_ids),])
+    else:
+        raise ValueError, "only one of tf_ids, tf_names, and motif_ids can can be set."
     motifs = []
     for record in cur.fetchall():
         data = list(record)
@@ -96,7 +106,29 @@ def load_selex_models_from_db(tf_names=None):
         data[-1][0,:] += record[4]
         motifs.append( SelexModel(*data) )
 
+    if len(motifs) == 0:
+        raise ValueError, "No motifs found (tf_ids: %s, tf_names: %s, motif_ids: %s)" % (
+            tf_ids, tf_names, motif_ids)
     return motifs
+
+def load_chipseq_peak_and_matching_DNASE_files_from_db(tfid):
+    import psycopg2
+    conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
+    cur = conn.cursor()    
+    query = """
+    SELECT roadmap_sample_id,
+           dnase_peak_fname,
+           chipseq_peak_fname
+      FROM roadmap_matched_chipseq_experiments
+     WHERE tf_id = %s;
+    """
+    rv = defaultdict(lambda: (set(), set()))
+    cur.execute(query, [tfid,])
+    for sample_id, dnase_peak_fname, chipseq_peak_fname in cur.fetchall():
+        rv[sample_id][0].add(chipseq_peak_fname)
+        rv[sample_id][1].add(dnase_peak_fname)
+    return rv
+
 
 def code_base(base):
     if base == 'A':

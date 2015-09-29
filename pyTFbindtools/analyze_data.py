@@ -19,7 +19,7 @@ def load_data(fname):
         prefixes = set("%s_%s" % (x,y) for (x,y) 
                        in itertools.product(cells, chrs))
         indices = [i for i, row in enumerate(data.index) 
-                   if "_".join(row.split("_")[:2]) in prefixes]
+                   if "__".join(row.split("__")[:2]) in prefixes]
         return data.iloc[indices]
         
     def balance_data(data):

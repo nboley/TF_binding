@@ -181,6 +181,7 @@ def parse_arguments():
                 sample_id = 'DEFAULT'
                 peak_fnames.append((sample_id, fname))
         elif args.roadmap_sample_ids != None:
+            
             for sample_id in args.roadmap_sample_ids:
                 # check if the sample id is valid
                 try:
