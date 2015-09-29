@@ -6,6 +6,8 @@ import math
 
 import itertools
 
+from collections import namedtuple
+
 import pandas as pd
 import numpy as np
 #np.random.seed(0)
@@ -13,81 +15,206 @@ import numpy as np
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn import cross_validation, linear_model
+from sklearn.metrics import roc_auc_score, average_precision_score
 
-def load_data(fname):
-    def subset_data(data, cells, chrs):
-        prefixes = set("%s_%s" % (x,y) for (x,y) 
-                       in itertools.product(cells, chrs))
-        indices = [i for i, row in enumerate(data.index) 
-                   if "__".join(row.split("__")[:2]) in prefixes]
-        return data.iloc[indices]
-        
-    def balance_data(data):
-        label_columns = [x for x in data.columns if x.startswith('label')]
-        if len(label_columns) > 1:
-            return data[(data[label_columns] != 0).all(1)]
-        else:
-            pos_full = data[(data[label_columns] == 1).all(1)]
-            neg_full = data[(data[label_columns] == -1).all(1)]
-            sample_size = min(pos_full.shape[0], neg_full.shape[0])
-            pos = pos_full.loc[
-                np.random.choice(pos_full.index, sample_size, replace=False)]
-            neg = neg_full.loc[
-                np.random.choice(neg_full.index, sample_size, replace=False)]
-            return pos.append(neg)
+TEST_CHRS = [1,2]
+JOHNNIES_VALIDATION_CHRS = range(3,5)
+JOHNNIES_TRAIN_CHRS = range(5, 23)
+USE_JOHNNIES_TEST_TRAIN_SPLIT = False
 
-    sample_ids = fname.split(".")[-3].split("_")
-    #sample_ids.sort(key=lambda x:int(x[1:]))
-    with gzip.open(fname) as fp:
-        header = fp.readline()
-        data = header.split()
-        tf_names = [
-            x.split("_")[1] for x in header.split() if x.startswith('label')]
+ClassificatonResultData = namedtuple('ClassificatonResult', [
+    'is_cross_celltype',
+    'sample_type', # should be validation or test
+    'train_chromosomes',
+    'train_samples', 
 
-    if len(sample_ids) == 1:
-        train_samples = sample_ids
-        validation_samples = sample_ids
-    else:
-        num_validation_samples = int(math.ceil(len(sample_ids)/4.0))
-        validation_samples = sample_ids[:num_validation_samples]
-        train_samples = sample_ids[num_validation_samples:]
+    'validation_chromosomes',
+    'validation_samples', 
 
-    data = pd.read_csv(fname, sep="\s+", index_col=0, compression='gzip')
-    label_columns = [x for x in data.columns if x.startswith('label')]
-    for label_column in label_columns:
-        new_labels = np.zeros(len(data), dtype=int)
-        for i, x in enumerate(data[label_column]):
+    'auROC', 'auPRC', 
+    'num_true_positives', 'num_positives',
+    'num_true_negatives', 'num_negatives'])
+
+class ClassificatonResult(ClassificatonResultData):
+    def __str__(self):
+        rv = []
+        positive_accuracy = float(self.num_true_positives)/self.num_positives
+        negative_accuracy = float(self.num_true_negatives)/self.num_negatives
+        rv.append(str(self.validation_samples).ljust(25))
+        rv.append(str(self.train_samples).ljust(15))
+        rv.append("Balanced Accuracy: %.3f" % (
+            positive_accuracy/2.0 + negative_accuracy/2.0))
+        rv.append("auROC: %.3f" % self.auROC)
+        rv.append("auPRC: %.3f" % self.auPRC)
+        rv.append("Positive Accuracy: %.3f (%i/%i)" % (
+            positive_accuracy, self.num_true_positives, self.num_positives))
+        rv.append("Negative Accuracy: %.3f (%i/%i)" % (
+            negative_accuracy, self.num_true_negatives, self.num_negatives))
+        return "\t".join(rv)
+
+class TFBindingData(object):
+    @property
+    def columns(self):
+        return self.data.columns
+
+    @staticmethod
+    def merge_labels(labels):
+        new_labels = np.zeros(len(labels), dtype=int)
+        for i, x in enumerate(labels):
             if isinstance(x, int):
                 val = x
             else:
                 val = int(x.split(",")[0])
             new_labels[i] = -1 if val <= 0 else 1
-        data[label_column] = new_labels
+        return new_labels
 
-    train_chrs = ['chr%i' %i for i in xrange(5, 23)]
-    train = subset_data(data, train_samples, train_chrs)
-    validation_chrs = ['chr%i' %i for i in xrange(3, 5)]
-    validation = subset_data(data, validation_samples, validation_chrs)
-    return balance_data(train), balance_data(validation)
+    def subset_data(self, sample_names, chrs):
+        """Return a subsetted copy of self. 
+        
+        """
+        prefixes = set("%s_%s" % (x,y) for (x,y) 
+                       in itertools.product(sample_names, chrs))
+        indices = [i for i, row in enumerate(self.data.index) 
+                   if "_".join(row.split("_")[:2]) in prefixes]
+        return type(self)(self.data.iloc[indices])
 
-train, validation = load_data(sys.argv[1])
-#clf_1 = DecisionTreeClassifier(max_depth=20)
-#clf_1 = RandomForestClassifier(max_depth=15)
-clf_1 = GradientBoostingClassifier(n_estimators=25)
+    def iter_train_validation_splits(self):
+        # determine the training and validation sets
+        if len(self.sample_ids) == 1:
+            train_samples = self.sample_ids
+            validation_samples = self.sample_ids
+            all_sample_folds = [(train_samples, validation_samples),]
+        else:
+            all_sample_folds = []
+            for sample in self.sample_ids:
+                all_sample_folds.append(
+                    ([x for x in self.sample_ids if x != sample], [sample,]))
+        # split the samples into validation and training
+        non_test_chrs = sorted(
+            set(self.contigs) - set("chr%i" % i for i in TEST_CHRS))
+        all_chr_folds = list(cross_validation.KFold(
+            len(non_test_chrs), n_folds=5))
+        for sample_fold, chr_fold in itertools.product(
+                all_sample_folds, all_chr_folds):
+            validation_samples, train_samples = sample_fold
+            train_chrs = [non_test_chrs[i] for i in chr_fold[0]]
+            validation_chrs = [non_test_chrs[i] for i in chr_fold[1]]
+            yield (
+                (train_samples, train_chrs), 
+                (validation_samples, validation_chrs))
+        return
+    
+    def iter_train_validation_data_subsets(self):
+        for train_indices, val_indices in self.iter_train_validation_splits():
+            yield ( self.subset_data(*train_indices), 
+                    self.subset_data(*val_indices) )
+        return
+    
+    def split_into_training_and_test(self):
+        train_chrs = ['chr%i' %i for i in xrange(5, 23)]
+        train = self.subset_data(self.train_samples, train_chrs)
+        validation_chrs = ['chr%i' %i for i in xrange(3, 5)]
+        validation = self.subset_data(
+            self.validation_samples, validation_chrs)
+        return train, validation
+    
+    def _initialize_metadata(self):
+        """Caches meta data (after self.data has been set)
 
-all_predictors = [ x for x in train.columns
-                   if not x.startswith('label') ]
-                   #and x != 'access_score' ]
-predictors = all_predictors
-for label in [x for x in train.columns if x.startswith('label')]:
-    print label, predictors
-    mo = clf_1.fit(train[predictors], train[label])
-    y_hat = mo.predict(train[predictors])
-    print label, 'train', (train[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)
-    y_hat = mo.predict(validation[predictors])
-    positives = np.array(validation[label] == 1)
-    negatives = np.array(validation[label] == -1)
-    print "pos frac", (y_hat[positives] == 1).sum()/float(positives.sum()), positives.sum()
-    print "neg frac", (y_hat[negatives] == -1).sum()/float(negatives.sum()), negatives.sum()
-    print 'validation', (validation[label] == y_hat).sum()/float(len(y_hat)), len(y_hat)
-    print
+        """
+        self.label_columns = [
+            x for x in self.data.columns if x.startswith('label')]
+        self.motif_ids = [
+            x.split("__")[1] for x in self.label_columns]
+        sample_ids = set()
+        contigs = set()
+        for row_label in self.data.index:
+            label_data = row_label.split("_")
+            sample_ids.add(label_data[0])
+            contigs.add(label_data[1])
+        self.sample_ids = sorted(sample_ids)
+        self.contigs = sorted(contigs)
+        
+        return
+
+    def __init__(self, pandas_dataframe):
+        self.data = pandas_dataframe
+        self._initialize_metadata()
+        # merge labels for factors with multiple Chipseq experiments in the 
+        # same sample
+        for label_column in self.label_columns:
+            new_labels = self.merge_labels(self.data[label_column])
+            self.data.loc[:,label_column] = new_labels
+        return
+
+class SingleMotifBindingData(TFBindingData):
+    def balance_data(self):
+        """Return a copy of self where the number of positive and negative 
+           samples is balanced. 
+        
+        """
+        pos_full = self.data[(self.data[self.label_columns] == 1).all(1)]
+        neg_full = self.data[(self.data[self.label_columns] == -1).all(1)]
+        sample_size = min(pos_full.shape[0], neg_full.shape[0])
+        pos = pos_full.loc[
+            np.random.choice(pos_full.index, sample_size, replace=False)]
+        neg = neg_full.loc[
+            np.random.choice(neg_full.index, sample_size, replace=False)]
+        return SingleMotifBindingData( pos.append(neg) )
+    
+    def __init__(self, pandas_dataframe):
+        super(SingleMotifBindingData, self).__init__(pandas_dataframe)
+        # make sure this is actually single motif data
+        assert len(self.motif_ids) == 1
+        assert len(self.label_columns) == 1
+
+def estimate_cross_validated_error(data):
+    for train, validation in data.iter_train_validation_data_subsets():
+        train = train.balance_data()
+        validation = validation.balance_data()
+
+        #clf_1 = DecisionTreeClassifier(max_depth=20)
+        clf_1 = RandomForestClassifier(max_depth=10)
+        #clf_1 = GradientBoostingClassifier(n_estimators=100)
+
+        all_predictors = [ x for x in train.columns
+                           if not x.startswith('label') ]
+        predictors = all_predictors
+        assert len(train.label_columns) == 1
+        label = train.label_columns[0]
+        
+        mo = clf_1.fit(train.data[predictors], train.data[label])
+        y_hat = mo.predict(validation.data[predictors])
+        y_hat_prbs = mo.predict_proba(validation.data[predictors])
+        positives = np.array(validation.data[label] == 1)
+        num_true_positives = (y_hat[positives] == 1).sum()
+
+        negatives = np.array(validation.data[label] == -1)
+        num_true_negatives = (y_hat[negatives] == -1).sum()
+
+        result_summary = ClassificatonResult(
+            set(train.sample_ids) != set(validation.sample_ids),
+            'validation',
+
+            train.contigs, train.sample_ids,
+
+            validation.contigs, validation.sample_ids,
+
+            roc_auc_score(validation.data[label], y_hat_prbs[:,1]),
+            average_precision_score(validation.data[label], y_hat_prbs[:,1]),
+
+            num_true_positives, positives.sum(),
+            num_true_negatives, negatives.sum()
+        )
+        print result_summary
+    return
+
+
+def load_single_motif_data(fname):
+    # load the data into a pandas data frame
+    data = pd.read_csv(
+        fname, sep="\s+", index_col=0, compression='infer')
+    return SingleMotifBindingData(data)
+
+data = load_single_motif_data(sys.argv[1])
+estimate_cross_validated_error(data)
