@@ -36,21 +36,44 @@ ClassificatonResultData = namedtuple('ClassificatonResult', [
     'num_true_negatives', 'num_negatives'])
 
 class ClassificatonResult(ClassificatonResultData):
+    @property
+    def positive_accuracy(self):
+        return float(self.num_true_positives)/self.num_positives
+
+    @property
+    def negative_accuracy(self):
+        return float(self.num_true_negatives)/self.num_negatives
+
+    @property
+    def balanced_accuracy(self):
+        return (self.positive_accuracy + self.negative_accuracy)/2    
+    
     def __str__(self):
         rv = []
-        positive_accuracy = float(self.num_true_positives)/self.num_positives
-        negative_accuracy = float(self.num_true_negatives)/self.num_negatives
-        rv.append(str(self.validation_samples).ljust(25))
-        rv.append(str(self.train_samples).ljust(15))
-        rv.append("Balanced Accuracy: %.3f" % (
-            positive_accuracy/2.0 + negative_accuracy/2.0))
+        #rv.append(str(self.validation_samples).ljust(25))
+        #rv.append(str(self.train_samples).ljust(15))
+        rv.append("Balanced Accuracy: %.3f" % self.balanced_accuracy )
         rv.append("auROC: %.3f" % self.auROC)
         rv.append("auPRC: %.3f" % self.auPRC)
         rv.append("Positive Accuracy: %.3f (%i/%i)" % (
-            positive_accuracy, self.num_true_positives, self.num_positives))
+            self.positive_accuracy, self.num_true_positives,self.num_positives))
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (
-            negative_accuracy, self.num_true_negatives, self.num_negatives))
+            self.negative_accuracy, self.num_true_negatives,self.num_negatives))
         return "\t".join(rv)
+
+class ClassificatonResults(list):
+    def __str__(self):
+        balanced_accuracies = [x.balanced_accuracy for x in self]    
+        auROCs = [x.auROC for x in self]
+        auRPCs = [x.auPRC for x in self]
+        rv = []
+        rv.append("Balanced Accuracies: [%.3f-%.3f]" % (
+            min(balanced_accuracies), max(balanced_accuracies)) )
+        rv.append("auROC:               [%.3f-%.3f]" % (
+            min(auROCs), max(auROCs)))
+        rv.append("auPRC:               [%.3f-%.3f]" % (
+            min(auRPCs), max(auRPCs)))
+        return "\n".join(rv)
 
 class TFBindingData(object):
     @property
@@ -96,7 +119,7 @@ class TFBindingData(object):
             len(non_test_chrs), n_folds=5))
         for sample_fold, chr_fold in itertools.product(
                 all_sample_folds, all_chr_folds):
-            validation_samples, train_samples = sample_fold
+            train_samples, validation_samples = sample_fold
             train_chrs = [non_test_chrs[i] for i in chr_fold[0]]
             validation_chrs = [non_test_chrs[i] for i in chr_fold[1]]
             yield (
@@ -168,7 +191,21 @@ class SingleMotifBindingData(TFBindingData):
         assert len(self.motif_ids) == 1
         assert len(self.label_columns) == 1
 
+def write_split_data_into_bed():
+    """
+
+    """
+    assert False, "this is just some code that I never cleaned, but dont want to toss"
+    for train, validation in data.iter_train_validation_data_subsets():
+        data_subset = validation
+        for row, label in itertools.izip(
+                data_subset.data.index, data_subset.data[data_subset.label_columns[0]]):
+            if label != -1: continue
+            print "\t".join(row.split("_")[1:4]) + "\t%s" % row.split("_")[0]
+        break
+
 def estimate_cross_validated_error(data):
+    res = ClassificatonResults()
     for train, validation in data.iter_train_validation_data_subsets():
         train = train.balance_data()
         validation = validation.balance_data()
@@ -207,8 +244,9 @@ def estimate_cross_validated_error(data):
             num_true_negatives, negatives.sum()
         )
         print result_summary
-    return
-
+        res.append(result_summary)
+    print res
+    return res
 
 def load_single_motif_data(fname):
     # load the data into a pandas data frame
