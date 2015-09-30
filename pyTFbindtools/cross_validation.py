@@ -1,5 +1,7 @@
 from sklearn import cross_validation
 
+from collections import namedtuple
+
 TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
 SINGLE_FOLD_TRAIN_CHRS = range(5, 23)
