@@ -67,12 +67,13 @@ class ClassificatonResults(list):
         auROCs = [x.auROC for x in self]
         auRPCs = [x.auPRC for x in self]
         rv = []
-        rv.append("Balanced Accuracies: [%.3f-%.3f]" % (
+        rv.append("Balanced Accuracies: %.3f (%.3f-%.3f)" % (
+            sum(balanced_accuracies)/len(self),
             min(balanced_accuracies), max(balanced_accuracies)) )
-        rv.append("auROC:               [%.3f-%.3f]" % (
-            min(auROCs), max(auROCs)))
-        rv.append("auPRC:               [%.3f-%.3f]" % (
-            min(auRPCs), max(auRPCs)))
+        rv.append("auROC:               %.3f (%.3f-%.3f)" % (
+            sum(auROCs)/len(self), min(auROCs), max(auROCs)))
+        rv.append("auPRC:               %.3f (%.3f-%.3f)" % (
+            sum(auRPCs)/len(self), min(auRPCs), max(auRPCs)))
         return "\n".join(rv)
 
 class TFBindingData(object):
@@ -245,7 +246,6 @@ def estimate_cross_validated_error(data):
         )
         print result_summary
         res.append(result_summary)
-    print res
     return res
 
 def load_single_motif_data(fname):
@@ -254,5 +254,9 @@ def load_single_motif_data(fname):
         fname, sep="\s+", index_col=0, compression='infer')
     return SingleMotifBindingData(data)
 
-data = load_single_motif_data(sys.argv[1])
-estimate_cross_validated_error(data)
+def main():
+    data = load_single_motif_data(sys.argv[1])
+    print estimate_cross_validated_error(data)
+
+if __name__ == '__main__':
+    main()

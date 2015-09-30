@@ -37,7 +37,7 @@ SelexModel = namedtuple('SelexModel', [
 #    os.path.dirname(__file__), 
 #    "../data/motifs/human_and_mouse_motifs.pickle.obj")
 
-def load_pwms_from_db(tf_names=None, tf_ids=None):
+def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
@@ -47,16 +47,20 @@ def load_pwms_from_db(tf_names=None, tf_ids=None):
      WHERE tf_species in ('Mus_musculus', 'Homo_sapiens') 
        AND rank = 1 
     """
-    if tf_names == None and tf_ids == None:
+
+    if tf_names == None and tf_ids == None and motif_ids == None:
         cur.execute(query)
-    elif tf_names != None and tf_ids == None:
+    elif tf_names != None and tf_ids == None and motif_ids == None:
         query += " AND tf_name in %s"
         cur.execute(query, [tuple(tf_names),])
-    elif tf_ids != None and tf_names == None:
+    elif tf_ids != None and motif_ids == None and tf_names == None:
         query += " AND tf_id in %s"
         cur.execute(query, [tuple(tf_ids),])
+    elif motif_ids != None and tf_ids == None and tf_names == None:
+        query += " AND motif_id in %s"
+        cur.execute(query, [tuple(motif_ids),])
     else:
-        raise ValueError, "tf_ids and tf_names can not both be set."
+        raise ValueError, "only one of tf_ids, tf_names, and motif_ids can can be set."
     
     motifs = []
     for data in cur.fetchall():

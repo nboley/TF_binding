@@ -15,6 +15,8 @@ from motif_tools import (
     load_chipseq_peak_and_matching_DNASE_files_from_db,
     score_region)
 
+from analyze_data import load_single_motif_data, estimate_cross_validated_error
+
 NTHREADS = 1
 
 class Counter(object):
@@ -116,7 +118,7 @@ def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
         except Exception, inst: 
             print "ERROR", inst
             continue
-        if index%1000 == 0:
+        if index%50000 == 0:
             print "%i/%i" % (index, len(peaks))
         ofp.write("%s_%s\t%s\t%.4f\t%s\n" % (
             sample, "_".join(str(x) for x in peak).ljust(30), 
@@ -147,7 +149,12 @@ def parse_arguments():
     fasta = FastaFile(fasta_fname)
     print "Finished initializing fasta."
 
-    motifs = load_selex_models_from_db(motif_ids=[args.selex_motif_id,])
+    if args.selex_motif_id != None:
+        motifs = load_selex_models_from_db(motif_ids=[args.selex_motif_id,])
+    elif args.cisbp_motif_id != None:
+        motifs = load_pwms_from_db(motif_ids=[args.cisbp_motif_id,])
+    else:
+        assert False, "Must set either --slex-motif-id or --cisbp-motif-id"
     assert len(motifs) == 1
     print "Finished loading motifs."
     peak_fnames = load_chipseq_peak_and_matching_DNASE_files_from_db(
@@ -166,20 +173,35 @@ def parse_arguments():
 
     ofname = "{prefix}.{motif_id}.txt".format(
         prefix=args.ofprefix, 
-        motif_id=args.selex_motif_id
+        motif_id=motifs[0].motif_id
     )
     
     return (fasta, all_peaks, motifs, chipseq_peak_filenames, ofname)
 
+def open_or_create_feature_file(
+        fasta, all_peaks, motifs, chipseq_peak_filenames, ofname):
+    try:
+        return open(ofname)
+    except IOError:
+        print "Creating feature file '%s'" % ofname
+        peak_cntr = Counter()
+        build_predictors = BuildPredictorsFactory(
+            motifs, chipseq_peak_filenames)
+        with ThreadSafeFile(ofname, 'w') as ofp:
+            ofp.write("\t".join(build_predictors.build_header()) + "\n")
+            fork_and_wait(NTHREADS, extract_data_worker, (
+                ofp, peak_cntr, all_peaks, build_predictors, fasta))
+        return open(ofname)
+
 def main():
     fasta, all_peaks, motifs, chipseq_peak_filenames, ofname = parse_arguments()
-    print "Writing output to '%s'" % ofname
-    peak_cntr = Counter()
-    build_predictors = BuildPredictorsFactory(motifs, chipseq_peak_filenames)
-    with ThreadSafeFile(ofname, 'w') as ofp:
-        ofp.write("\t".join(build_predictors.build_header()) + "\n")
-        fork_and_wait(NTHREADS, extract_data_worker, (
-            ofp, peak_cntr, all_peaks, build_predictors, fasta))
+    # check to see if this file is cached. If not, create it
+    feature_fp = open_or_create_feature_file(
+        fasta, all_peaks, motifs, chipseq_peak_filenames, ofname)
+    print "Loading feature file '%s'" % ofname
+    data = load_single_motif_data(feature_fp.name)
+    res = estimate_cross_validated_error(data)
+    print res
     return
 
 main()
