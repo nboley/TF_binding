@@ -9,6 +9,9 @@ from scipy.signal import convolve
 
 from collections import defaultdict, namedtuple
 
+import pyximport; pyximport.install()
+from score_seq import code_seq
+
 T = 300
 R = 1.987e-3 # in kCal/mol*K
 #R = 8.314e-3 # in kJ
@@ -134,31 +137,6 @@ def load_chipseq_peak_and_matching_DNASE_files_from_db(tfid):
     return rv
 
 
-def code_base(base):
-    if base == 'A':
-        return 0
-    if base == 'a':
-        return 0
-    if base == 'C':
-        return 1
-    if base == 'c':
-        return 1
-    if base == 'G':
-        return 2
-    if base == 'g':
-        return 2
-    if base == 'T':
-        return 3
-    if base == 't':
-        return 3
-    return 4
-
-def code_seq(seq):
-    coded_seq = np.zeros((5,len(seq)))
-    for i, base in enumerate(seq):
-        coded_base = code_base(base)
-        coded_seq[coded_base, i] = 1
-    return coded_seq
 
 def score_region(region, genome, motifs):
     seq = genome.fetch(region[0], region[1], region[2])
