@@ -13,68 +13,12 @@ import numpy as np
 #np.random.seed(0)
 
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier
-from sklearn import cross_validation, linear_model
+from sklearn.ensemble import ( 
+    AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier )
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-TEST_CHRS = [1,2]
-JOHNNIES_VALIDATION_CHRS = range(3,5)
-JOHNNIES_TRAIN_CHRS = range(5, 23)
-USE_JOHNNIES_TEST_TRAIN_SPLIT = False
-
-ClassificatonResultData = namedtuple('ClassificatonResult', [
-    'is_cross_celltype',
-    'sample_type', # should be validation or test
-    'train_chromosomes',
-    'train_samples', 
-
-    'validation_chromosomes',
-    'validation_samples', 
-
-    'auROC', 'auPRC', 
-    'num_true_positives', 'num_positives',
-    'num_true_negatives', 'num_negatives'])
-
-class ClassificatonResult(ClassificatonResultData):
-    @property
-    def positive_accuracy(self):
-        return float(self.num_true_positives)/self.num_positives
-
-    @property
-    def negative_accuracy(self):
-        return float(self.num_true_negatives)/self.num_negatives
-
-    @property
-    def balanced_accuracy(self):
-        return (self.positive_accuracy + self.negative_accuracy)/2    
-    
-    def __str__(self):
-        rv = []
-        #rv.append(str(self.validation_samples).ljust(25))
-        #rv.append(str(self.train_samples).ljust(15))
-        rv.append("Balanced Accuracy: %.3f" % self.balanced_accuracy )
-        rv.append("auROC: %.3f" % self.auROC)
-        rv.append("auPRC: %.3f" % self.auPRC)
-        rv.append("Positive Accuracy: %.3f (%i/%i)" % (
-            self.positive_accuracy, self.num_true_positives,self.num_positives))
-        rv.append("Negative Accuracy: %.3f (%i/%i)" % (
-            self.negative_accuracy, self.num_true_negatives,self.num_negatives))
-        return "\t".join(rv)
-
-class ClassificatonResults(list):
-    def __str__(self):
-        balanced_accuracies = [x.balanced_accuracy for x in self]    
-        auROCs = [x.auROC for x in self]
-        auRPCs = [x.auPRC for x in self]
-        rv = []
-        rv.append("Balanced Accuracies: %.3f (%.3f-%.3f)" % (
-            sum(balanced_accuracies)/len(self),
-            min(balanced_accuracies), max(balanced_accuracies)) )
-        rv.append("auROC:               %.3f (%.3f-%.3f)" % (
-            sum(auROCs)/len(self), min(auROCs), max(auROCs)))
-        rv.append("auPRC:               %.3f (%.3f-%.3f)" % (
-            sum(auRPCs)/len(self), min(auRPCs), max(auRPCs)))
-        return "\n".join(rv)
+from cross_validation import (
+    ClassificationResult, ClassificationResults, iter_train_validation_splits )
 
 class TFBindingData(object):
     @property
@@ -102,46 +46,13 @@ class TFBindingData(object):
                    if "_".join(row.split("_")[:2]) in prefixes]
         return type(self)(self.data.iloc[indices])
 
-    def iter_train_validation_splits(self):
-        # determine the training and validation sets
-        if len(self.sample_ids) == 1:
-            train_samples = self.sample_ids
-            validation_samples = self.sample_ids
-            all_sample_folds = [(train_samples, validation_samples),]
-        else:
-            all_sample_folds = []
-            for sample in self.sample_ids:
-                all_sample_folds.append(
-                    ([x for x in self.sample_ids if x != sample], [sample,]))
-        # split the samples into validation and training
-        non_test_chrs = sorted(
-            set(self.contigs) - set("chr%i" % i for i in TEST_CHRS))
-        all_chr_folds = list(cross_validation.KFold(
-            len(non_test_chrs), n_folds=5))
-        for sample_fold, chr_fold in itertools.product(
-                all_sample_folds, all_chr_folds):
-            train_samples, validation_samples = sample_fold
-            train_chrs = [non_test_chrs[i] for i in chr_fold[0]]
-            validation_chrs = [non_test_chrs[i] for i in chr_fold[1]]
-            yield (
-                (train_samples, train_chrs), 
-                (validation_samples, validation_chrs))
-        return
-    
     def iter_train_validation_data_subsets(self):
-        for train_indices, val_indices in self.iter_train_validation_splits():
+        for train_indices, val_indices in iter_train_validation_splits(
+                self.sample_ids, self.contigs):
             yield ( self.subset_data(*train_indices), 
                     self.subset_data(*val_indices) )
         return
-    
-    def split_into_training_and_test(self):
-        train_chrs = ['chr%i' %i for i in xrange(5, 23)]
-        train = self.subset_data(self.train_samples, train_chrs)
-        validation_chrs = ['chr%i' %i for i in xrange(3, 5)]
-        validation = self.subset_data(
-            self.validation_samples, validation_chrs)
-        return train, validation
-    
+        
     def _initialize_metadata(self):
         """Caches meta data (after self.data has been set)
 
@@ -206,7 +117,7 @@ def write_split_data_into_bed():
         break
 
 def estimate_cross_validated_error(data):
-    res = ClassificatonResults()
+    res = ClassificationResults()
     for train, validation in data.iter_train_validation_data_subsets():
         train = train.balance_data()
         validation = validation.balance_data()
@@ -230,7 +141,7 @@ def estimate_cross_validated_error(data):
         negatives = np.array(validation.data[label] == -1)
         num_true_negatives = (y_hat[negatives] == -1).sum()
 
-        result_summary = ClassificatonResult(
+        result_summary = ClassificationResult(
             set(train.sample_ids) != set(validation.sample_ids),
             'validation',
 
