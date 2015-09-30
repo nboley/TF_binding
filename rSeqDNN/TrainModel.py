@@ -1,99 +1,20 @@
-from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
+import os
 import argparse
 import re
 import gzip
+
+import numpy as np
+from scipy import misc
+from collections import namedtuple
 from pysam import FastaFile
 
-def BedFileArray2fasta(bed_file_array, fasta_file, fa_dir='../EncodeHg19MaleMirror/'):
-    '''
-    input: bed file
-    output: fasta file with sequences for all chromosomes
-    '''
-    print 'writing fasta file: ', fasta_file
-    tmp_bed_file = fasta_file + '.bed.tmp'
-    tmp_fasta_file = fasta_file + '.tmp'
-    datalines = bed_file_array
-    chr_names = []
-    for i in range(1, 23):
-        chr_names.append('chr' + str(i))
-    for chr_name in chr_names:
-        datalines_chr = datalines[datalines[:,0]==chr_name]
-        np.savetxt(tmp_bed_file, datalines_chr, fmt='%s', delimiter='\t')
-        input_fasta = fa_dir + chr_name +'.fa'
-        #!bedtools getfasta -tab -fi $input_fasta -bed $tmp_bed_file -fo $tmp_fasta_file  # create fasta file
-        #!cat $tmp_fasta_file >> $fasta_file
-    #!rm $tmp_bed_file
-    #!rm $tmp_fasta_file
+from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
+from pyTFbindtools.sequence import code_seq
 
-def Fasta2RegionsAndOneHotEncoding(fasta_file):
-    '''
-    input: fasta file
-    output: list regions (chr:start-end) and one hot encoding arrays of sequences
-    '''
-    datalines = np.loadtxt(fasta_file, dtype='str')
-    print "num of sequences in fasta file: ", len(datalines)
-    filenames = np.copy(datalines[:, 0])
-    filenames = filenames.tolist()
-    sequences = np.copy(datalines[:, -1])
-    print 'processing fasta strings...'
-    seq_Strings = []
-    for seq in sequences:
-        if set(seq) <= set('ACGTacgtN'):
-            seq_Strings.append(seq.upper())
-    print 'num of sequences: ', len(seq_Strings)
-    seq_Lines = []
-    for seq in seq_Strings:
-        seq_Lines.append(list(seq))
-    print 'creating one hot encodings...'
-    seq_Array = np.asarray(seq_Lines)
-    N, k = np.shape(seq_Array)
-    one_hot_encoding = np.zeros((N, 4, k), dtype='bool')
-    letters = ['A', 'C', 'G', 'T']
-    for i in xrange(len(letters)):
-        letter = letters[i]
-        one_hot_encoding[:, i, :] = seq_Array == letter
-    
-    return filenames, one_hot_encoding
+class PeaksAndLabels(list):
+    pass
 
-
-def peaks_to_pngs(peaks,fasta):
-    '''Covert a list of peaks into pngs encoding their sequence. 
-    
-    input: peaks list, fasta file
-    output: list of png filenames
-    note: currently doesn't write reverse complements, that can be easily appended to this function
-    '''
-    fasta_file = filename + '.fa'
-    #!rm $fasta_file  # remove fasta file in case file with the same already exists
-    symmetric_bed_array = SymmetricBedArray(bed_array, length)
-    BedFileArray2fasta(symmetric_bed_array, fasta_file)
-    start_ind = np.copy(np.asarray(symmetric_bed_array[:, 1], dtype=int))
-    end_ind = np.copy(np.asarray(symmetric_bed_array[:, 2], dtype=int))
-    ps_ind = (end_ind - start_ind) / 2
-    print 'getting region names and sequence one hot encodings..'
-    filenames, one_hot_encoding = Fasta2RegionsAndOneHotEncoding(fasta_file)
-    print 'renaming regions to chr:start-end_ps400.png format...'
-    for i in xrange(len(filenames)):
-        filenames[i] = filenames[i] + '_ps' + str(ps_ind[i]) + '.png'  
-    print 'writing sequences pngs and filenames to files...'
-    perBatch = len(filenames) / 10
-    file_list = filename + '.filelist'
-    with open(file_list, 'w') as wf:
-        print 'writing original sequences...'
-        count = 0 
-        batch = 0
-        for i in xrange(len(one_hot_encoding)): ## originals
-            filename = filenames[i]
-            arr = one_hot_encoding[i]
-            misc.imsave(folder_path + filename, arr, format='png')
-            wf.write(filename + '\n')
-            count += 1
-            if count / perBatch > batch:
-                batch +=  1
-                print 'finished writing ', batch*10,'%' 
-                
-    return filenames
-
+PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
 
 def getFileHandle(filename,mode="r"):
     if (re.search('.gz$',filename) or re.search('.gzip',filename)):
@@ -102,6 +23,49 @@ def getFileHandle(filename,mode="r"):
         return gzip.open(filename,mode)
     else:
         return open(filename,mode)
+
+
+def peaks_to_pngs(peaks, fasta, png_directory=None):
+    '''Covert a list of peaks into pngs encoding their sequence. 
+    
+    input: peaks list, fasta file
+    output: list of png filenames
+    note: currently doesn't write reverse complements, that can be easily appended to this function
+    '''
+    if png_directory == None:
+        png_directory = "./"
+
+    png_fnames = {}
+    for peak in peaks:
+        seq = fasta.fetch(peak.contig, peak.start, peak.stop)
+        seq_png_name = os.path.abspath(
+            os.path.join(png_directory, peak.identifier + '.png'))
+        misc.imsave(seq_png_name,
+                    code_seq(seq),
+                    format='png') 
+    
+        png_fnames[peak] = seq_png_name
+    
+    return png_fnames  
+
+def encode_peaks_sequence_into_binary_array(peaks, fasta):
+        # find the peak width
+        pk_width = peaks[0].pk_width
+        # make sure that the peaks are all the same width
+        assert all(pk.pk_width == pk_width for pk in peaks)
+        data = 0.25 * np.ones((len(peaks), 4, pk_width))
+        for i, pk in enumerate(peaks):
+            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+            coded_seq = code_seq(seq)
+            data[i] = coded_seq[0:4,:]
+        return data
+
+class PeakRegionData():
+    def __init__(self, peaks_and_labels, fasta):
+        assert isinstance(peaks_and_labels, PeaksAndLabels)
+        self.coded_peaks_seqs = encode_peaks_sequence_into_binary_array(
+            [pk for pk, sample, label in peaks_and_labels], fasta)
+        self.peaks_and_labels = peaks_and_labels
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -121,11 +85,15 @@ def parse_args():
 def main():
     args = parse_args()
     genome_fasta = args.genome_fasta
-    pos_peaks = load_summit_centered_peaks(
-        load_narrow_peaks(args.pos_regions), args.half_peak_width)
-    neg_peaks = load_summit_centered_peaks(
-        load_narrow_peaks(args.neg_regions), args.half_peak_width)
-
+    peaks_and_labels = PeaksAndLabels()
+    for pos_pk in load_summit_centered_peaks(
+            load_narrow_peaks(args.pos_regions), args.half_peak_width):
+        peaks_and_labels.append((pos_pk, 'sample', 1))
+    for neg_pk in load_summit_centered_peaks(
+            load_narrow_peaks(args.neg_regions), args.half_peak_width):
+        peaks_and_labels.append((neg_pk, 'sample', 0))
+    peaks = PeakRegionData(peaks_and_labels, genome_fasta)
+    print peaks.coded_peaks_seqs
 
 if __name__ == '__main__':
     main()
