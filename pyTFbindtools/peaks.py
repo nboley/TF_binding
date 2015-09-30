@@ -2,7 +2,16 @@ import gzip
 
 from collections import namedtuple
 
-NarrowPeak = namedtuple('NarrowPeak', ['contig', 'start', 'stop', 'summit', 'score'])
+NarrowPeakData = namedtuple(
+    'NarrowPeak', ['contig', 'start', 'stop', 'summit', 'score'])
+
+class NarrowPeak(NarrowPeakData):
+    @property
+    def identifier(self):
+        return "{0.contig}:{0.start}-{0.stop}_{0.summit}".format(self)
+    @property    
+    def pk_width(self):
+        return self.stop - self.start
 
 class Peaks(list):
     pass
@@ -14,7 +23,7 @@ def load_summit_centered_peaks(original_peaks, half_peak_width, max_n_peaks=None
             peak.contig, 
             peak.start+peak.summit-half_peak_width, 
             peak.start+peak.summit+half_peak_width,
-            peak.summit, 
+            half_peak_width, 
             -1)
         # skip peaks that are too close to the contig start
         if centered_peak.start <= 0: continue
@@ -34,7 +43,7 @@ def load_narrow_peaks(fp, max_n_peaks=None):
         try: score = float(data[6])
         except IndexError: score = -1
         try: summit = int(data[9])
-        except IndexError: summit = start + (stop-start)/2
+        except IndexError: summit = (stop-start)/2
         peaks.append(NarrowPeak(chrm, start, stop, summit, score))
 
     return peaks
