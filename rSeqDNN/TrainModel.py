@@ -25,29 +25,6 @@ def getFileHandle(filename,mode="r"):
         return open(filename,mode)
 
 
-def peaks_to_pngs(peaks, fasta, png_directory=None):
-    '''Covert a list of peaks into pngs encoding their sequence. 
-    
-    input: peaks list, fasta file
-    output: list of png filenames
-    note: currently doesn't write reverse complements, that can be easily appended to this function
-    '''
-    if png_directory == None:
-        png_directory = "./"
-
-    png_fnames = {}
-    for peak in peaks:
-        seq = fasta.fetch(peak.contig, peak.start, peak.stop)
-        seq_png_name = os.path.abspath(
-            os.path.join(png_directory, peak.identifier + '.png'))
-        misc.imsave(seq_png_name,
-                    code_seq(seq),
-                    format='png') 
-    
-        png_fnames[peak] = seq_png_name
-    
-    return png_fnames  
-
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
         # find the peak width
         pk_width = peaks[0].pk_width
