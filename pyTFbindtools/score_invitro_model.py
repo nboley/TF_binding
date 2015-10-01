@@ -7,7 +7,8 @@ from pysam import FastaFile, TabixFile
 
 from grit.lib.multiprocessing_utils import fork_and_wait, ThreadSafeFile
 
-from peaks import load_narrow_peaks
+from peaks import (
+    load_narrow_peaks, load_summit_centered_peaks, getFileHandle)
 
 from motif_tools import (
     load_selex_models_from_db, 
@@ -166,7 +167,10 @@ def parse_arguments():
             ) in peak_fnames.iteritems():
         chipseq_peak_filenames[sample_id] = chipseq_peaks_fnames
         for dnase_peaks_fname in dnase_peaks_fnames:
-            peaks = load_narrow_peaks(dnase_peaks_fname, None) #1000
+            with getFileHandle(dnase_peaks_fname) as fp:
+                peaks = load_summit_centered_peaks(
+                    load_narrow_peaks(fp, None),
+                    400 )
             for peak in peaks:
                 all_peaks.append((sample_id, peak))
     print "Finished loading peaks."
