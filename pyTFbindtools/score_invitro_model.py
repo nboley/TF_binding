@@ -1,4 +1,7 @@
 import os
+import gzip
+import shutil
+
 import multiprocessing
 
 from scipy.stats.mstats import mquantiles
@@ -132,7 +135,7 @@ def parse_arguments():
         for dnase_peaks_fname in dnase_peaks_fnames:
             with getFileHandle(dnase_peaks_fname) as fp:
                 peaks = load_summit_centered_peaks(
-                    load_narrow_peaks(fp, None),
+                    load_narrow_peaks(fp, 1000),
                     400 )
             for peak in peaks:
                 all_peaks.append((sample_id, peak))
@@ -154,14 +157,15 @@ def open_or_create_feature_file(
         peak_cntr = Counter()
         build_predictors = BuildPredictorsFactory(
             motifs, chipseq_peak_filenames)
-        with ThreadSafeFile(ofname, 'w') as ofp:
+        with ThreadSafeFile(ofname + ".TMP", 'w') as ofp:
             ofp.write("\t".join(build_predictors.build_header()) + "\n")
             fork_and_wait(NTHREADS, extract_data_worker, (
                 ofp, peak_cntr, all_peaks, build_predictors, fasta))
         
-        #with open('file.txt', 'rb') as f_in, gzip.open('file.txt.gz', 'wb') as f_out:
-        #    shutil.copyfileobj(f_in, f_out)
-        return open(ofname)
+        input_fp = open(ofname + ".TMP")
+        with gzip.open(ofname + ".gz", 'wb') as ofp_compressed:
+            shutil.copyfileobj(input_fp, ofp_compressed)
+        return getFileHandle(ofname + ".gz")
 
 def main():
     fasta, all_peaks, motifs, chipseq_peak_filenames, ofname = parse_arguments()
