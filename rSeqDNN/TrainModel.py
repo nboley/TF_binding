@@ -10,9 +10,22 @@ from scipy import misc
 
 from pysam import FastaFile
 
+from keras.preprocessing import sequence
+from keras.optimizers import SGD, RMSprop, Adagrad
+from keras.models import Sequential
+from keras.layers.core import (
+    Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute)
+from keras.layers.recurrent import LSTM,GRU
+from keras.layers.convolutional import Convolution2D, MaxPooling2D
+from keras.models import model_from_yaml
+from sklearn.metrics import (
+    roc_auc_score, accuracy_score, precision_recall_curve, auc)
+
 from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
 from pyTFbindtools.sequence import code_seq
-from pyTFbindtools.cross_validation import iter_train_validation_splits
+from pyTFbindtools.cross_validation import (
+    iter_train_validation_splits, ClassificationResult)
+
 
 PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
 
@@ -44,6 +57,10 @@ class PeaksAndLabels():
             in izip(self.peaks, self.samples, self.labels)
         )
     
+    @property
+    def max_peak_width(self):
+        return max(self.peak_widths)
+    
     def __init__(self, peaks_and_labels):
         # split the peaks and labels into separate columns. Also
         # keep track of the distinct samples and contigs
@@ -52,13 +69,15 @@ class PeaksAndLabels():
         self.labels = []
         self.sample_ids = set()
         self.contigs = set()
+        self.peak_widths = set()
         for pk, sample, label in peaks_and_labels:
             self.peaks.append(pk)
+            self.peak_widths.add(pk.pk_width)
             self.samples.append(sample)
             self.labels.append(label)
             self.sample_ids.add(sample)
             self.contigs.add(pk.contig)
-        
+        assert len(self.peak_widths) == 1
         # turn the list of labels into a numpy array
         self.labels = np.array(self.labels, dtype=int)
     
@@ -75,6 +94,111 @@ class PeaksAndLabels():
                 if pk_and_label.sample in sample_names
                 and pk_and_label.peak.contig in contigs
             )
+
+    def iter_train_validation_subsets(self):
+        for train_indices, valid_indices in iter_train_validation_splits(
+                self.sample_ids, self.contigs):
+            yield (self.subset_data(*train_indices),
+                   self.subset_data(*valid_indices))
+
+def keras_model_factory(seq_len):
+    # Setup input parameters for CNN-RNN
+    numConv = 30;
+    convStack = 1;
+    convWidth = 4;
+    convHeight = 45;
+    dropoutRate = 0.2;
+    maxPoolSize = 50;
+    maxPoolStride = 20;
+    numConvOutputs = ((seq_len - convHeight) + 1);
+    numMaxPoolOutputs = int(((numConvOutputs - maxPoolSize)/maxPoolStride)+1)
+    gruHiddenVecSize = 35;
+    numFCNodes = 45;
+    numOutputNodes = 1;
+    # Define architecture
+    model = Sequential()
+    model.add(Convolution2D(
+        numConv, convStack, 
+        convWidth, convHeight, activation="relu", init="he_normal"));
+    model.add(Dropout(dropoutRate));
+    model.add(MaxPooling2D(poolsize=(1,maxPoolSize),stride=(1,maxPoolStride)));
+    model.add(Reshape(numConv,numMaxPoolOutputs));
+    model.add(Permute((2,1))); 
+    # make the number of max pooling outputs the time dimension
+    model.add(GRU(numConv,gruHiddenVecSize,return_sequences=True));
+    model.add(TimeDistributedDense(gruHiddenVecSize,numFCNodes));
+    model.add(Reshape(numFCNodes*numMaxPoolOutputs));
+    model.add(Dense(numFCNodes*numMaxPoolOutputs,numOutputNodes,
+                    activation='sigmoid'));
+    sgd = SGD(lr=0.01,momentum=0.95,nesterov=True);
+    model.compile(loss='binary_crossentropy', optimizer=sgd,
+                  class_mode="binary");
+
+    return model
+
+def reshape_coded_seqs_for_training(data, coded_seqs):
+    '''put in 4D tensor format for training
+    '''
+    assert len(np.shape(coded_seqs)) == 3
+    
+    return coded_seqs.resize((len(coded_seqs), 1, 4, data.max_peak_width))
+
+def evaluate_rSeqDNN_model(model, X_validation, y_validation):
+    '''evaluate model
+    '''
+    preds = model.predict_classes(X_validation)
+    probs = model.predict_proba(X_validation)
+    true_pos = y_validation == 1
+    true_neg = y_validation == 0
+    precision, recall, _ = precision_recall_curve(y_validation, probs)
+    prc = np.array([recall,precision])
+    auPRC = auc(recall, precision)
+    auROC = roc_auc_score(y_validation, probs)
+    classification_result = ClassificationResult(
+        None, None, None, None, None, None,
+        auROC, auPRC, 
+        np.sum(preds[true_pos] == 1), np.sum(true_pos),
+        np.sum(preds[true_neg] == 0), np.sum(true_neg)
+    )
+
+    return classification_result
+    
+
+def train_rSeqDNN_model(model, data, genome_fasta, out_filename_prefix,
+                        numEpochs=5):
+    # split into fitting and early stopping
+    data_fitting, data_stopping = next(data.iter_train_validation_subsets())
+    X_validation = data_stopping.build_coded_seqs(genome_fasta)
+    y_validation = data_stopping.labels
+    X_train = data_fitting.build_coded_seqs(genome_fasta)
+    y_train = data_fitting.labels
+    X_train.resize((len(X_train), 1, 4, data.max_peak_width))
+    X_validation.resize((len(X_validation), 1, 4, data.max_peak_width))
+    print 'X_train shape: ', np.shape(X_train)
+    print 'y_train shape: ', np.shape(y_train)
+    print 'X_validation shape: ', np.shape(X_validation)
+    print 'y_validation shape: ', np.shape(y_validation)
+    weights = {1, 1}
+    batch_size = 1500
+    # fit the model
+    bestBalancedAcc = 0
+    print("Train...")
+    for epoch in xrange(numEpochs):
+         model.fit(X_train, y_train,
+                   validation_data=(X_validation, y_validation),
+                   show_accuracy=True,
+                   class_weight=weights,
+                   batch_size=batch_size,
+                   nb_epoch=1)
+         res = evaluate_rSeqDNN_model(
+             model, X_validation, y_validation)
+         print res
+         if (res.balanced_accuracy > bestBalancedAcc):
+             print("Achieved highest balanced accuracy so far. Saving weights.")
+             model.save_weights(out_filename_prefix + ".h5", overwrite=True)
+             bestBalancedAcc = res.balanced_accuracy
+
+    return model
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -102,8 +226,15 @@ def main():
             load_narrow_peaks(args.neg_regions), args.half_peak_width):
         peaks_and_labels.append((neg_pk, 'sample', 0))
     peaks = PeaksAndLabels(peaks_and_labels)
-    train = peaks.subset_data(['sample'], ['chr1'])
-    print train.build_coded_seqs(genome_fasta)
+    model = keras_model_factory(peaks.max_peak_width)
+    for train, valid in peaks.iter_train_validation_subsets():
+        fit_model = train_rSeqDNN_model(model, train, genome_fasta, './test')
+        result = evaluate_rSeqDNN_model(fit_model,
+                                        valid.build_coded_seqs(genome_fasta),
+                                        valid.labels)
+        print result
+        break
+    #print train.build_coded_seqs(genome_fasta)
 
 if __name__ == '__main__':
     main()
