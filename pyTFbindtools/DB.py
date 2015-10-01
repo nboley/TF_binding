@@ -1,5 +1,7 @@
 import os
 
+from collections import defaultdict
+
 ################################################################################
 #
 # Insert ENCODE meta-data into the local database

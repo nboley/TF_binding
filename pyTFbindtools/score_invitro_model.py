@@ -9,13 +9,15 @@ from grit.lib.multiprocessing_utils import (
     fork_and_wait, ThreadSafeFile, Counter )
 
 from peaks import (
-    load_narrow_peaks, load_summit_centered_peaks, getFileHandle)
+    load_narrow_peaks, load_summit_centered_peaks, getFileHandle, 
+    classify_chipseq_peak)
 
 from motif_tools import (
     load_selex_models_from_db, 
     load_pwms_from_db, 
-    load_chipseq_peak_and_matching_DNASE_files_from_db,
     score_region)
+
+from DB import load_chipseq_peak_and_matching_DNASE_files_from_db
 
 from analyze_data import load_single_motif_data, estimate_cross_validated_error
 
@@ -75,8 +77,9 @@ def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
         if peak.contig == 'chrM': continue
         try: 
             scores = build_predictors.build_summary_stats(peak, fasta)
-            labels = build_predictors.classify_peak(sample, peak)
+            labels = build_predictors.classify_chipseq_peak(sample, peak)
         except Exception, inst: 
+            raise
             print "ERROR", inst
             continue
         if index%50000 == 0:
@@ -155,6 +158,9 @@ def open_or_create_feature_file(
             ofp.write("\t".join(build_predictors.build_header()) + "\n")
             fork_and_wait(NTHREADS, extract_data_worker, (
                 ofp, peak_cntr, all_peaks, build_predictors, fasta))
+        
+        #with open('file.txt', 'rb') as f_in, gzip.open('file.txt.gz', 'wb') as f_out:
+        #    shutil.copyfileobj(f_in, f_out)
         return open(ofname)
 
 def main():

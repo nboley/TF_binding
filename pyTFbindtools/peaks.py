@@ -1,6 +1,10 @@
+import os
+
 import gzip
 
 from collections import namedtuple
+
+from pysam import TabixFile
 
 NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 'score'])
@@ -60,32 +64,29 @@ def load_narrow_peaks(fp, max_n_peaks=None):
     return peaks
 
 chipseq_peaks_tabix_file_cache = {}
-def classify_chipseq_peak(self, chipseq_peaks_fnames, peak):
+def classify_chipseq_peak(chipseq_peak_fnames, peak):
     pid = os.getppid()
     peak_coords = (peak.contig, 
                    peak.start, 
                    peak.stop)
     status = []
-    for motif in self.motifs:
-        motif_status = []
-        for fname in chipseq_peak_filenames:
-            # get the tabix file pointer, opening it if necessary 
-            try: 
-                fp = tabix_file_cache[(pid, fname)]
-            except KeyError:
-                fp = TabixFile(fname)
-                self.tabix_file_cache[(pid, fname)] = fp
+    for fname in chipseq_peak_fnames:
+        # get the tabix file pointer, opening it if necessary 
+        try: 
+            fp = chipseq_peaks_tabix_file_cache[(pid, fname)]
+        except KeyError:
+            fp = TabixFile(fname)
+            chipseq_peaks_tabix_file_cache[(pid, fname)] = fp
 
-            # if the contig isn't in the contig list, then it
-            # can't be a vlaid peak
-            if peak[0] not in fp.contigs: 
-                motif_status.append(0)
-                continue
-            overlapping_peaks = list(fp.fetch(peak_coords))
-            if len(pc_peaks) > 0:
-                motif_status.append(1)
-                continue
-            else:
-                motif_status.append(0)
-        status.append(motif_status)
+        # if the contig isn't in the contig list, then it
+        # can't be a valid peak
+        if peak[0] not in fp.contigs: 
+            status.append(0)
+            continue
+        overlapping_peaks = list(fp.fetch(*peak_coords))
+        if len(overlapping_peaks) > 0:
+            status.append(1)
+            continue
+        else:
+            status.append(0)
     return status
