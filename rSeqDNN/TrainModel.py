@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
 from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import (
-    iter_train_validation_splits, ClassificationResult)
+    iter_train_validation_splits, ClassificationResult, ClassificationResults)
 
 
 PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
@@ -196,6 +196,13 @@ class KerasModel():
 
         return self
 
+
+def cross_validated_results(list_of_results):
+    ''' 
+    '''
+    
+    return ClassificationResults(list_of_results)
+    
 def parse_args():
     parser = argparse.ArgumentParser(
         description='main script for training rSeqDNN')
@@ -223,13 +230,13 @@ def main():
         peaks_and_labels.append((neg_pk, 'sample', 0))
     peaks = PeaksAndLabels(peaks_and_labels)
     model = KerasModel(peaks)
+    results = []
     for train, valid in peaks.iter_train_validation_subsets():
         fit_model = model.train_rSeqDNN_model(train, genome_fasta, './test')
-        result = fit_model.evaluate_rSeqDNN_model(valid.build_coded_seqs(genome_fasta),
-                                        valid.labels)
-        print "performance on validation data:"
-        print result
-        break
+        results.append(fit_model.evaluate_rSeqDNN_model(
+            valid.build_coded_seqs(genome_fasta), valid.labels))
+    print 'Printing cross validation results:'
+    print cross_validated_results(results)
 
 if __name__ == '__main__':
     main()
