@@ -27,6 +27,9 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
         data[i] = coded_seq[0:4,:]
     return data
 
+def load_model(fname):
+    pass
+
 class KerasModel():
     def __init__(self, peaks_and_labels):
         self.seq_len = peaks_and_labels.max_peak_width
