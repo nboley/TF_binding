@@ -139,7 +139,7 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
     return data
 
 chipseq_peaks_tabix_file_cache = {}
-def classify_chipseq_peak(chipseq_peak_fnames, peak):
+def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
     pid = os.getppid()
     peak_coords = (peak.contig, 
                    peak.start, 
@@ -155,11 +155,20 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak):
 
         # if the contig isn't in the contig list, then it
         # can't be a valid peak
-        if peak[0] not in fp.contigs: 
+        if peak.contig not in fp.contigs: 
             status.append(0)
             continue
-        overlapping_peaks = list(fp.fetch(*peak_coords))
-        if len(overlapping_peaks) > 0:
+        overlap_frac = 0.0
+        for chipseq_pk in fp.fetch(*peak_coords):
+            c_start, c_stop = chipseq_pk.split()[1:3]
+            overlap = (
+                min(peak.stop, int(c_stop)) - max(peak.start, int(c_start)))
+            overlap_frac = max(
+                overlap_frac, 
+                float(overlap)/(int(c_stop) - int(c_start))
+            )
+        
+        if overlap_frac > min_overlap_frac:
             status.append(1)
             continue
         else:
