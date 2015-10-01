@@ -91,14 +91,21 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='Score all in-vitro models for a particular TF.')
 
-    parser.add_argument( '--selex-motif-id', help='Database SELEX motif ID')
-    parser.add_argument( '--cisbp-motif-id', help='Database cisbp motif ID')
+    parser.add_argument( '--selex-motif-id', 
+        help='Database SELEX motif ID')
+    parser.add_argument( '--cisbp-motif-id', 
+        help='Database cisbp motif ID')
 
+    parser.add_argument( '--half-peak-width', type=int, default=400,
+        help='Example accessible region peaks to be +/- --half-peak-width bases from the summit (default: 400)')
     parser.add_argument( '--ofprefix', type=str, default='peakscores',
-                         help='Output file prefix (default peakscores)')
+        help='Output file prefix (default peakscores)')
 
-    parser.add_argument( '--threads', '-t', default=1, type=int,
-                         help='The number of threads to run.')
+    parser.add_argument( '--max-num-peaks-per-sample', type=int, 
+        help='the maximum number of peaks to parse for each sample (used for debugging)')
+
+    parser.add_argument( '--threads', '-t', default=1, type=int, 
+        help='The number of threads to run.')
 
     args = parser.parse_args()
     global NTHREADS
@@ -123,10 +130,13 @@ def parse_arguments():
         motif_id=motifs[0].motif_id
     )
     
-    return (fasta, motif, ofname)
+    return (fasta, motif, ofname, 
+            args.half_peak_width, args.max_num_peaks_per_sample)
 
 def open_or_create_feature_file(
-        fasta, motif, ofname, half_peak_width=400):
+        fasta, motif, ofname, 
+        half_peak_width,
+        max_n_peaks_per_sample=None):
     try:
         return open(ofname)
     except IOError:
@@ -134,7 +144,7 @@ def open_or_create_feature_file(
         labeled_peaks = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             motif.tf_id, 
             half_peak_width=half_peak_width, 
-            max_n_peaks_per_sample=None)
+            max_n_peaks_per_sample=max_n_peaks_per_sample)
         print "Finished loading peaks."
 
         peak_cntr = Counter()
@@ -152,10 +162,13 @@ def open_or_create_feature_file(
         return getFileHandle(ofname)
 
 def main():
-    fasta, motif, ofname = parse_arguments()
+    (fasta, motif, ofname, half_peak_width, max_num_peaks_per_sample
+        ) = parse_arguments()
     # check to see if this file is cached. If not, create it
     feature_fp = open_or_create_feature_file(
-        fasta, motif, ofname)
+        fasta, motif, ofname, 
+        half_peak_width=half_peak_width,
+        max_n_peaks_per_sample=max_num_peaks_per_sample)
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)
     res = estimate_cross_validated_error(data)

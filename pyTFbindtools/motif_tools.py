@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from scipy.optimize import brute, bisect
-from scipy.signal import convolve
+from scipy.signal import fftconvolve
 
 from collections import defaultdict, namedtuple
 
@@ -117,7 +117,6 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
-@profile
 def score_region(region, genome, motifs):
     seq = genome.fetch(region[0], region[1], region[2])
     motifs_scores = []
@@ -129,8 +128,8 @@ def score_region(region, genome, motifs):
             N_row = np.zeros((len(motif.ddg_array), 1))
             extended_mat = np.hstack((motif.ddg_array, N_row))
         coded_seq = code_seq(bytes(seq))
-        FWD_scores = -convolve(coded_seq, extended_mat.T, mode='valid')
-        RC_scores = -convolve(
+        FWD_scores = -fftconvolve(coded_seq, extended_mat.T, mode='valid')
+        RC_scores = -fftconvolve(
             coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
         scores = np.vstack((FWD_scores, RC_scores)).max(0)
         motifs_scores.append(scores)
