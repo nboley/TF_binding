@@ -1,5 +1,9 @@
 import numpy as np
 
+from pyTFbindtools.sequence import code_seq
+
+from pyTFbindtools.cross_validation import ClassificationResult
+
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad
 from keras.models import Sequential
@@ -86,7 +90,6 @@ class KerasModel():
 
         return classification_result
     
-
     def train_rSeqDNN_model(self,
                             data,
                             genome_fasta,

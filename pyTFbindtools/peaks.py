@@ -7,7 +7,7 @@ import numpy as np
 
 from pysam import TabixFile
 
-from DB import load_chipseq_peak_and_matching_DNASE_files_from_db
+from cross_validation import iter_train_validation_splits
 
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
@@ -129,11 +129,11 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, half_peak_width=None):
     def iter_all_pks():        
-        for pos_pk in load_summit_centered_peaks(
-                load_narrow_peaks(args.pos_regions), args.half_peak_width):
+        for pos_pk in iter_summit_centered_peaks(
+                iter_narrow_peaks(pos_regions_fp), half_peak_width):
             yield PeakAndLabel(pos_pk, 'sample', 1)
-        for neg_pk in load_summit_centered_peaks(
-                load_narrow_peaks(args.neg_regions), args.half_peak_width):
+        for neg_pk in iter_summit_centered_peaks(
+                iter_narrow_peaks(neg_regions_fp), half_peak_width):
             yield PeakAndLabel(neg_pk, 'sample', 0)
     return PeaksAndLabels(iter_all_pks())
 
@@ -177,6 +177,8 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         tf_id, half_peak_width=None, max_n_peaks_per_sample=None):
+    # put the import here to avoid errors if the database isn't available
+    from DB import load_chipseq_peak_and_matching_DNASE_files_from_db
     peak_fnames = load_chipseq_peak_and_matching_DNASE_files_from_db(tf_id)    
     for (sample_index, (sample_id, (sample_chipseq_peaks_fnames, dnase_peaks_fnames)
             )) in enumerate(peak_fnames.iteritems()):

@@ -5,7 +5,9 @@ from pysam import FastaFile
 
 from pyTFbindtools.peaks import load_labeled_peaks_from_beds, getFileHandle
 
-from cross_validation import ClassificationResults
+from pyTFbindtools.cross_validation import ClassificationResults
+
+from KerasModel import KerasModel
 
 def parse_args():
     parser = argparse.ArgumentParser(
