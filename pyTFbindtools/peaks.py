@@ -1,10 +1,21 @@
 import os
-
 import gzip
-
 from collections import namedtuple
+from itertools import izip
+
+import numpy as np
 
 from pysam import TabixFile
+
+from DB import load_chipseq_peak_and_matching_DNASE_files_from_db
+
+def getFileHandle(filename, mode="r"):
+    if filename.endswith('.gz') or filename.endswith('.gzip'):
+        if (mode=="r"):
+            mode="rb";
+        return gzip.open(filename,mode)
+    else:
+        return open(filename,mode)
 
 NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 'score'])
@@ -20,33 +31,85 @@ class NarrowPeak(NarrowPeakData):
 class Peaks(list):
     pass
 
-def getFileHandle(filename, mode="r"):
-    if filename.endswith('.gz') or filename.endswith('.gzip'):
-        if (mode=="r"):
-            mode="rb";
-        return gzip.open(filename,mode)
-    else:
-        return open(filename,mode)
+PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
 
-def load_summit_centered_peaks(
-        original_peaks, half_peak_width, max_n_peaks=None):
-    peaks = Peaks()
+class PeaksAndLabels():
+    def __getitem__(self, index):
+        return PeakAndLabel(
+            self.peaks[index], self.samples[index], self.labels[index])
+    
+    def __iter__(self):
+        return (
+            PeakAndLabel(pk, sample, label) 
+            for pk, sample, label 
+            in izip(self.peaks, self.samples, self.labels)
+        )
+
+    def __len__(self):
+        rv = len(self.peaks)
+        assert len(self.samples) == rv
+        assert len(self.labels) == rv
+        return rv
+    
+    @property
+    def max_peak_width(self):
+        return max(self.peak_widths)
+    
+    def __init__(self, peaks_and_labels):
+        # split the peaks and labels into separate columns. Also
+        # keep track of the distinct samples and contigs
+        self.peaks = []
+        self.samples = []
+        self.labels = []
+        self.sample_ids = set()
+        self.contigs = set()
+        self.peak_widths = set()
+        for pk, sample, label in peaks_and_labels:
+            self.peaks.append(pk)
+            self.peak_widths.add(pk.pk_width)
+            self.samples.append(sample)
+            self.labels.append(label)
+            self.sample_ids.add(sample)
+            self.contigs.add(pk.contig)
+        assert len(self.peak_widths) == 1
+        # turn the list of labels into a numpy array
+        self.labels = np.array(self.labels, dtype=int)
+        
+    def subset_data(self, sample_names, contigs):
+        '''return data covering sample+names and contigs
+        '''
+        return PeaksAndLabels(
+                pk_and_label for pk_and_label in self 
+                if pk_and_label.sample in sample_names
+                and pk_and_label.peak.contig in contigs
+            )
+
+    def iter_train_validation_subsets(self):
+        for train_indices, valid_indices in iter_train_validation_splits(
+                self.sample_ids, self.contigs):
+            yield (self.subset_data(*train_indices),
+                   self.subset_data(*valid_indices))
+
+def iter_summit_centered_peaks(
+        original_peaks, half_peak_width, 
+        max_n_peaks=None, retain_score=False):
     for peak in original_peaks:
         centered_peak = NarrowPeak(
             peak.contig, 
             peak.start+peak.summit-half_peak_width, 
             peak.start+peak.summit+half_peak_width,
             half_peak_width, 
-            -1)
+            peak.score if retain_score else -1)
         # skip peaks that are too close to the contig start
         if centered_peak.start <= 0: continue
-        peaks.append(centered_peak)
-    return peaks
+        yield centered_peak
 
-def load_narrow_peaks(fp, max_n_peaks=None):
+    return
+
+def iter_narrow_peaks(fp, max_n_peaks=None):
     if isinstance(fp, str):
         raise ValueError, "Expecting filepointer"
-    peaks = Peaks()
+
     for i, line in enumerate(fp):
         if line.startswith("track"): continue
         if max_n_peaks != None and i > max_n_peaks: 
@@ -59,9 +122,21 @@ def load_narrow_peaks(fp, max_n_peaks=None):
         except IndexError: score = -1
         try: summit = int(data[9])
         except IndexError: summit = (stop-start)/2
-        peaks.append(NarrowPeak(chrm, start, stop, summit, score))
+        yield NarrowPeak(chrm, start, stop, summit, score)
 
-    return peaks
+    return
+
+def encode_peaks_sequence_into_binary_array(peaks, fasta):
+    # find the peak width
+    pk_width = peaks[0].pk_width
+    # make sure that the peaks are all the same width
+    assert all(pk.pk_width == pk_width for pk in peaks)
+    data = 0.25 * np.ones((len(peaks), 4, pk_width))
+    for i, pk in enumerate(peaks):
+        seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+        coded_seq = code_seq(seq)
+        data[i] = coded_seq[0:4,:]
+    return data
 
 chipseq_peaks_tabix_file_cache = {}
 def classify_chipseq_peak(chipseq_peak_fnames, peak):
@@ -90,3 +165,34 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak):
         else:
             status.append(0)
     return status
+
+def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+        tf_id, half_peak_width=None, max_n_peaks_per_sample=None):
+    peak_fnames = load_chipseq_peak_and_matching_DNASE_files_from_db(tf_id)    
+    for (sample_id, (sample_chipseq_peaks_fnames, dnase_peaks_fnames)
+            ) in peak_fnames.iteritems():
+        # for now, dont allow multiple set of DNASE peaks
+        assert len(dnase_peaks_fnames) == 1
+        dnase_peaks_fname = next(iter(dnase_peaks_fnames))
+
+        print "Loading peaks for sample '%s'" % sample_id
+        with getFileHandle(dnase_peaks_fname) as fp:
+            pks_iter = iter_narrow_peaks(fp, max_n_peaks_per_sample)
+            if half_peak_width != None:
+                pks_iter = iter_summit_centered_peaks(pks_iter, half_peak_width)
+            for i, pk in enumerate(pks_iter):
+                if i%10000 == 0: print "Loaded peak %i in %s" % (i, sample_id)
+                label = classify_chipseq_peak(sample_chipseq_peaks_fnames, pk)
+                # merge labels
+                label = max(label)
+                yield PeakAndLabel(pk, sample_id, label)
+    return
+
+def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+        tf_id, half_peak_width=None, max_n_peaks_per_sample=None):
+    """
+    
+    """
+    return PeaksAndLabels(
+        iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+            tf_id, half_peak_width, max_n_peaks_per_sample))

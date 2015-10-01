@@ -20,78 +20,12 @@ from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
 
 from pyTFbindtools.peaks import (
-    load_summit_centered_peaks, load_narrow_peaks, getFileHandle)
+        load_summit_centered_peaks, load_narrow_peaks, getFileHandle, 
+        PeaksAndLabels, encode_peaks_sequence_into_binary_array)
 from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import (
     iter_train_validation_splits, ClassificationResult)
 from pyTFbindtools.DB import load_chipseq_peak_and_matching_DNASE_files_from_db
-
-PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
-
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-        # find the peak width
-        pk_width = peaks[0].pk_width
-        # make sure that the peaks are all the same width
-        assert all(pk.pk_width == pk_width for pk in peaks)
-        data = 0.25 * np.ones((len(peaks), 4, pk_width))
-        for i, pk in enumerate(peaks):
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-            coded_seq = code_seq(seq)
-            data[i] = coded_seq[0:4,:]
-        
-        return data
-
-class PeaksAndLabels():
-    def __iter__(self):
-        return (
-            PeakAndLabel(pk, sample, label) 
-            for pk, sample, label 
-            in izip(self.peaks, self.samples, self.labels)
-        )
-    
-    @property
-    def max_peak_width(self):
-        return max(self.peak_widths)
-    
-    def __init__(self, peaks_and_labels):
-        # split the peaks and labels into separate columns. Also
-        # keep track of the distinct samples and contigs
-        self.peaks = []
-        self.samples = []
-        self.labels = []
-        self.sample_ids = set()
-        self.contigs = set()
-        self.peak_widths = set()
-        for pk, sample, label in peaks_and_labels:
-            self.peaks.append(pk)
-            self.peak_widths.add(pk.pk_width)
-            self.samples.append(sample)
-            self.labels.append(label)
-            self.sample_ids.add(sample)
-            self.contigs.add(pk.contig)
-        assert len(self.peak_widths) == 1
-        # turn the list of labels into a numpy array
-        self.labels = np.array(self.labels, dtype=int)
-    
-    # One hot encode the sequence in each peak
-    def build_coded_seqs(self, fasta):
-        return encode_peaks_sequence_into_binary_array(
-            self.peaks, fasta)
-    
-    def subset_data(self, sample_names, contigs):
-        '''return data covering sample+names and contigs
-        '''
-        return PeaksAndLabels(
-                pk_and_label for pk_and_label in self 
-                if pk_and_label.sample in sample_names
-                and pk_and_label.peak.contig in contigs
-            )
-
-    def iter_train_validation_subsets(self):
-        for train_indices, valid_indices in iter_train_validation_splits(
-                self.sample_ids, self.contigs):
-            yield (self.subset_data(*train_indices),
-                   self.subset_data(*valid_indices))
 
 class KerasModel():
     def __init__(self, peaks_and_labels):
@@ -161,9 +95,13 @@ class KerasModel():
                             numEpochs=5):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        X_validation = self.get_features(data_stopping.build_coded_seqs(genome_fasta))
+        X_validation = self.get_features(
+                encode_peaks_sequence_into_binary_array(
+                        data_stopping.peaks, genome_fasta))
         y_validation = data_stopping.labels
-        X_train = self.get_features(data_fitting.build_coded_seqs(genome_fasta))
+        X_train = self.get_features(
+                encode_peaks_sequence_into_binary_array(
+                        data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
         weights = {1, 1}
         batch_size = 1500
@@ -225,7 +163,8 @@ def main():
     for train, valid in peaks.iter_train_validation_subsets():
         fit_model = model.train_rSeqDNN_model(train, genome_fasta, './test')
         results.append(fit_model.evaluate_rSeqDNN_model(
-            valid.build_coded_seqs(genome_fasta), valid.labels))
+        encode_peaks_sequence_into_binary_array(
+                valid.peaks, genome_fasta), valid.labels))
     print 'Printing cross validation results:'
     print cross_validated_results(results)
 

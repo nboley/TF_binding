@@ -12,15 +12,14 @@ from grit.lib.multiprocessing_utils import (
     fork_and_wait, ThreadSafeFile, Counter )
 
 from peaks import (
-    load_narrow_peaks, load_summit_centered_peaks, getFileHandle, 
+    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    getFileHandle, 
     classify_chipseq_peak)
 
 from motif_tools import (
     load_selex_models_from_db, 
     load_pwms_from_db, 
     score_region)
-
-from DB import load_chipseq_peak_and_matching_DNASE_files_from_db
 
 from analyze_data import load_single_motif_data, estimate_cross_validated_error
 
@@ -38,16 +37,13 @@ class BuildPredictorsFactory(object):
                               for label in self.header_base)
         return header
     
-    def __init__(self, motifs, chipseq_peak_files):
+    def __init__(self, motifs):
         self.motifs = motifs
-        self.chipseq_peak_files = chipseq_peak_files
         self.header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
         self.quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]
         self.flank_sizes = [800, 500, 300]
         self.max_flank_size = max(self.flank_sizes)
         
-        self.tabix_file_cache = {}
-    
     def build_summary_stats(self, peak, fasta):
         seq_peak = (peak.contig, 
                     peak.start+peak.summit-self.max_flank_size, 
@@ -67,30 +63,26 @@ class BuildPredictorsFactory(object):
                     summary_stats.append(quantile)
         return summary_stats
 
-    def classify_chipseq_peak(self, sample, peak):
-        return classify_chipseq_peak(
-            self.chipseq_peak_files[sample], peak)
-
 def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
     # reload the fasta file to make it thread safe
     fasta = FastaFile(fasta.filename)
     while True:
         index = peak_cntr.return_and_increment()
         if index >= len(peaks): break
-        sample, peak = peaks[index]
-        if peak.contig == 'chrM': continue
+        labeled_peak = peaks[index]
         try: 
-            scores = build_predictors.build_summary_stats(peak, fasta)
-            labels = build_predictors.classify_chipseq_peak(sample, peak)
+            scores = build_predictors.build_summary_stats(
+                labeled_peak.peak, fasta)
         except Exception, inst: 
             print "ERROR", inst
             continue
         if index%50000 == 0:
             print "%i/%i" % (index, len(peaks))
         ofp.write("%s_%s\t%s\t%.4f\t%s\n" % (
-            sample, "_".join(str(x) for x in peak).ljust(30), 
-            ",".join(str(x) for x in labels), 
-            peak[-1],
+            labeled_peak.sample, 
+            "_".join(str(x) for x in labeled_peak.peak).ljust(30), 
+            labeled_peak.label, 
+            labeled_peak.peak[-1],
             "\t".join("%.4e" % x for x in scores)))
     return
 
@@ -123,44 +115,34 @@ def parse_arguments():
     else:
         assert False, "Must set either --slex-motif-id or --cisbp-motif-id"
     assert len(motifs) == 1
+    motif = motifs[0]
     print "Finished loading motifs."
-    peak_fnames = load_chipseq_peak_and_matching_DNASE_files_from_db(
-        motifs[0].tf_id)
-    
-    all_peaks = []
-    chipseq_peak_filenames = {}
-    for (sample_id, (chipseq_peaks_fnames, dnase_peaks_fnames)
-            ) in peak_fnames.iteritems():
-        chipseq_peak_filenames[sample_id] = chipseq_peaks_fnames
-        for dnase_peaks_fname in dnase_peaks_fnames:
-            with getFileHandle(dnase_peaks_fname) as fp:
-                peaks = load_summit_centered_peaks(
-                    load_narrow_peaks(fp, None),
-                    400 )
-            for peak in peaks:
-                all_peaks.append((sample_id, peak))
-    print "Finished loading peaks."
 
     ofname = "{prefix}.{motif_id}.txt.gz".format(
         prefix=args.ofprefix, 
         motif_id=motifs[0].motif_id
     )
     
-    return (fasta, all_peaks, motifs, chipseq_peak_filenames, ofname)
+    return (fasta, motif, ofname)
 
 def open_or_create_feature_file(
-        fasta, all_peaks, motifs, chipseq_peak_filenames, ofname):
+        fasta, motif, ofname, half_peak_width=400):
     try:
         return open(ofname)
     except IOError:
         print "Creating feature file '%s'" % ofname
+        labeled_peaks = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+            motif.tf_id, 
+            half_peak_width=half_peak_width, 
+            max_n_peaks_per_sample=None)
+        print "Finished loading peaks."
+
         peak_cntr = Counter()
-        build_predictors = BuildPredictorsFactory(
-            motifs, chipseq_peak_filenames)
+        build_predictors = BuildPredictorsFactory([motif,])
         with ThreadSafeFile(ofname + ".TMP", 'w') as ofp:
             ofp.write("\t".join(build_predictors.build_header()) + "\n")
             fork_and_wait(NTHREADS, extract_data_worker, (
-                ofp, peak_cntr, all_peaks, build_predictors, fasta))
+                ofp, peak_cntr, labeled_peaks, build_predictors, fasta))
         
         input_fp = open(ofname + ".TMP")
         with gzip.open(ofname, 'wb') as ofp_compressed:
@@ -170,10 +152,10 @@ def open_or_create_feature_file(
         return getFileHandle(ofname)
 
 def main():
-    fasta, all_peaks, motifs, chipseq_peak_filenames, ofname = parse_arguments()
+    fasta, motif, ofname = parse_arguments()
     # check to see if this file is cached. If not, create it
     feature_fp = open_or_create_feature_file(
-        fasta, all_peaks, motifs, chipseq_peak_filenames, ofname)
+        fasta, motif, ofname)
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)
     res = estimate_cross_validated_error(data)
