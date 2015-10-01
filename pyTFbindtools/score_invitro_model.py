@@ -5,9 +5,10 @@ from scipy.stats.mstats import mquantiles
 
 from pysam import FastaFile, TabixFile
 
-from grit.lib.multiprocessing_utils import fork_and_wait, ThreadSafeFile
+from grit.lib.multiprocessing_utils import (
+    fork_and_wait, ThreadSafeFile, Counter )
 
-from peaks import load_narrow_peaks
+from peaks import load_narrow_peaks, classify_chipseq_peak
 
 from motif_tools import (
     load_selex_models_from_db, 
@@ -18,48 +19,6 @@ from motif_tools import (
 from analyze_data import load_single_motif_data, estimate_cross_validated_error
 
 NTHREADS = 1
-
-class Counter(object):
-    def __init__(self, initval=0):
-        self.val = multiprocessing.Value('i', initval)
-        self.lock = multiprocessing.Lock()
-
-    def return_and_increment(self):
-        with self.lock:
-            rv = self.val.value
-            self.val.value += 1
-        return rv
-
-chipseq_peaks_tabix_file_cache = {}
-def classify_chipseq_peak(self, chipseq_peaks_fnames, peak):
-    pid = os.getppid()
-    peak_coords = (peak.contig, 
-                   peak.start, 
-                   peak.stop)
-    status = []
-    for motif in self.motifs:
-        motif_status = []
-        for fname in chipseq_peak_filenames:
-            # get the tabix file pointer, opening it if necessary 
-            try: 
-                fp = tabix_file_cache[(pid, fname)]
-            except KeyError:
-                fp = TabixFile(fname)
-                self.tabix_file_cache[(pid, fname)] = fp
-
-            # if the contig isn't in the contig list, then it
-            # can't be a vlaid peak
-            if peak[0] not in fp.contigs: 
-                motif_status.append(0)
-                continue
-            overlapping_peaks = list(fp.fetch(peak_coords))
-            if len(pc_peaks) > 0:
-                motif_status.append(1)
-                continue
-            else:
-                motif_status.append(0)
-        status.append(motif_status)
-    return status
     
 class BuildPredictorsFactory(object):
     def build_header(self):
