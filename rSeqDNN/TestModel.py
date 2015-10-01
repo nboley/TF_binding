@@ -24,8 +24,8 @@ from sklearn.metrics import (
 from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
 from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import (
-    iter_train_validation_splits, ClassificationResult)
-from pyTFbindtools.DB import load_chipseq_peak_and_matching_DNASE_files_from_db
+    iter_train_validation_splits, ClassificationResult, ClassificationResults)
+
 
 PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
 
@@ -137,6 +137,13 @@ class KerasModel():
         self.model.compile(loss='binary_crossentropy', optimizer=sgd,
                            class_mode="binary");
     
+    def load_saved_model(self, model_file):
+        '''load saved keras model
+        '''
+        self.model.load_weights(model_file)
+        
+        return self
+    
     def get_features(self, coded_seqs):
         '''gets keras-formmated features and labels from data
         '''
@@ -165,38 +172,6 @@ class KerasModel():
 
         return classification_result
     
-
-    def train_rSeqDNN_model(self, data, genome_fasta, out_filename_prefix,
-                            numEpochs=5):
-        # split into fitting and early stopping
-        data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        X_validation = self.get_features(data_stopping.build_coded_seqs(genome_fasta))
-        y_validation = data_stopping.labels
-        X_train = self.get_features(data_fitting.build_coded_seqs(genome_fasta))
-        y_train = data_fitting.labels
-        weights = {1, 1}
-        batch_size = 1500
-        # fit the model
-        bestBalancedAcc = 0
-        print("Training...")
-        for epoch in xrange(numEpochs):
-            self.model.fit(X_train, y_train,
-                      validation_data=(X_validation, y_validation),
-                      show_accuracy=True,
-                      class_weight=weights,
-                      batch_size=batch_size,
-                      nb_epoch=1)
-            res = self.evaluate_rSeqDNN_model(X_validation, y_validation)
-            print res
-            if (res.balanced_accuracy > bestBalancedAcc):
-                print("highest balanced accuracy so far. Saving weights.")
-                self.model.save_weights(out_filename_prefix + ".h5",
-                                        overwrite=True)
-                bestBalancedAcc = res.balanced_accuracy
-
-        return self
-
-
 def cross_validated_results(list_of_results):
     ''' 
     '''
@@ -212,6 +187,8 @@ def parse_args():
                         help='regions with positive label')
     parser.add_argument('--neg-regions', type=getFileHandle, required=True,
                         help='regions with negative labels')
+    parser.add_argument('--model-file', required=True,
+                        help='keras moel weights file')
     parser.add_argument('--half-peak-width', type=int, default=400,
                         help='half peak width about summits for training')
     args = parser.parse_args()
@@ -230,13 +207,11 @@ def main():
         peaks_and_labels.append((neg_pk, 'sample', 0))
     peaks = PeaksAndLabels(peaks_and_labels)
     model = KerasModel(peaks)
-    results = []
-    for train, valid in peaks.iter_train_validation_subsets():
-        fit_model = model.train_rSeqDNN_model(train, genome_fasta, './test')
-        results.append(fit_model.evaluate_rSeqDNN_model(
-            valid.build_coded_seqs(genome_fasta), valid.labels))
-    print 'Printing cross validation results:'
-    print cross_validated_results(results)
+    loaded_model = model.load_saved_model(args.model_file)
+    result = loaded_model.evaluate_rSeqDNN_model(
+        peaks.build_coded_seqs(genome_fasta), peaks.labels)
+    print 'Printing test results:'
+    print result
 
 if __name__ == '__main__':
     main()
