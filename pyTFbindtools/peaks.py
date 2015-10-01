@@ -126,17 +126,17 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
 
     return
 
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), 4, pk_width))
-    for i, pk in enumerate(peaks):
-        seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-        coded_seq = code_seq(seq)
-        data[i] = coded_seq[0:4,:]
-    return data
+def load_labeled_peaks_from_beds(
+        pos_regions_fp, neg_regions_fp, half_peak_width=None):
+    def iter_all_pks():        
+        for pos_pk in load_summit_centered_peaks(
+                load_narrow_peaks(args.pos_regions), args.half_peak_width):
+            yield PeakAndLabel(pos_pk, 'sample', 1)
+        for neg_pk in load_summit_centered_peaks(
+                load_narrow_peaks(args.neg_regions), args.half_peak_width):
+            yield PeakAndLabel(neg_pk, 'sample', 0)
+    return PeaksAndLabels(iter_all_pks())
+
 
 chipseq_peaks_tabix_file_cache = {}
 def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
