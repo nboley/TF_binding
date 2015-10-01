@@ -68,7 +68,8 @@ class BuildPredictorsFactory(object):
         return summary_stats
 
     def classify_chipseq_peak(self, sample, peak):
-        return classify_chipseq_peak(self.chipseq_peak_files[sample], peak)
+        return classify_chipseq_peak(
+            self.chipseq_peak_files[sample], peak)
 
 def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
     # reload the fasta file to make it thread safe
@@ -82,14 +83,13 @@ def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
             scores = build_predictors.build_summary_stats(peak, fasta)
             labels = build_predictors.classify_chipseq_peak(sample, peak)
         except Exception, inst: 
-            raise
             print "ERROR", inst
             continue
         if index%50000 == 0:
             print "%i/%i" % (index, len(peaks))
         ofp.write("%s_%s\t%s\t%.4f\t%s\n" % (
             sample, "_".join(str(x) for x in peak).ljust(30), 
-            "\t".join(str(x) for x in labels), 
+            ",".join(str(x) for x in labels), 
             peak[-1],
             "\t".join("%.4e" % x for x in scores)))
     return
@@ -135,13 +135,13 @@ def parse_arguments():
         for dnase_peaks_fname in dnase_peaks_fnames:
             with getFileHandle(dnase_peaks_fname) as fp:
                 peaks = load_summit_centered_peaks(
-                    load_narrow_peaks(fp, 1000),
+                    load_narrow_peaks(fp, None),
                     400 )
             for peak in peaks:
                 all_peaks.append((sample_id, peak))
     print "Finished loading peaks."
 
-    ofname = "{prefix}.{motif_id}.txt".format(
+    ofname = "{prefix}.{motif_id}.txt.gz".format(
         prefix=args.ofprefix, 
         motif_id=motifs[0].motif_id
     )
@@ -163,9 +163,11 @@ def open_or_create_feature_file(
                 ofp, peak_cntr, all_peaks, build_predictors, fasta))
         
         input_fp = open(ofname + ".TMP")
-        with gzip.open(ofname + ".gz", 'wb') as ofp_compressed:
+        with gzip.open(ofname, 'wb') as ofp_compressed:
             shutil.copyfileobj(input_fp, ofp_compressed)
-        return getFileHandle(ofname + ".gz")
+        input_fp.close()
+        os.remove(ofname + '.TMP')
+        return getFileHandle(ofname)
 
 def main():
     fasta, all_peaks, motifs, chipseq_peak_filenames, ofname = parse_arguments()
