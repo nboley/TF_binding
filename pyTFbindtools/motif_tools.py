@@ -118,26 +118,6 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
-def load_chipseq_peak_and_matching_DNASE_files_from_db(tfid):
-    import psycopg2
-    conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
-    cur = conn.cursor()    
-    query = """
-    SELECT roadmap_sample_id,
-           dnase_peak_fname,
-           chipseq_peak_fname
-      FROM roadmap_matched_chipseq_experiments
-     WHERE tf_id = %s;
-    """
-    rv = defaultdict(lambda: (set(), set()))
-    cur.execute(query, [tfid,])
-    for sample_id, dnase_peak_fname, chipseq_peak_fname in cur.fetchall():
-        rv[sample_id][0].add(chipseq_peak_fname)
-        rv[sample_id][1].add(dnase_peak_fname)
-    return rv
-
-
-
 def score_region(region, genome, motifs):
     seq = genome.fetch(region[0], region[1], region[2])
     motifs_scores = []

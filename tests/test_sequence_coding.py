@@ -39,14 +39,14 @@ def test_code_sequence():
     code_seq(seq)
 
 def test_code_many_seqs():
-    code_many_seqs(many_seqs)
+    johnies_code_many_seqs(many_seqs)
 
 if __name__ == '__main__':
     import timeit
     print timeit.timeit(
         "test_code_sequence()",
         setup="from __main__ import test_code_sequence",
-        number=100)
+        number=1000)
     print timeit.timeit(
         "test_code_many_seqs()",
         setup="from __main__ import test_code_many_seqs",

@@ -25,7 +25,7 @@ from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
 from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import (
     iter_train_validation_splits, ClassificationResult)
-
+from pyTFbindtools.DB import load_chipseq_peak_and_matching_DNASE_files_from_db
 
 PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
 
@@ -100,7 +100,7 @@ class PeaksAndLabels():
                 self.sample_ids, self.contigs):
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
-
+            
 def keras_model_factory(seq_len):
     # Setup input parameters for CNN-RNN
     numConv = 30;

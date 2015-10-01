@@ -30,6 +30,37 @@ class Counter(object):
             self.val.value += 1
         return rv
 
+chipseq_peaks_tabix_file_cache = {}
+def classify_chipseq_peak(self, chipseq_peaks_fnames, peak):
+    pid = os.getppid()
+    peak_coords = (peak.contig, 
+                   peak.start, 
+                   peak.stop)
+    status = []
+    for motif in self.motifs:
+        motif_status = []
+        for fname in chipseq_peak_filenames:
+            # get the tabix file pointer, opening it if necessary 
+            try: 
+                fp = tabix_file_cache[(pid, fname)]
+            except KeyError:
+                fp = TabixFile(fname)
+                self.tabix_file_cache[(pid, fname)] = fp
+
+            # if the contig isn't in the contig list, then it
+            # can't be a vlaid peak
+            if peak[0] not in fp.contigs: 
+                motif_status.append(0)
+                continue
+            overlapping_peaks = list(fp.fetch(peak_coords))
+            if len(pc_peaks) > 0:
+                motif_status.append(1)
+                continue
+            else:
+                motif_status.append(0)
+        status.append(motif_status)
+    return status
+    
 class BuildPredictorsFactory(object):
     def build_header(self):
         header = ['region',] + [
@@ -71,38 +102,8 @@ class BuildPredictorsFactory(object):
                     summary_stats.append(quantile)
         return summary_stats
 
-    def classify_peak(self, sample, peak):
-        pid = os.getppid()
-        pc_peak = (peak.contig, 
-                   peak.start+peak.summit-300, 
-                   peak.start+peak.summit+300)
-        nc_peak = (peak.contig, 
-                   peak.start+peak.summit-2000, 
-                   peak.start+peak.summit+2000)
-        status = []
-        for motif in self.motifs:
-            motif_status = []
-            for fname in self.chipseq_peak_files[sample]:
-                try: 
-                    fp = self.tabix_file_cache[(pid, fname)]
-                except KeyError:
-                    fp = TabixFile(fname)
-                    self.tabix_file_cache[(pid, fname)] = fp
-
-                if peak[0] not in fp.contigs: 
-                    motif_status.append(0)
-                    continue
-                pc_peaks = list(fp.fetch(*pc_peak))
-                if len(pc_peaks) > 0:
-                    motif_status.append(1)
-                    continue
-                nc_peaks = list(fp.fetch(*nc_peak))
-                if len(nc_peaks) == 0:
-                    motif_status.append(-1)
-                else:
-                    motif_status.append(0)
-            status.append(",".join(str(x) for x in motif_status))
-        return status
+    def classify_chipseq_peak(self, sample, peak):
+        return classify_chipseq_peak(self.chipseq_peak_files[sample], peak)
 
 def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
     # reload the fasta file to make it thread safe
@@ -204,4 +205,5 @@ def main():
     print res
     return
 
-main()
+if __name__ == '__main__':
+    main()
