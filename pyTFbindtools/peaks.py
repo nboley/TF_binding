@@ -169,19 +169,19 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak):
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         tf_id, half_peak_width=None, max_n_peaks_per_sample=None):
     peak_fnames = load_chipseq_peak_and_matching_DNASE_files_from_db(tf_id)    
-    for (sample_id, (sample_chipseq_peaks_fnames, dnase_peaks_fnames)
-            ) in peak_fnames.iteritems():
+    for (sample_index, (sample_id, (sample_chipseq_peaks_fnames, dnase_peaks_fnames)
+            )) in enumerate(peak_fnames.iteritems()):
         # for now, dont allow multiple set of DNASE peaks
         assert len(dnase_peaks_fnames) == 1
         dnase_peaks_fname = next(iter(dnase_peaks_fnames))
 
-        print "Loading peaks for sample '%s'" % sample_id
+        print "Loading peaks for sample '%s' (%i/%i)" % (
+            sample_id, sample_index, len(peak_fnames))
         with getFileHandle(dnase_peaks_fname) as fp:
             pks_iter = iter_narrow_peaks(fp, max_n_peaks_per_sample)
             if half_peak_width != None:
                 pks_iter = iter_summit_centered_peaks(pks_iter, half_peak_width)
             for i, pk in enumerate(pks_iter):
-                if i%10000 == 0: print "Loaded peak %i in %s" % (i, sample_id)
                 label = classify_chipseq_peak(sample_chipseq_peaks_fnames, pk)
                 # merge labels
                 label = max(label)

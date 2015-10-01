@@ -117,6 +117,7 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
+@profile
 def score_region(region, genome, motifs):
     seq = genome.fetch(region[0], region[1], region[2])
     motifs_scores = []
