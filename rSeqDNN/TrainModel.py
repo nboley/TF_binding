@@ -1,7 +1,5 @@
 import os
 import argparse
-import re
-import gzip
 from collections import namedtuple
 from itertools import izip
 
@@ -21,21 +19,14 @@ from keras.models import model_from_yaml
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
 
-from pyTFbindtools.peaks import load_summit_centered_peaks, load_narrow_peaks
+from pyTFbindtools.peaks import (
+    load_summit_centered_peaks, load_narrow_peaks, getFileHandle)
 from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import (
     iter_train_validation_splits, ClassificationResult, ClassificationResults)
 
 
 PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
-
-def getFileHandle(filename,mode="r"):
-    if (re.search('.gz$',filename) or re.search('.gzip',filename)):
-        if (mode=="r"):
-            mode="rb";
-        return gzip.open(filename,mode)
-    else:
-        return open(filename,mode)
 
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
         # find the peak width

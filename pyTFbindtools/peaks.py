@@ -16,6 +16,15 @@ class NarrowPeak(NarrowPeakData):
 class Peaks(list):
     pass
 
+def getFileHandle(filename, mode="r"):
+    if filename.endswith('.gz') or filename.endswith('.gzip'):
+        if (mode=="r"):
+            mode="rb";
+        return gzip.open(filename,mode)
+    else:
+        return open(filename,mode)
+
+
 def load_summit_centered_peaks(original_peaks, half_peak_width, max_n_peaks=None):
     peaks = Peaks()
     for peak in original_peaks:
@@ -31,6 +40,8 @@ def load_summit_centered_peaks(original_peaks, half_peak_width, max_n_peaks=None
     return peaks
 
 def load_narrow_peaks(fp, max_n_peaks=None):
+    if isinstance(fp, str):
+        raise ValueError, "Expecting filepointer"
     peaks = Peaks()
     for i, line in enumerate(fp):
         if line.startswith("track"): continue

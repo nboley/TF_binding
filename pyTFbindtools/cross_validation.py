@@ -1,5 +1,6 @@
 from sklearn import cross_validation
 
+import itertools
 from collections import namedtuple
 
 TEST_CHRS = [1,2]

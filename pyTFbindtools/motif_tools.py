@@ -9,8 +9,7 @@ from scipy.signal import convolve
 
 from collections import defaultdict, namedtuple
 
-import pyximport; pyximport.install()
-from score_seq import code_seq
+from sequence import code_seq
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
