@@ -103,19 +103,6 @@ class SingleMotifBindingData(TFBindingData):
         assert len(self.motif_ids) == 1
         assert len(self.label_columns) == 1
 
-def write_split_data_into_bed():
-    """
-
-    """
-    assert False, "this is just some code that I never cleaned, but dont want to toss"
-    for train, validation in data.iter_train_validation_data_subsets():
-        data_subset = validation
-        for row, label in itertools.izip(
-                data_subset.data.index, data_subset.data[data_subset.label_columns[0]]):
-            if label != -1: continue
-            print "\t".join(row.split("_")[1:4]) + "\t%s" % row.split("_")[0]
-        break
-
 def estimate_cross_validated_error(data):
     res = ClassificationResults()
     for train, validation in data.iter_train_validation_data_subsets():

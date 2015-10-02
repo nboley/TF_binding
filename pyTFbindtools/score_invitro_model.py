@@ -172,7 +172,7 @@ def main():
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)
     res = estimate_cross_validated_error(data)
-    print res
+    print res.all_data
     return
 
 if __name__ == '__main__':

@@ -61,6 +61,15 @@ class ClassificationResults(list):
             sum(auRPCs)/len(self), min(auRPCs), max(auRPCs)))
         return "\n".join(rv)
 
+    @property
+    def all_data(self):
+        # write the header
+        rv = []
+        rv.append( "\t".join(ClassificationResult._fields))
+        for entry in self:
+            rv.append("\t".join(str(x) for x in entry))
+        return "\n".join(rv)
+
 def iter_train_validation_splits(sample_ids, contigs):
     # determine the training and validation sets
     if len(sample_ids) == 1:
