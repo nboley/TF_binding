@@ -11,7 +11,7 @@ from pyTFbindtools.peaks import (
 
 from pyTFbindtools.cross_validation import ClassificationResults
 
-from KerasModel import KerasModel
+from KerasModel import KerasModel, encode_peaks_sequence_into_binary_array
 
 def parse_args():
     parser = argparse.ArgumentParser(
