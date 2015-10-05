@@ -44,8 +44,9 @@ def main():
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
         results.append(fit_model.evaluate_rSeqDNN_model(
-        encode_peaks_sequence_into_binary_array(
+            encode_peaks_sequence_into_binary_array(
                 valid.peaks, genome_fasta), valid.labels))
+        break
     print 'Printing cross validation results:'
     print results
 

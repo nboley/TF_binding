@@ -68,7 +68,9 @@ class KerasModel():
                              numOutputNodes,
                              activation='sigmoid'))
         optimizer = Adam(lr=0.001,beta_1=0.9, beta_2=0.999, epsilon=1e-8)
-        self.model.compile(loss='binary_crossentropy', 
+        #expected_average_prc
+        # binary_crossentropy
+        self.model.compile(loss='expected_F1', 
                            optimizer=optimizer,
                            class_mode="binary");
     
@@ -116,23 +118,25 @@ class KerasModel():
                         data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
         weights = {len(y_train)/(len(y_train)-y_train.sum()), len(y_train)/y_train.sum()}
+        #weights = {1.0, 1.0} # negative, positive
         batch_size = 1500
         # fit the model
-        bestBalancedAcc = 0
+        best_auPRC = 0
         print("Training...")
         for epoch in xrange(numEpochs):
-            self.model.fit(X_train, y_train,
-                      validation_data=(X_validation, y_validation),
-                      show_accuracy=True,
-                      class_weight=weights,
-                      batch_size=batch_size,
-                      nb_epoch=1)
+            self.model.fit(
+                X_train, y_train,
+                validation_data=(X_validation, y_validation),
+                show_accuracy=True,
+                class_weight=weights,
+                batch_size=batch_size,
+                nb_epoch=5)
             res = self.evaluate_rSeqDNN_model(X_validation, y_validation)
             print res
-            if (res.balanced_accuracy > bestBalancedAcc):
-                print("highest balanced accuracy so far. Saving weights.")
+            if (res.auPRC > best_auPRC):
+                print("highest auPRC accuracy so far. Saving weights.")
                 self.model.save_weights(out_filename_prefix,
                                         overwrite=True)
-                bestBalancedAcc = res.balanced_accuracy
+                best_auPRC = res.auPRC
 
         return self
