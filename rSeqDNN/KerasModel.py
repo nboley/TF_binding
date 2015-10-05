@@ -38,13 +38,18 @@ class KerasModel():
         convWidth = 4
         convHeight = 45
         dropoutRate = 0.2
-        maxPoolSize = 50
+        maxPoolSize = 20
         maxPoolStride = 20
         numConvOutputs = ((self.seq_len - convHeight) + 1)
         numMaxPoolOutputs = int(((numConvOutputs-maxPoolSize)/maxPoolStride)+1)
         gruHiddenVecSize = 35
         numFCNodes = 45
         numOutputNodes = 1
+        
+        # this fixes an implementation bug in Keras. If this is not true,
+        # then the code runs much more slowly
+        assert maxPoolSize%maxPoolStride == 0
+        
         # Define architecture     
         self.model = Sequential()
         self.model.add(Convolution2D(
