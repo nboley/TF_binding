@@ -2,6 +2,7 @@ import os
 import gzip
 from collections import namedtuple
 from itertools import izip
+import random
 
 import numpy as np
 
@@ -110,7 +111,9 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
     if isinstance(fp, str):
         raise ValueError, "Expecting filepointer"
 
-    for i, line in enumerate(fp):
+    all_lines = [line for line in fp]
+    random.shuffle(all_lines)
+    for i, line in enumerate(all_lines):
         if line.startswith("track"): continue
         if max_n_peaks != None and i > max_n_peaks: 
             break

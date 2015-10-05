@@ -15,6 +15,21 @@ from keras.models import model_from_yaml
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
 
+import theano.tensor as T
+
+def expected_F1_loss(y_true, y_pred):
+    expected_true_positives = T.sum(y_pred*y_true)
+    expected_false_positives = T.sum(y_pred*(1-y_true))
+    expected_false_negatives = T.sum((1-y_pred)*y_true)
+
+    precision = expected_true_positives/(
+        expected_true_positives + expected_false_positives)
+    recall = expected_true_positives/(
+        expected_true_positives + expected_false_negatives)
+
+    return -2*precision*recall/(precision + recall)
+
+
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
@@ -70,7 +85,7 @@ class KerasModel():
         optimizer = Adam(lr=0.001,beta_1=0.9, beta_2=0.999, epsilon=1e-8)
         #expected_average_prc
         # binary_crossentropy
-        self.model.compile(loss='expected_F1', 
+        self.model.compile(loss=expected_F1_loss, 
                            optimizer=optimizer,
                            class_mode="binary");
     
