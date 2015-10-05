@@ -1,5 +1,8 @@
 import argparse
 
+from pysam import FastaFile
+from pyTFbindtools.peaks import getFileHandle
+
 def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
         description=description)

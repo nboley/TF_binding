@@ -9,7 +9,7 @@ from keras.optimizers import SGD, RMSprop, Adagrad
 from keras.models import Sequential
 from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute)
-from keras.layers.recurrent import LSTM,GRU
+from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_yaml
 from sklearn.metrics import (

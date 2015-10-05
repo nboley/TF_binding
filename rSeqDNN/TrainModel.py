@@ -6,7 +6,6 @@ from rSeqDNN import init_prediction_script_argument_parser
 
 from pyTFbindtools.peaks import (
     load_labeled_peaks_from_beds, 
-    getFileHandle, 
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 )
 
