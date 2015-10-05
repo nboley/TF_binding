@@ -124,7 +124,7 @@ class KerasModel():
             print res
             if (res.balanced_accuracy > bestBalancedAcc):
                 print("highest balanced accuracy so far. Saving weights.")
-                self.model.save_weights(out_filename_prefix + ".h5",
+                self.model.save_weights(out_filename_prefix,
                                         overwrite=True)
                 bestBalancedAcc = res.balanced_accuracy
 

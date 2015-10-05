@@ -20,15 +20,18 @@ def parse_args():
                         help='genome file to get sequences')
 
     parser.add_argument('--tf-id',
-                        help='TF to build model on')
+        help='TF to build model on')
 
     parser.add_argument('--pos-regions', type=getFileHandle,
-                        help='regions with positive label')
+        help='regions with positive label')
     parser.add_argument('--neg-regions', type=getFileHandle,
-                        help='regions with negative labels')
+        help='regions with negative labels')
+
+    parser.add_argument('--model-prefix', default='trainedmodel',
+        help='Trained models will be written to (model_prefix).foldnum.h5"')
 
     parser.add_argument('--half-peak-width', type=int, default=400,
-                        help='half peak width about summits for training')
+        help='half peak width about summits for training')
 
     parser.add_argument( '--max-num-peaks-per-sample', type=int, 
         help='the maximum number of peaks to parse for each sample (used for debugging)')
@@ -46,15 +49,19 @@ def parse_args():
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
     
-    return peaks_and_labels, args.genome_fasta
+    return peaks_and_labels, args.genome_fasta, args.model_prefix
 
 
 def main():
-    peaks_and_labels, genome_fasta = parse_args()
+    peaks_and_labels, genome_fasta, model_ofname_prefix = parse_args()
     model = KerasModel(peaks_and_labels)
     results = ClassificationResults()
-    for train, valid in peaks_and_labels.iter_train_validation_subsets():
-        fit_model = model.train_rSeqDNN_model(train, genome_fasta, './test')
+    for fold_index, (train, valid) in enumerate(
+            peaks_and_labels.iter_train_validation_subsets()):
+        fit_model = model.train_rSeqDNN_model(
+            train, 
+            genome_fasta, 
+            '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
         results.append(fit_model.evaluate_rSeqDNN_model(
         encode_peaks_sequence_into_binary_array(
                 valid.peaks, genome_fasta), valid.labels))
