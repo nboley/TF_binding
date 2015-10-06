@@ -5,7 +5,7 @@ from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import ClassificationResult
 
 from keras.preprocessing import sequence
-from keras.optimizers import SGD, RMSprop, Adagrad
+from keras.optimizers import SGD, RMSprop, Adagrad, Adam
 from keras.models import Sequential
 from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute)
@@ -61,13 +61,15 @@ class KerasModel():
         self.model.add(Reshape(numConv,numMaxPoolOutputs))
         self.model.add(Permute((2,1)))
         # make the number of max pooling outputs the time dimension
-        self.model.add(GRU(numConv,gruHiddenVecSize,return_sequences=True));
-        self.model.add(TimeDistributedDense(gruHiddenVecSize,numFCNodes));
-        self.model.add(Reshape(numFCNodes*numMaxPoolOutputs));
-        self.model.add(Dense(numFCNodes*numMaxPoolOutputs,numOutputNodes,
-                             activation='sigmoid'));
-        sgd = SGD(lr=0.01,momentum=0.95,nesterov=True);
-        self.model.compile(loss='binary_crossentropy', optimizer=sgd,
+        self.model.add(GRU(numConv,gruHiddenVecSize,return_sequences=True))
+        self.model.add(TimeDistributedDense(gruHiddenVecSize,numFCNodes))
+        self.model.add(Reshape(numFCNodes*numMaxPoolOutputs))
+        self.model.add(Dense(numFCNodes*numMaxPoolOutputs,
+                             numOutputNodes,
+                             activation='sigmoid'))
+        optimizer = Adam(lr=0.001,beta_1=0.9, beta_2=0.999, epsilon=1e-8)
+        self.model.compile(loss='binary_crossentropy', 
+                           optimizer=optimizer,
                            class_mode="binary");
     
     def get_features(self, coded_seqs):
@@ -113,7 +115,7 @@ class KerasModel():
                 encode_peaks_sequence_into_binary_array(
                         data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
-        weights = {1, 1}
+        weights = {len(y_train)/(len(y_train)-y_train.sum()), len(y_train)/y_train.sum()}
         batch_size = 1500
         # fit the model
         bestBalancedAcc = 0
