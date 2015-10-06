@@ -38,6 +38,8 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
     data = 0.25 * np.ones((len(peaks), 4, pk_width))
     for i, pk in enumerate(peaks):
         seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+        # skip sequences overrunning the contig boundary
+        if len(seq) != pk_width: continue
         coded_seq = code_seq(seq)
         data[i] = coded_seq[0:4,:]
     return data
