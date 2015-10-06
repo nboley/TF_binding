@@ -145,7 +145,7 @@ class KerasModel():
                 show_accuracy=True,
                 class_weight=weights,
                 batch_size=batch_size,
-                nb_epoch=5)
+                nb_epoch=1)
             res = self.evaluate_rSeqDNN_model(X_validation, y_validation)
             print res
             if (res.auPRC > best_auPRC):

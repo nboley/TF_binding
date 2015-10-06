@@ -48,6 +48,8 @@ def main():
                 valid.peaks, genome_fasta), valid.labels))
         break
     print 'Printing cross validation results:'
+    for res in results:
+        print res
     print results
 
 if __name__ == '__main__':
