@@ -106,8 +106,8 @@ class SingleMotifBindingData(TFBindingData):
 def estimate_cross_validated_error(data):
     res = ClassificationResults()
     for train, validation in data.iter_train_validation_data_subsets():
-        train = train.balance_data()
-        validation = validation.balance_data()
+        #train = train.balance_data()
+        #validation = validation.balance_data()
 
         #clf_1 = DecisionTreeClassifier(max_depth=20)
         clf_1 = RandomForestClassifier(max_depth=10)

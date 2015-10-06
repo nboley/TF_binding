@@ -243,7 +243,9 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                         continue
                 yield PeakAndLabel(pk, sample_id, label)
                 num_peaks += 1
-                if num_peaks >= max_n_peaks_per_sample: break
+                if ( max_n_peaks_per_sample is not None 
+                     and num_peaks >= max_n_peaks_per_sample): 
+                    break
     return
 
 def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(

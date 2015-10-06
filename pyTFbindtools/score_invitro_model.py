@@ -120,7 +120,7 @@ def parse_arguments():
     elif args.cisbp_motif_id != None:
         motifs = load_pwms_from_db(motif_ids=[args.cisbp_motif_id,])
     else:
-        assert False, "Must set either --slex-motif-id or --cisbp-motif-id"
+        assert False, "Must set either --selex-motif-id or --cisbp-motif-id"
     assert len(motifs) == 1
     motif = motifs[0]
     print "Finished loading motifs."
@@ -172,7 +172,8 @@ def main():
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)
     res = estimate_cross_validated_error(data)
-    print res.all_data
+    with open(ofname + ".summary", "w") as ofp:
+        print >> ofp, res.all_data
     return
 
 if __name__ == '__main__':
