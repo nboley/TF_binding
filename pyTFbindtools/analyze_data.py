@@ -103,11 +103,12 @@ class SingleMotifBindingData(TFBindingData):
         assert len(self.motif_ids) == 1
         assert len(self.label_columns) == 1
 
-def estimate_cross_validated_error(data):
+def estimate_cross_validated_error(data, balance_data=False):
     res = ClassificationResults()
     for train, validation in data.iter_train_validation_data_subsets():
-        #train = train.balance_data()
-        #validation = validation.balance_data()
+        if balance_data:
+            train = train.balance_data()
+            validation = validation.balance_data()
 
         #clf_1 = DecisionTreeClassifier(max_depth=20)
         clf_1 = RandomForestClassifier(max_depth=10)

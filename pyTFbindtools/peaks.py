@@ -221,6 +221,9 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
         optimal_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
             'optimal idr thresholded peaks']
+        if len(optimal_sample_chipseq_peaks_fnames) == 0:
+            continue
+        
         noisy_sample_chipseq_peaks_fnames = []
         for peaks_type, fnames in sample_chipseq_peaks_fnames.iteritems():
             if peaks_type == 'optimal idr thresholded peaks': continue
@@ -242,7 +245,6 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                     noisy_label = classify_chipseq_peak(
                         noisy_sample_chipseq_peaks_fnames, pk)
                     if max(noisy_label) == 1:
-                        print "NOISY", pk
                         continue
                 yield PeakAndLabel(pk, sample_id, label)
                 num_peaks += 1
