@@ -15,6 +15,21 @@ from keras.models import model_from_yaml
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
 
+import theano.tensor as T
+
+def expected_F1_loss(y_true, y_pred):
+    expected_true_positives = T.sum(y_pred*y_true)
+    expected_false_positives = T.sum(y_pred*(1-y_true))
+    expected_false_negatives = T.sum((1-y_pred)*y_true)
+
+    precision = expected_true_positives/(
+        expected_true_positives + expected_false_positives)
+    recall = expected_true_positives/(
+        expected_true_positives + expected_false_negatives)
+
+    return -2*precision*recall/(precision + recall)
+
+
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
@@ -68,7 +83,9 @@ class KerasModel():
                              numOutputNodes,
                              activation='sigmoid'))
         optimizer = Adam(lr=0.001,beta_1=0.9, beta_2=0.999, epsilon=1e-8)
-        self.model.compile(loss='binary_crossentropy', 
+        #expected_average_prc
+        # binary_crossentropy
+        self.model.compile(loss=expected_F1_loss, 
                            optimizer=optimizer,
                            class_mode="binary");
     
@@ -116,23 +133,25 @@ class KerasModel():
                         data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
         weights = {len(y_train)/(len(y_train)-y_train.sum()), len(y_train)/y_train.sum()}
+        #weights = {1.0, 1.0} # negative, positive
         batch_size = 1500
         # fit the model
-        bestBalancedAcc = 0
+        best_auPRC = 0
         print("Training...")
         for epoch in xrange(numEpochs):
-            self.model.fit(X_train, y_train,
-                      validation_data=(X_validation, y_validation),
-                      show_accuracy=True,
-                      class_weight=weights,
-                      batch_size=batch_size,
-                      nb_epoch=1)
+            self.model.fit(
+                X_train, y_train,
+                validation_data=(X_validation, y_validation),
+                show_accuracy=True,
+                class_weight=weights,
+                batch_size=batch_size,
+                nb_epoch=1)
             res = self.evaluate_rSeqDNN_model(X_validation, y_validation)
             print res
-            if (res.balanced_accuracy > bestBalancedAcc):
-                print("highest balanced accuracy so far. Saving weights.")
+            if (res.auPRC > best_auPRC):
+                print("highest auPRC accuracy so far. Saving weights.")
                 self.model.save_weights(out_filename_prefix,
                                         overwrite=True)
-                bestBalancedAcc = res.balanced_accuracy
+                best_auPRC = res.auPRC
 
         return self
