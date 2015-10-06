@@ -155,7 +155,7 @@ def main():
     results = ClassificationResults()
     for fold_i, (train, valid) in enumerate(
             peaks_and_labels.iter_train_validation_subsets()):
-        peaks_and_labels_iterator = peaks_and_labels.thread_safe_iter()
+        peaks_and_labels_iterator = valid.thread_safe_iter()
         ofname = "scores.%s.fold%i.txt" % (tf_id, fold_i)
         ofp = ThreadSafeFile(ofname, "w")
         args = [peaks_and_labels_iterator, ofp, tf_id,genome_fasta.filename]
