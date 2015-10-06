@@ -3,35 +3,25 @@ import argparse
 import numpy as np
 import subprocess
 import tempfile
+import time
+
+from itertools import izip
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
 from pysam import FastaFile
 
+from grit.lib.multiprocessing_utils import ThreadSafeFile, fork_and_wait
+
 from pyTFbindtools.peaks import (
     load_labeled_peaks_from_beds, 
     getFileHandle, 
-    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
+    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    PeaksAndLabelsThreadSafeIterator
 )
 
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
-
-
-def encode_peaks_sequence_into_fasta_file(validation_data, fasta, fasta_ofname, labels_ofname):
-    '''writes data peaks sequence into file and saves labels
-    '''
-    np.savetxt(labels_ofname, validation_data.labels)
-    peaks = validation_data.peaks
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    with open(fasta_ofname, 'w') as wf:
-        for i, pk in enumerate(peaks):
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-            wf.write('>'+str(i)+'\n')
-            wf.write(seq+'\n')
 
 def get_deepbind_model_id(tf_id):
     if tf_id=='T014210_1.02': # MYC
@@ -44,38 +34,14 @@ def get_deepbind_model_id(tf_id):
         return 'D00328.018'
     else:
         raise ValueError('this TF is not supported for DeepBind predictions!')
-
-def subprocess_cmd(command):
-    '''runs shell command and return output
-    '''
-    process = subprocess.Popen(command,stdout=subprocess.PIPE, shell=True)
-    proc_stdout = process.communicate()[0].strip()
     
-    return proc_stdout
-
-def score_seq_with_deepbind_model(model_id, input_fasta):
-    '''scores sequences and returns arrays with scores
-    TODO: check deepbind is in PATH
-    '''
-    command = ' '.join(['deepbind', ' --no-head', model_id, input_fasta])
-    # open tempfile, store command results there
-    with tempfile.TemporaryFile() as tf:
-        process = subprocess.Popen(command,stdout=tf, shell=True)
-        process.wait() # wait for it to finish
-        tf.flush()
-        tf.seek(0)
-        data = np.asarray(tf.read().rstrip().split("\n"), dtype='float')
-
-    return data
-    
-def get_probabilites_from_scores(scores):
+def get_probability_from_score(score):
     '''pass scores through sigmoid
-    '''
-    
-    return 1. / (1. + np.exp(-1.*scores))
+    '''    
+    return 1. / (1. + np.exp(-1.*score))
 
 def evaluate_predictions(probs, y_validation):
-    '''                                                                                                                                                            
+    '''Evaluate the quality of deep bind predictions.
     '''
     preds = np.asarray(probs > 0.5, dtype='int')
     true_pos = y_validation == 1
@@ -93,6 +59,60 @@ def evaluate_predictions(probs, y_validation):
 
     return classification_result
 
+def load_predictions(fname):
+    peaks = []
+    prbs = []
+    labels = []
+    with open(fname) as fp:
+        for line in fp:
+            peak, label, score = line.split()
+            peaks.append(peak)
+            prbs.append(get_probability_from_score(float(score)))
+            labels.append(int(label))
+    return peaks, np.array(prbs), np.array(labels)
+
+def score_regions_with_deepbind(
+        peaks_and_labels_iterator, ofp, tf_id, genome_fasta_fname ):
+    # make sure the input objects are thread safe
+    assert isinstance(
+        peaks_and_labels_iterator, PeaksAndLabelsThreadSafeIterator)
+    assert isinstance(
+        ofp, ThreadSafeFile)
+    genome_fasta = FastaFile(genome_fasta_fname)
+    
+    # get the deep bind model id for this tf_id
+    model_id = get_deepbind_model_id(tf_id)
+
+    # get a temporary file to write to
+    temp_ofp = tempfile.TemporaryFile()
+    
+    # spawn a deepbind process
+    deepbind_process = subprocess.Popen(
+        " ".join(('deepbind', ' --no-head', model_id)),
+        stdout=temp_ofp, 
+        stdin=subprocess.PIPE,
+        shell=True)
+    
+    # write the peaks sequence to a fasta file
+    peaks = []
+    labels = []
+    for pk, sample, label in peaks_and_labels_iterator:
+        if peaks_and_labels_iterator._cur_val%10000 == 0:
+            print peaks_and_labels_iterator._cur_val, peaks_and_labels_iterator.n
+        peaks.append((pk, sample))
+        labels.append(label)
+        seq = genome_fasta.fetch(pk.contig, pk.start, pk.stop)
+        deepbind_process.stdin.write(seq + "\n")
+    deepbind_process.stdin.close()
+    deepbind_process.wait()
+    
+    temp_ofp.seek(0)
+    for (peak, sample), line, label in izip(peaks, temp_ofp, labels):
+        ofp.write("%s_%s_%i_%i\t%i\t%f\n" % (
+            sample, peak.contig, peak.start, peak.stop, label, float(line)))
+    temp_ofp.close()
+    return
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description='main script for testing rSeqDNN')
@@ -106,10 +126,11 @@ def parse_args():
                         help='regions with positive label')
     parser.add_argument('--neg-regions', type=getFileHandle,
                         help='regions with negative labels')
-    parser.add_argument('--output-fasta-filename-prefix', required=True,
-                        help='prefix for fasta files with test sequences')
     parser.add_argument('--half-peak-width', type=int, default=400,
                         help='half peak width about summits for training')
+
+    parser.add_argument('-t', '--threads', type=int, default=1,
+                        help='Number of threads to use')
 
     parser.add_argument( '--max-num-peaks-per-sample', type=int, 
         help='the maximum number of peaks to parse for each sample (used for debugging)')
@@ -127,40 +148,22 @@ def parse_args():
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
     
-    return peaks_and_labels, args.genome_fasta, args.output_fasta_filename_prefix, args.tf_id
-
-import time
+    return peaks_and_labels, args.genome_fasta, args.tf_id, args.threads
 
 def main():
-    peaks_and_labels, genome_fasta, fasta_filename_prefix, tf_id = parse_args()
+    peaks_and_labels, genome_fasta, tf_id, num_threads = parse_args()
     results = ClassificationResults()
-    for train, valid in peaks_and_labels.iter_train_validation_subsets():
-        print 'writing sequences and labels to files..'
-        for sample in valid.sample_ids:
-            for contig in valid.contigs:
-                subset_fasta_filename = '_'.join([fasta_filename_prefix, sample, contig]) + '.fa'
-                print subset_fasta_filename
-                subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-                subset_validation_data = valid.subset_data([sample], [contig])
-                encode_peaks_sequence_into_fasta_file(subset_validation_data,
-                                                      genome_fasta,
-                                                      subset_fasta_filename,
-                                                      subset_labels_filename)
-                model_id = get_deepbind_model_id(tf_id)
-                start_time = time.time()
-                scores = score_seq_with_deepbind_model(model_id, subset_fasta_filename)
-                end_time = time.time()
-                print 'num of sequences: ', len(scores)
-                print 'time per sequence scoring: ', 1.*(end_time-start_time)/len(scores)
-                probabilities = get_probabilites_from_scores(scores)
-                result = evaluate_predictions(probabilities,
-                                              subset_validation_data.labels)
-                print 'result: '
-                print result
-                break
-            break
-        print 'done!'
-        break
+    for fold_i, (train, valid) in enumerate(
+            peaks_and_labels.iter_train_validation_subsets()):
+        peaks_and_labels_iterator = peaks_and_labels.thread_safe_iter()
+        ofname = "scores.%s.fold%i.txt" % (tf_id, fold_i)
+        ofp = ThreadSafeFile(ofname, "w")
+        args = [peaks_and_labels_iterator, ofp, tf_id,genome_fasta.filename]
+        fork_and_wait(num_threads, score_regions_with_deepbind, args)
+        ofp.close()
+        peaks, prbs, labels = load_predictions(ofname)
+        res = evaluate_predictions(prbs, labels)
+        print "Fold_%i" % fold_i, res
 
 
 if __name__ == '__main__':

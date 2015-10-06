@@ -7,6 +7,8 @@ import numpy as np
 
 from pysam import TabixFile
 
+from grit.lib.multiprocessing_utils import Counter
+
 from cross_validation import iter_train_validation_splits
 
 def getFileHandle(filename, mode="r"):
@@ -31,8 +33,26 @@ class NarrowPeak(NarrowPeakData):
 class Peaks(list):
     pass
 
-PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
+class PeaksAndLabelsThreadSafeIterator(object):
+    def __init__(self, peaks_and_labels):
+        self.peaks_and_labels = peaks_and_labels
+        self.i = Counter()
+        self.n = len(peaks_and_labels)
+        self._cur_val = 0
 
+    def __iter__(self):
+        return self
+
+    def next(self):
+        assert self.n == len(self.peaks_and_labels)
+        i = self.i.return_and_increment()
+        self._cur_val = i
+        if i < self.n:
+            return self.peaks_and_labels[i]
+        else:
+            raise StopIteration()
+
+PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
 class PeaksAndLabels():
     def __getitem__(self, index):
         return PeakAndLabel(
@@ -44,6 +64,12 @@ class PeaksAndLabels():
             for pk, sample, label 
             in izip(self.peaks, self.samples, self.labels)
         )
+
+    def thread_safe_iter(self):
+        """Returns an iterator that can safely be used from multiple threads.
+
+        """
+        return PeaksAndLabelsThreadSafeIterator(self)
 
     def __len__(self):
         rv = len(self.peaks)
