@@ -138,7 +138,7 @@ class KerasModel():
         y_train = data_fitting.labels
         weights = {len(y_train)/(len(y_train)-y_train.sum()), len(y_train)/y_train.sum()}
         #weights = {1.0, 1.0} # negative, positive
-        batch_size = 1500
+        batch_size = 200
         # fit the model
         best_auPRC = 0
         print("Training...")
