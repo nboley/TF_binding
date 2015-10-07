@@ -3,6 +3,7 @@ import gzip
 from collections import namedtuple
 from itertools import izip
 import random
+import cPickle as pickle
 
 import numpy as np
 
@@ -261,9 +262,21 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
     """
     
     """
-    return PeaksAndLabels(
+    # check for a pickled file int he current directory
+    pickle_fname = "peaks_and_label.%s.%s.%s.%s.obj" % (
+        tf_id, half_peak_width, max_n_peaks_per_sample, skip_ambiguous_peaks)
+    try:
+        with open(pickle_fname) as fp:
+            print "Using pickled peaks_and_labels from '%s'." % pickle_fname 
+            return pickle.load(fp)
+    except IOError:
+        pass
+    peaks_and_labels = PeaksAndLabels(
         iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             tf_id, 
             half_peak_width, 
             max_n_peaks_per_sample, 
             skip_ambiguous_peaks))
+    with open(pickle_fname, "w") as ofp:
+        pickle.dump(peaks_and_labels, ofp)
+    return peaks_and_labels

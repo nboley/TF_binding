@@ -24,7 +24,10 @@ def parse_args():
         assert args.pos_regions == None and args.neg_regions == None, \
             "It doesnt make sense to set both tf-id and either --pos-regions or --neg-regions"
         peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-            args.tf_id, args.half_peak_width, args.max_num_peaks_per_sample)
+            args.tf_id, 
+            args.half_peak_width, 
+            args.max_num_peaks_per_sample, 
+            args.skip_ambiguous_peaks)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
@@ -32,6 +35,8 @@ def parse_args():
             args.pos_regions, args.neg_regions, args.half_peak_width)
     
     return peaks_and_labels, args.genome_fasta, args.model_prefix
+
+import cPickle as pickle
 
 def main():
     peaks_and_labels, genome_fasta, model_ofname_prefix = parse_args()
