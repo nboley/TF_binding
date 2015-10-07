@@ -90,18 +90,20 @@ class KerasModel():
         self.model.compile(loss=expected_F1_loss, 
                            optimizer=optimizer,
                            class_mode="binary");
-    
-    def get_features(self, coded_seqs):
-        '''gets keras-formmated features and labels from data
-        '''
 
-        return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
-        
+    def _reshape_coded_seqs_array(self, coded_seqs):
+        '''Reshape coded seqs into Keras acceptible format.
+        '''
+        if len(np.shape(coded_seqs)) == 3:
+            return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
+        else:
+            return coded_seqs
+            
     def evaluate_rSeqDNN_model(self, X_validation, y_validation):
         '''evaluate model
         '''
         if len(np.shape(X_validation)) == 3: # reshape to 4D if 3D
-            X_validation = self.get_features(X_validation)
+            X_validation = self._reshape_coded_seqs_array(X_validation)
         preds = self.model.predict_classes(X_validation)
         probs = self.model.predict_proba(X_validation)
         true_pos = y_validation == 1
@@ -126,11 +128,11 @@ class KerasModel():
                             numEpochs=5):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        X_validation = self.get_features(
+        X_validation = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
                         data_stopping.peaks, genome_fasta))
         y_validation = data_stopping.labels
-        X_train = self.get_features(
+        X_train = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
                         data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
