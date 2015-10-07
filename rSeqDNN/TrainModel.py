@@ -51,7 +51,8 @@ def main():
         results.append(fit_model.evaluate(
             encode_peaks_sequence_into_binary_array(
                 valid.peaks, genome_fasta), valid.labels))
-        break
+        print results[-1]
+        #break
     print 'Printing cross validation results:'
     for res in results:
         print res

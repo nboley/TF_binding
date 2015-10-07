@@ -23,11 +23,11 @@ def expected_F1_loss(y_true, y_pred):
     expected_false_negatives = T.sum((1-y_pred)*y_true)
 
     precision = expected_true_positives/(
-        expected_true_positives + expected_false_positives)
+        expected_true_positives + expected_false_positives + 1.0)
     recall = expected_true_positives/(
-        expected_true_positives + expected_false_negatives)
+        expected_true_positives + expected_false_negatives + 1.0)
 
-    return -2*precision*recall/(precision + recall)
+    return -2*precision*recall/(precision + recall + 1.0)
 
 def balance_matrices(X, labels):
     pos_full = X[(labels == 1)]
@@ -171,7 +171,7 @@ class KerasModel(KerasModelBase):
         
         print("Fitting the model with unbalanced training set.")
         best_auPRC = 0
-        self.compile(expected_F1_loss, Adam())
+        self.compile(expected_F1_loss, Adam()) # expected_F1_loss
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
