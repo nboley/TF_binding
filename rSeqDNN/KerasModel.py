@@ -84,12 +84,13 @@ class KerasModelBase():
         self.model.add(Dense(numFCNodes*numMaxPoolOutputs,
                              numOutputNodes,
                              activation='sigmoid'))
-        optimizer = Adam(lr=0.001,beta_1=0.9, beta_2=0.999, epsilon=1e-8)
+
+    def compile(self, loss, optimizer, class_mode="binary"):
         #expected_average_prc
         # binary_crossentropy
-        self.model.compile(loss=expected_F1_loss, 
+        self.model.compile(loss=loss, 
                            optimizer=optimizer,
-                           class_mode="binary");
+                           class_mode=class_mode);
 
     def _reshape_coded_seqs_array(self, coded_seqs):
         '''Reshape coded seqs into Keras acceptible format.
@@ -142,6 +143,10 @@ class KerasModel(KerasModelBase):
         batch_size = 200
         # fit the model
         best_auPRC = 0
+
+        print("Compiling...")
+        self.compile(expected_F1_loss, Adam())
+
         print("Training...")
         for epoch in xrange(numEpochs):
             self.model.fit(
