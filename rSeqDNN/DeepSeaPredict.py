@@ -4,6 +4,8 @@ import numpy as np
 import subprocess
 import tempfile
 import time
+from math import log
+from distutils.util import strtobool
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
@@ -81,13 +83,12 @@ def get_deepsea_tf_name(tf_id):
         return 'CTCF'
     else:
         raise ValueError('this TF is not supported for DeepSea predictions!')
-    
+
 def get_scores_from_deepsea_output(read_lines, tf_id, sample):
     '''get deepsea probabilities for tf_name from deepsea output
     '''
     num_examples = len(read_lines)
     num_tasks = len(read_lines[0].split(','))
-    print 'number of tasks: ', num_tasks
     read_data = []
     for read_line in read_lines[1:]: # put output in array
         read_data.append(read_line.split(','))
@@ -102,11 +103,9 @@ def get_scores_from_deepsea_output(read_lines, tf_id, sample):
         print 'found more than matching task for', tf_name, sample_name
         for column in columns:
             print header_list[column]
-    print 'printing columns[0]: ', columns[0]
-    print 'type of columns[0]: ', type(columns[0])
     scores = np.asarray(read_array[:, columns[0]],
                         dtype='float') # default to first match
-
+    
     return scores
 
 def score_seq_with_deepbind_model(tf_id, sample, input_fasta, output_dir):
@@ -133,6 +132,24 @@ def get_probabilites_from_scores(scores):
     '''
     
     return 1. / (1. + np.exp(-1.*scores))
+
+def normalize_deepsea_scores(scores, tf_id, sample):
+    '''
+    normalizes raw deepsea scores based on formula provided in
+    http://deepsea.princeton.edu/help/
+    '''
+    tf_name = get_deepsea_tf_name(tf_id) # get deepsea tf name                                                                                                                                                                                               
+    sample_name = get_deepsea_sample_name(sample) # get deepsea sample name
+    full_table = np.loadtxt('./posproportion.txt', skiprows=1, delimiter='\t', dtype='str')
+    matching_sample_indices = full_table[:, 1] == sample_name
+    matching_sample_table =  full_table[matching_sample_indices, :]
+    matching_sample_tf_indices = matching_sample_table[:, 2] == tf_name
+    matching_sample_tf_table = matching_sample_table[matching_sample_tf_indices, :]
+    c_train = float(matching_sample_tf_table[0, -1]) # default to first match
+    # evaluate 1/(1+exp(-( log(P/(1-P))+log(5%/(1-5%))-log(c_train/(1-c_train ))) ))
+    normalized_scores = 1/(1+np.exp(-(np.log(np.divide(scores, 1-scores))+log(0.05/0.95)-log(c_train/(1.-c_train))))) 
+    
+    return normalized_scores
 
 def evaluate_predictions(probs, y_validation):
     '''                                                                                                                                                            
@@ -172,6 +189,8 @@ def parse_args():
                         help='half peak width about summits for training')
     parser.add_argument('--output-directory', required=True,
                         help='output directory for deepsea results')
+    parser.add_argument('--normalize', type=strtobool, default=True,
+                        help='normalize deepsea scores')
     parser.add_argument( '--max-num-peaks-per-sample', type=int, 
         help='the maximum number of peaks to parse for each sample (used for debugging)')
 
@@ -188,10 +207,10 @@ def parse_args():
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
     
-    return peaks_and_labels, args.genome_fasta, args.output_fasta_filename_prefix, args.tf_id, args.output_directory
+    return peaks_and_labels, args.genome_fasta, args.output_fasta_filename_prefix, args.tf_id, args.output_directory, args.normalize
 
 def main():
-    peaks_and_labels, genome_fasta, fasta_filename_prefix, tf_id, output_directory = parse_args()
+    peaks_and_labels, genome_fasta, fasta_filename_prefix, tf_id, output_directory, normalize = parse_args()
     results = ClassificationResults()
     cwd = os.getcwd() 
     os.chdir('/users/jisraeli/Downloads/DeepSEA-v0.93') # cd to run deepsea
@@ -214,6 +233,9 @@ def main():
                                                        output_directory)
                 end_time = time.time()
                 os.chdir(cwd) # cd back
+                if normalize:
+                    print 'normalizing scores...'
+                    scores = normalize_deepsea_scores(scores, tf_id, sample)
                 print 'num of sequences: ', len(scores)
                 print 'time per sequence scoring: ', 1.*(end_time-start_time)/len(scores)
                 result = evaluate_predictions(scores,
