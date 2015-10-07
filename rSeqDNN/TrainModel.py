@@ -48,7 +48,7 @@ def main():
             train, 
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
-        results.append(fit_model.evaluate_rSeqDNN_model(
+        results.append(fit_model.evaluate(
             encode_peaks_sequence_into_binary_array(
                 valid.peaks, genome_fasta), valid.labels))
         break

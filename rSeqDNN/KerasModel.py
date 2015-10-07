@@ -47,7 +47,7 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
 def load_model(fname):
     pass
 
-class KerasModel():
+class KerasModelBase():
     def __init__(self, peaks_and_labels):
         self.seq_len = peaks_and_labels.max_peak_width
         numConv = 30
@@ -99,7 +99,7 @@ class KerasModel():
         else:
             return coded_seqs
             
-    def evaluate_rSeqDNN_model(self, X_validation, y_validation):
+    def evaluate(self, X_validation, y_validation):
         '''evaluate model
         '''
         if len(np.shape(X_validation)) == 3: # reshape to 4D if 3D
@@ -120,7 +120,8 @@ class KerasModel():
         )
 
         return classification_result
-    
+
+class KerasModel(KerasModelBase):
     def train_rSeqDNN_model(self,
                             data,
                             genome_fasta,
@@ -150,7 +151,7 @@ class KerasModel():
                 class_weight=weights,
                 batch_size=batch_size,
                 nb_epoch=1)
-            res = self.evaluate_rSeqDNN_model(X_validation, y_validation)
+            res = self.evaluate(X_validation, y_validation)
             print res
             if (res.auPRC > best_auPRC):
                 print("highest auPRC accuracy so far. Saving weights.")
