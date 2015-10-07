@@ -112,7 +112,9 @@ def score_seq_with_deepbind_model(tf_id, sample, input_fasta, output_dir):
     '''scores sequences and returns arrays with scores
     TODO: check rundeepsea.py is in PATH
     '''
-    command = ' '.join(['rundeepsea.py', input_fasta, output_dir])
+    command = ' '.join(['python ./rundeepsea_fixed.py',
+                        input_fasta,
+                        output_dir])
     # open tempfile, store command results there
     with tempfile.NamedTemporaryFile() as tf:
         process = subprocess.Popen(command,stdout=tf, shell=True)
@@ -170,6 +172,23 @@ def evaluate_predictions(probs, y_validation):
 
     return classification_result
 
+def download_and_fix_deepsea():
+    if not os.path.exists("./DeepSEA-v0.93/rundeepsea_fixed.py"):
+        # download deepsea
+        if not os.path.exists("./download_deepsea.sh"):
+            raise ValueError('download_deepsea.sh is missing! exiting!')
+        process = subprocess.Popen('bash ./download_deepsea.sh', shell=True)
+        process.wait() # wait for it to finish
+        deepsea_lines = open('./DeepSEA-v0.93/rundeepsea.py', 'r').readlines()
+        with open('./DeepSEA-v0.93/rundeepsea_fixed.py', 'w') as wf:
+            wf.write('#!/usr/bin/env python') # modify 
+            for line in deepsea_lines[:16]:
+                wf.write(line)
+            # fix their bug
+            wf.write("outfilename = outdir + infilename.split(\'/\')[-1]+\'.out\'")
+            for line in deepsea_lines[16:]:
+                wf.write(line)
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description='main script for testing rSeqDNN')
@@ -210,10 +229,11 @@ def parse_args():
     return peaks_and_labels, args.genome_fasta, args.output_fasta_filename_prefix, args.tf_id, args.output_directory, args.normalize
 
 def main():
+    download_and_fix_deepsea()
     peaks_and_labels, genome_fasta, fasta_filename_prefix, tf_id, output_directory, normalize = parse_args()
     results = ClassificationResults()
-    cwd = os.getcwd() 
-    os.chdir('/users/jisraeli/Downloads/DeepSEA-v0.93') # cd to run deepsea
+    cwd = os.getcwd()
+    os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
     for train, valid in peaks_and_labels.iter_train_validation_subsets():
         print 'writing sequences and labels to files..'
         for sample in valid.sample_ids:
