@@ -29,6 +29,15 @@ def expected_F1_loss(y_true, y_pred):
 
     return -2*precision*recall/(precision + recall)
 
+def balance_matrices(X, labels):
+    pos_full = X[(labels == 1)]
+    neg_full = X[(labels == 0)]
+    sample_size = min(pos_full.shape[0], neg_full.shape[0])
+    pos = pos_full[
+        np.random.choice(pos_full.shape[0], sample_size, replace=False)]
+    neg = neg_full[
+        np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+    return np.vstack((pos, neg)), np.array([1]*sample_size + [0]*sample_size)
 
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
@@ -86,8 +95,7 @@ class KerasModelBase():
                              activation='sigmoid'))
 
     def compile(self, loss, optimizer, class_mode="binary"):
-        #expected_average_prc
-        # binary_crossentropy
+        print("Conpiling model (%s, %s, %s)" % (loss, optimizer, class_mode))
         self.model.compile(loss=loss, 
                            optimizer=optimizer,
                            class_mode=class_mode);
@@ -128,6 +136,8 @@ class KerasModel(KerasModelBase):
                             genome_fasta,
                             out_filename_prefix,
                             numEpochs=5):
+        batch_size = 200
+
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
         X_validation = self._reshape_coded_seqs_array(
@@ -138,16 +148,30 @@ class KerasModel(KerasModelBase):
                 encode_peaks_sequence_into_binary_array(
                         data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
-        weights = {len(y_train)/(len(y_train)-y_train.sum()), len(y_train)/y_train.sum()}
-        #weights = {1.0, 1.0} # negative, positive
-        batch_size = 200
-        # fit the model
+        weights = {len(y_train)/(len(y_train)-y_train.sum()), 
+                   len(y_train)/y_train.sum()}
+
+        b_X_validation, b_y_validation = balance_matrices(
+            X_validation, y_validation)
+        b_X_train, b_y_train = balance_matrices(X_train, y_train)
+
+
+
+        
+        print("Initializing model from balanced training set.")
+        self.compile('binary_crossentropy', Adam())
+        self.model.fit(
+                b_X_train, b_y_train,
+                validation_data=(b_X_validation, b_y_validation),
+                show_accuracy=True,
+                class_weight={1.0, 1.0},
+                batch_size=batch_size,
+                nb_epoch=3)
+        print self.evaluate(b_X_validation, b_y_validation)
+        
+        print("Fitting the model with unbalanced training set.")
         best_auPRC = 0
-
-        print("Compiling...")
         self.compile(expected_F1_loss, Adam())
-
-        print("Training...")
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
