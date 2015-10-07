@@ -35,12 +35,38 @@ def encode_peaks_sequence_into_fasta_file(validation_data, fasta, fasta_ofname, 
             wf.write(seq+'\n')
 
 def get_deepsea_sample_name(sample):
-    if sample=='E114':
+    if sample=='E003':
+        return 'H1-hESC'
+    elif sample=='E114':
         return 'A549'
     elif sample=='E116':
         return 'GM12878'
+    elif sample=='E117':
+        return 'HeLa-S3'
+    elif sample=='E118':
+        return 'HepG2'
+    elif sample=='E119':
+        return 'HMEC'
+    elif sample=='E120':
+        return 'HSMM'
+    elif sample=='E121':
+        return 'HSMMtube'
+    elif sample=='E122':
+        return 'HUVEC'
     elif sample=='E123':
         return 'K562'
+    elif sample=='E124':
+        return 'Monocytes-CD14+RO01746'
+    elif sample=='E125':
+        return 'NH-A'
+    elif sample=='E126':
+        return 'NHDF-Ad'
+    elif sample=='E127':
+        return 'NHEK'
+    elif sample=='E128':
+        return 'NHLF'
+    elif sample=='E129':
+        return 'Osteoblasts'
     else:
         raise ValueError('this sample is not supported for DeepSea predictions!')
 
@@ -56,21 +82,34 @@ def get_deepsea_tf_name(tf_id):
     else:
         raise ValueError('this TF is not supported for DeepSea predictions!')
     
-def get_probabilities_from_deepsea_output(read_lines, tf_name):
+def get_scores_from_deepsea_output(read_lines, tf_id, sample):
     '''get deepsea probabilities for tf_name from deepsea output
     '''
-    header = read_lines[0]
-    data_lines = []
-    for read_line in read_lines[1:]:
-        data_lines.append(read_line.split(','))
-    data_lines = np.asarray(data_lines, dtype='str')
-    header_list = header.split(',')
-    tf_name_indices = [i for i in xrange(len(header_list)) if tf_name in header_list[i]]
-    print 'printing header names: '
-    for index in tf_name_indices:
-        print header_list[index]
+    num_examples = len(read_lines)
+    num_tasks = len(read_lines[0].split(','))
+    print 'number of tasks: ', num_tasks
+    read_data = []
+    for read_line in read_lines[1:]: # put output in array
+        read_data.append(read_line.split(','))
+    read_array = np.asarray(read_data)
+    header_line = read_lines[0] # deepsea header with task names
+    header_list = header_line.split(',')
+    tf_name = get_deepsea_tf_name(tf_id) # get deepsea tf name
+    sample_name = get_deepsea_sample_name(sample) # get deepsea sample name
+    # parse deepsea header and find task with matching tf and sample name
+    columns = [int(i) for i, h in enumerate(header_list) if sample_name==h.split('|')[0].strip() and tf_name==h.split('|')[1]]
+    if len(columns) > 1: # notify user if there's more than one match
+        print 'found more than matching task for', tf_name, sample_name
+        for column in columns:
+            print header_list[column]
+    print 'printing columns[0]: ', columns[0]
+    print 'type of columns[0]: ', type(columns[0])
+    scores = np.asarray(read_array[:, columns[0]],
+                        dtype='float') # default to first match
 
-def score_seq_with_deepbind_model(tf_name, input_fasta, output_dir):
+    return scores
+
+def score_seq_with_deepbind_model(tf_id, sample, input_fasta, output_dir):
     '''scores sequences and returns arrays with scores
     TODO: check rundeepsea.py is in PATH
     '''
@@ -83,9 +122,11 @@ def score_seq_with_deepbind_model(tf_name, input_fasta, output_dir):
         tf.seek(0)
     wd = os.getcwd()
     output_filename = '/'.join([wd, output_dir, 'infile.fasta.out'])
-    data = get_probabilities_from_deepsea_output(open(output_filename).readlines(), tf_name)
+    scores = get_scores_from_deepsea_output(open(output_filename).readlines(),
+                                            tf_id,
+                                            sample)
    
-    return data
+    return scores
     
 def get_probabilites_from_scores(scores):
     '''pass scores through sigmoid
@@ -167,18 +208,15 @@ def main():
                                                       genome_fasta,
                                                       subset_fasta_filename,
                                                       subset_labels_filename)
-                sample_name = get_deepsea_sample_name(sample)
-                tf_name = get_deepsea_tf_name(tf_id)
                 start_time = time.time()
-                scores = score_seq_with_deepbind_model(tf_name, subset_fasta_filename,
+                scores = score_seq_with_deepbind_model(tf_id, sample,
+                                                       subset_fasta_filename,
                                                        output_directory)
                 end_time = time.time()
                 os.chdir(cwd) # cd back
                 print 'num of sequences: ', len(scores)
                 print 'time per sequence scoring: ', 1.*(end_time-start_time)/len(scores)
-                break
-                probabilities = get_probabilites_from_scores(scores)
-                result = evaluate_predictions(probabilities,
+                result = evaluate_predictions(scores,
                                               subset_validation_data.labels)
                 print 'result: '
                 print result
