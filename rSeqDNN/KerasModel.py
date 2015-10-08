@@ -79,7 +79,8 @@ class KerasModelBase():
         self.model = Sequential()
         self.model.add(Convolution2D(
             numConv, convStack, 
-            convWidth, convHeight, activation="relu", init="he_normal"))
+            convWidth, convHeight, 
+            activation="linear", init="he_normal"))
         self.model.add(MaxPooling2D(poolsize=(1,maxPoolSize),
                                     stride=(1,maxPoolStride)))
         self.model.add(Reshape(numConv,numMaxPoolOutputs))
