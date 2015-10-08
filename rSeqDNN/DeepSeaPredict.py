@@ -140,13 +140,15 @@ def normalize_deepsea_scores(scores, tf_id, sample):
     normalizes raw deepsea scores based on formula provided in
     http://deepsea.princeton.edu/help/
     '''
-    tf_name = get_deepsea_tf_name(tf_id) # get deepsea tf name                                                                                                                                                                                               
+    tf_name = get_deepsea_tf_name(tf_id) # get deepsea tf name
     sample_name = get_deepsea_sample_name(sample) # get deepsea sample name
-    full_table = np.loadtxt('./posproportion.txt', skiprows=1, delimiter='\t', dtype='str')
+    full_table = np.loadtxt(
+        './posproportion.txt', skiprows=1, delimiter='\t', dtype='str')
     matching_sample_indices = full_table[:, 1] == sample_name
     matching_sample_table =  full_table[matching_sample_indices, :]
     matching_sample_tf_indices = matching_sample_table[:, 2] == tf_name
-    matching_sample_tf_table = matching_sample_table[matching_sample_tf_indices, :]
+    matching_sample_tf_table = matching_sample_table[
+        matching_sample_tf_indices, :]
     c_train = float(matching_sample_tf_table[0, -1]) # default to first match
     # evaluate 1/(1+exp(-( log(P/(1-P))+log(5%/(1-5%))-log(c_train/(1-c_train ))) ))
     normalized_scores = 1/(1+np.exp(-(np.log(np.divide(scores, 1-scores))+log(0.05/0.95)-log(c_train/(1.-c_train))))) 
@@ -154,7 +156,7 @@ def normalize_deepsea_scores(scores, tf_id, sample):
     return normalized_scores
 
 def evaluate_predictions(probs, y_validation):
-    '''                                                                                                                                                            
+    '''
     '''
     preds = np.asarray(probs > 0.5, dtype='int')
     true_pos = y_validation == 1
@@ -175,9 +177,12 @@ def evaluate_predictions(probs, y_validation):
 def download_and_fix_deepsea():
     if not os.path.exists("./DeepSEA-v0.93/rundeepsea_fixed.py"):
         # download deepsea
-        if not os.path.exists("./download_deepsea.sh"):
+        download_deepsea_script = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "./download_deepsea.sh"))
+        if not os.path.exists(download_deepsea_script):
             raise ValueError('download_deepsea.sh is missing! exiting!')
-        process = subprocess.Popen('bash ./download_deepsea.sh', shell=True)
+        process = subprocess.Popen(
+            'bash %s' % download_deepsea_script, shell=True)
         process.wait() # wait for it to finish
         deepsea_lines = open('./DeepSEA-v0.93/rundeepsea.py', 'r').readlines()
         with open('./DeepSEA-v0.93/rundeepsea_fixed.py', 'w') as wf:
