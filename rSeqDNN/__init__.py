@@ -3,6 +3,26 @@ import argparse
 from pysam import FastaFile
 from pyTFbindtools.peaks import getFileHandle
 
+def evaluate_predictions(probs, y_validation):
+    '''Evaluate the quality of deep bind predictions.
+    '''
+    preds = np.asarray(probs > 0.5, dtype='int')
+    true_pos = y_validation == 1
+    true_neg = y_validation == 0
+    precision, recall, _ = precision_recall_curve(y_validation, probs)
+    prc = np.array([recall,precision])
+    auPRC = auc(recall, precision)
+    auROC = roc_auc_score(y_validation, probs)
+    classification_result = ClassificationResult(
+        None, None, None, None, None, None,
+        auROC, auPRC,
+        np.sum(preds[true_pos] == 1), np.sum(true_pos),
+        np.sum(preds[true_neg] == 0), np.sum(true_neg)
+    )
+
+    return classification_result
+
+
 def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
         description=description)
@@ -18,8 +38,8 @@ def init_prediction_script_argument_parser(description):
     parser.add_argument('--neg-regions', type=getFileHandle,
                         help='regions with negative labels')
 
-    parser.add_argument('--half-peak-width', type=int, default=400,
-                        help='half peak width about summits for training')
+    parser.add_argument('-t', '--threads', type=int, default=1,
+                        help='Number of threads to use')
 
     parser.add_argument( '--max-num-peaks-per-sample', type=int, 
         help='the maximum number of peaks to parse for each sample (used for debugging)')

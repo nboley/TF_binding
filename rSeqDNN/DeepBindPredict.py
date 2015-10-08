@@ -20,8 +20,12 @@ from pyTFbindtools.peaks import (
     PeaksAndLabelsThreadSafeIterator
 )
 
+from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
+
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
+
+
 
 def get_deepbind_model_id(tf_id):
     if tf_id=='T014210_1.02': # MYC
@@ -40,24 +44,6 @@ def get_probability_from_score(score):
     '''    
     return 1. / (1. + np.exp(-1.*score))
 
-def evaluate_predictions(probs, y_validation):
-    '''Evaluate the quality of deep bind predictions.
-    '''
-    preds = np.asarray(probs > 0.5, dtype='int')
-    true_pos = y_validation == 1
-    true_neg = y_validation == 0
-    precision, recall, _ = precision_recall_curve(y_validation, probs)
-    prc = np.array([recall,precision])
-    auPRC = auc(recall, precision)
-    auROC = roc_auc_score(y_validation, probs)
-    classification_result = ClassificationResult(
-        None, None, None, None, None, None,
-        auROC, auPRC,
-        np.sum(preds[true_pos] == 1), np.sum(true_pos),
-        np.sum(preds[true_neg] == 0), np.sum(true_neg)
-    )
-
-    return classification_result
 
 def load_predictions(fname):
     peaks = []
@@ -114,26 +100,11 @@ def score_regions_with_deepbind(
     return
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description='main script for testing rSeqDNN')
-    parser.add_argument('--genome-fasta', type=FastaFile, required=True,
-                        help='genome file to get sequences')
+    parser = init_prediction_script_argument_parser(
+        'main script for testing rSeqDNN')
 
-    parser.add_argument('--tf-id', required=True,
-                        help='TF to build model on')
-
-    parser.add_argument('--pos-regions', type=getFileHandle,
-                        help='regions with positive label')
-    parser.add_argument('--neg-regions', type=getFileHandle,
-                        help='regions with negative labels')
     parser.add_argument('--half-peak-width', type=int, default=400,
                         help='half peak width about summits for training')
-
-    parser.add_argument('-t', '--threads', type=int, default=1,
-                        help='Number of threads to use')
-
-    parser.add_argument( '--max-num-peaks-per-sample', type=int, 
-        help='the maximum number of peaks to parse for each sample (used for debugging)')
 
     args = parser.parse_args()
     
