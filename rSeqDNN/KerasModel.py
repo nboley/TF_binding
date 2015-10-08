@@ -63,7 +63,6 @@ class KerasModelBase():
         convStack = 1
         convWidth = 4
         convHeight = 45
-        dropoutRate = 0.2
         maxPoolSize = 20
         maxPoolStride = 20
         numConvOutputs = ((self.seq_len - convHeight) + 1)
@@ -81,7 +80,6 @@ class KerasModelBase():
         self.model.add(Convolution2D(
             numConv, convStack, 
             convWidth, convHeight, activation="relu", init="he_normal"))
-        self.model.add(Dropout(dropoutRate))
         self.model.add(MaxPooling2D(poolsize=(1,maxPoolSize),
                                     stride=(1,maxPoolStride)))
         self.model.add(Reshape(numConv,numMaxPoolOutputs))
