@@ -2,6 +2,8 @@ import os
 import gzip
 from collections import namedtuple
 from itertools import izip
+import random
+import cPickle as pickle
 
 import numpy as np
 
@@ -136,7 +138,9 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
     if isinstance(fp, str):
         raise ValueError, "Expecting filepointer"
 
-    for i, line in enumerate(fp):
+    all_lines = [line for line in fp]
+    random.shuffle(all_lines)
+    for i, line in enumerate(all_lines):
         if line.startswith("track"): continue
         if max_n_peaks != None and i > max_n_peaks: 
             break
@@ -202,34 +206,77 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
     return status
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-        tf_id, half_peak_width=None, max_n_peaks_per_sample=None):
+        tf_id, 
+        half_peak_width=None, 
+        max_n_peaks_per_sample=None,
+        skip_ambiguous_peaks=False):
     # put the import here to avoid errors if the database isn't available
-    from DB import load_chipseq_peak_and_matching_DNASE_files_from_db
-    peak_fnames = load_chipseq_peak_and_matching_DNASE_files_from_db(tf_id)    
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        tf_id)    
     for (sample_index, (sample_id, (sample_chipseq_peaks_fnames, dnase_peaks_fnames)
             )) in enumerate(peak_fnames.iteritems()):
         # for now, dont allow multiple set of DNASE peaks
         assert len(dnase_peaks_fnames) == 1
         dnase_peaks_fname = next(iter(dnase_peaks_fnames))
 
+        optimal_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
+            'optimal idr thresholded peaks']
+        if len(optimal_sample_chipseq_peaks_fnames) == 0:
+            continue
+        
+        noisy_sample_chipseq_peaks_fnames = []
+        for peaks_type, fnames in sample_chipseq_peaks_fnames.iteritems():
+            if peaks_type == 'optimal idr thresholded peaks': continue
+            noisy_sample_chipseq_peaks_fnames.extend(fnames)
+                
         print "Loading peaks for sample '%s' (%i/%i)" % (
             sample_id, sample_index, len(peak_fnames))
         with getFileHandle(dnase_peaks_fname) as fp:
-            pks_iter = iter_narrow_peaks(fp, max_n_peaks_per_sample)
+            pks_iter = iter_narrow_peaks(fp)
             if half_peak_width != None:
                 pks_iter = iter_summit_centered_peaks(pks_iter, half_peak_width)
+            num_peaks = 0
             for i, pk in enumerate(pks_iter):
-                label = classify_chipseq_peak(sample_chipseq_peaks_fnames, pk)
+                label = classify_chipseq_peak(
+                    optimal_sample_chipseq_peaks_fnames, pk)
                 # merge labels
                 label = max(label)
+                if skip_ambiguous_peaks and label == 0:
+                    noisy_label = classify_chipseq_peak(
+                        noisy_sample_chipseq_peaks_fnames, pk)
+                    if max(noisy_label) == 1:
+                        continue
                 yield PeakAndLabel(pk, sample_id, label)
+                num_peaks += 1
+                if ( max_n_peaks_per_sample is not None 
+                     and num_peaks >= max_n_peaks_per_sample): 
+                    break
     return
 
 def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-        tf_id, half_peak_width=None, max_n_peaks_per_sample=None):
+        tf_id, 
+        half_peak_width=None, 
+        max_n_peaks_per_sample=None,
+        skip_ambiguous_peaks=False):
     """
     
     """
-    return PeaksAndLabels(
+    # check for a pickled file int he current directory
+    pickle_fname = "peaks_and_label.%s.%s.%s.%s.obj" % (
+        tf_id, half_peak_width, max_n_peaks_per_sample, skip_ambiguous_peaks)
+    try:
+        with open(pickle_fname) as fp:
+            print "Using pickled peaks_and_labels from '%s'." % pickle_fname 
+            return pickle.load(fp)
+    except IOError:
+        pass
+    peaks_and_labels = PeaksAndLabels(
         iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-            tf_id, half_peak_width, max_n_peaks_per_sample))
+            tf_id, 
+            half_peak_width, 
+            max_n_peaks_per_sample, 
+            skip_ambiguous_peaks))
+    with open(pickle_fname, "w") as ofp:
+        pickle.dump(peaks_and_labels, ofp)
+    return peaks_and_labels

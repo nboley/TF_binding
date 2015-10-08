@@ -102,10 +102,6 @@ def score_regions_with_deepbind(
 def parse_args():
     parser = init_prediction_script_argument_parser(
         'main script for testing rSeqDNN')
-
-    parser.add_argument('--half-peak-width', type=int, default=400,
-                        help='half peak width about summits for training')
-
     args = parser.parse_args()
     
     if args.tf_id != None:

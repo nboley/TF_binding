@@ -38,6 +38,12 @@ def init_prediction_script_argument_parser(description):
     parser.add_argument('--neg-regions', type=getFileHandle,
                         help='regions with negative labels')
 
+    parser.add_argument('--half-peak-width', type=int, default=500,
+                        help='half peak width about summits for training')
+    parser.add_argument( '--skip-ambiguous-peaks', 
+        default=False, action='store_true', 
+        help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
+
     parser.add_argument('-t', '--threads', type=int, default=1,
                         help='Number of threads to use')
 

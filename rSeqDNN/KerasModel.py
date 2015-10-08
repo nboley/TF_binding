@@ -15,6 +15,30 @@ from keras.models import model_from_yaml
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
 
+import theano.tensor as T
+
+def expected_F1_loss(y_true, y_pred):
+    expected_true_positives = T.sum(y_pred*y_true)
+    expected_false_positives = T.sum(y_pred*(1-y_true))
+    expected_false_negatives = T.sum((1-y_pred)*y_true)
+
+    precision = expected_true_positives/(
+        expected_true_positives + expected_false_positives + 1.0)
+    recall = expected_true_positives/(
+        expected_true_positives + expected_false_negatives + 1.0)
+
+    return -2*precision*recall/(precision + recall + 1.0)
+
+def balance_matrices(X, labels):
+    pos_full = X[(labels == 1)]
+    neg_full = X[(labels == 0)]
+    sample_size = min(pos_full.shape[0], neg_full.shape[0])
+    pos = pos_full[
+        np.random.choice(pos_full.shape[0], sample_size, replace=False)]
+    neg = neg_full[
+        np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+    return np.vstack((pos, neg)), np.array([1]*sample_size + [0]*sample_size)
+
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
@@ -23,6 +47,8 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
     data = 0.25 * np.ones((len(peaks), 4, pk_width))
     for i, pk in enumerate(peaks):
         seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+        # skip sequences overrunning the contig boundary
+        if len(seq) != pk_width: continue
         coded_seq = code_seq(seq)
         data[i] = coded_seq[0:4,:]
     return data
@@ -30,7 +56,7 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
 def load_model(fname):
     pass
 
-class KerasModel():
+class KerasModelBase():
     def __init__(self, peaks_and_labels):
         self.seq_len = peaks_and_labels.max_peak_width
         numConv = 30
@@ -67,22 +93,26 @@ class KerasModel():
         self.model.add(Dense(numFCNodes*numMaxPoolOutputs,
                              numOutputNodes,
                              activation='sigmoid'))
-        optimizer = Adam(lr=0.001,beta_1=0.9, beta_2=0.999, epsilon=1e-8)
-        self.model.compile(loss='binary_crossentropy', 
-                           optimizer=optimizer,
-                           class_mode="binary");
-    
-    def get_features(self, coded_seqs):
-        '''gets keras-formmated features and labels from data
-        '''
 
-        return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
-        
-    def evaluate_rSeqDNN_model(self, X_validation, y_validation):
+    def compile(self, loss, optimizer, class_mode="binary"):
+        print("Conpiling model (%s, %s, %s)" % (loss, optimizer, class_mode))
+        self.model.compile(loss=loss, 
+                           optimizer=optimizer,
+                           class_mode=class_mode);
+
+    def _reshape_coded_seqs_array(self, coded_seqs):
+        '''Reshape coded seqs into Keras acceptible format.
+        '''
+        if len(np.shape(coded_seqs)) == 3:
+            return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
+        else:
+            return coded_seqs
+            
+    def evaluate(self, X_validation, y_validation):
         '''evaluate model
         '''
         if len(np.shape(X_validation)) == 3: # reshape to 4D if 3D
-            X_validation = self.get_features(X_validation)
+            X_validation = self._reshape_coded_seqs_array(X_validation)
         preds = self.model.predict_classes(X_validation)
         probs = self.model.predict_proba(X_validation)
         true_pos = y_validation == 1
@@ -99,40 +129,63 @@ class KerasModel():
         )
 
         return classification_result
-    
+
+class KerasModel(KerasModelBase):
     def train_rSeqDNN_model(self,
                             data,
                             genome_fasta,
                             out_filename_prefix,
                             numEpochs=5):
+        batch_size = 200
+
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        X_validation = self.get_features(
+        X_validation = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
                         data_stopping.peaks, genome_fasta))
         y_validation = data_stopping.labels
-        X_train = self.get_features(
+        X_train = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
                         data_fitting.peaks, genome_fasta))
         y_train = data_fitting.labels
-        weights = {len(y_train)/(len(y_train)-y_train.sum()), len(y_train)/y_train.sum()}
-        batch_size = 1500
-        # fit the model
-        bestBalancedAcc = 0
-        print("Training...")
+        weights = {len(y_train)/(len(y_train)-y_train.sum()), 
+                   len(y_train)/y_train.sum()}
+
+        b_X_validation, b_y_validation = balance_matrices(
+            X_validation, y_validation)
+        b_X_train, b_y_train = balance_matrices(X_train, y_train)
+
+
+
+        
+        print("Initializing model from balanced training set.")
+        self.compile('binary_crossentropy', Adam())
+        self.model.fit(
+                b_X_train, b_y_train,
+                validation_data=(b_X_validation, b_y_validation),
+                show_accuracy=True,
+                class_weight={1.0, 1.0},
+                batch_size=batch_size,
+                nb_epoch=3)
+        print self.evaluate(b_X_validation, b_y_validation)
+        
+        print("Fitting the model with unbalanced training set.")
+        best_auPRC = 0
+        self.compile(expected_F1_loss, Adam()) # expected_F1_loss
         for epoch in xrange(numEpochs):
-            self.model.fit(X_train, y_train,
-                      validation_data=(X_validation, y_validation),
-                      show_accuracy=True,
-                      class_weight=weights,
-                      batch_size=batch_size,
-                      nb_epoch=1)
-            res = self.evaluate_rSeqDNN_model(X_validation, y_validation)
+            self.model.fit(
+                X_train, y_train,
+                validation_data=(X_validation, y_validation),
+                show_accuracy=True,
+                class_weight=weights,
+                batch_size=batch_size,
+                nb_epoch=1)
+            res = self.evaluate(X_validation, y_validation)
             print res
-            if (res.balanced_accuracy > bestBalancedAcc):
-                print("highest balanced accuracy so far. Saving weights.")
+            if (res.auPRC > best_auPRC):
+                print("highest auPRC accuracy so far. Saving weights.")
                 self.model.save_weights(out_filename_prefix,
                                         overwrite=True)
-                bestBalancedAcc = res.balanced_accuracy
+                best_auPRC = res.auPRC
 
         return self

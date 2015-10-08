@@ -249,7 +249,7 @@ def encode_chipseq_exp_is_in_db(exp_id):
         return True
     return False
 
-def load_chipseq_peak_and_matching_DNASE_files_from_db(tfid):
+def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
     cur = conn.cursor()    
     query = """
     SELECT roadmap_sample_id,
@@ -262,6 +262,24 @@ def load_chipseq_peak_and_matching_DNASE_files_from_db(tfid):
     cur.execute(query, [tfid,])
     for sample_id, dnase_peak_fname, chipseq_peak_fname in cur.fetchall():
         rv[sample_id][0].add(chipseq_peak_fname)
+        rv[sample_id][1].add(dnase_peak_fname)
+    return rv
+
+def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
+    cur = conn.cursor()    
+    query = """
+    SELECT roadmap_sample_id,
+           dnase_peak_fname,
+           chipseq_peak_type,
+           chipseq_peak_fname
+      FROM all_roadmap_matched_chipseq_experiments
+     WHERE tf_id = %s;
+    """
+    rv = defaultdict(lambda: (defaultdict(set), set()))
+    cur.execute(query, [tfid,])
+    for ( sample_id, dnase_peak_fname, chipseq_peak_type, chipseq_peak_fname
+           ) in cur.fetchall():
+        rv[sample_id][0][chipseq_peak_type].add(chipseq_peak_fname)
         rv[sample_id][1].add(dnase_peak_fname)
     return rv
 

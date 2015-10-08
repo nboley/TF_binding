@@ -6,7 +6,6 @@ import tempfile
 import time  
 import multiprocessing
 from math import log
-from distutils.util import strtobool
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
@@ -216,15 +215,13 @@ def download_and_fix_deepsea():
 def parse_args():
     parser = init_prediction_script_argument_parser(
         'main script for testing rSeqDNN')
-    parser.add_argument('--half-peak-width', type=int, default=500,
-                        help='half peak width about summits for training')
 
     parser.add_argument('--output-fasta-filename-prefix', required=True,
                         help='prefix for fasta files with test sequences')
     parser.add_argument('--output-directory', required=True,
                         help='output directory for deepsea results')
-    parser.add_argument('--normalize', type=strtobool, default=True,
-                        help='normalize deepsea scores')
+    parser.add_argument('--dont-normalize', default=True, action='store_false',
+                        help='do not normalize deepsea scores')
 
     args = parser.parse_args()
     
