@@ -3,9 +3,9 @@ import argparse
 import numpy as np
 import subprocess
 import tempfile
-import time
+import time  
+import multiprocessing
 from math import log
-from distutils.util import strtobool
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
@@ -20,8 +20,12 @@ from pyTFbindtools.peaks import (
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
 
+from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
 
-def encode_peaks_sequence_into_fasta_file(validation_data, fasta, fasta_ofname, labels_ofname):
+from grit.lib.multiprocessing_utils import fork_and_wait
+
+def encode_peaks_sequence_into_fasta_file(
+        validation_data, fasta, fasta_ofname, labels_ofname):
     '''writes data peaks sequence into file and saves labels
     '''
     np.savetxt(labels_ofname, validation_data.labels)
@@ -33,6 +37,10 @@ def encode_peaks_sequence_into_fasta_file(validation_data, fasta, fasta_ofname, 
     with open(fasta_ofname, 'w') as wf:
         for i, pk in enumerate(peaks):
             seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+            # if the sequence is not hte same size as the peak,
+            # it must run off the chromosome so skip it
+            if len(seq) != pk.pk_width: 
+                continue
             wf.write('>'+str(i)+'\n')
             wf.write(seq+'\n')
 
@@ -70,7 +78,8 @@ def get_deepsea_sample_name(sample):
     elif sample=='E129':
         return 'Osteoblasts'
     else:
-        raise ValueError('this sample is not supported for DeepSea predictions!')
+        raise ValueError(
+            'this sample is not supported for DeepSea predictions!')
 
 def get_deepsea_tf_name(tf_id):
     if tf_id=='T014210_1.02': # MYC
@@ -98,17 +107,19 @@ def get_scores_from_deepsea_output(read_lines, tf_id, sample):
     tf_name = get_deepsea_tf_name(tf_id) # get deepsea tf name
     sample_name = get_deepsea_sample_name(sample) # get deepsea sample name
     # parse deepsea header and find task with matching tf and sample name
-    columns = [int(i) for i, h in enumerate(header_list) if sample_name==h.split('|')[0].strip() and tf_name==h.split('|')[1]]
+    columns = [ int(i) for i, h in enumerate(header_list) 
+                if sample_name==h.split('|')[0].strip() 
+                and tf_name==h.split('|')[1] ]
     if len(columns) > 1: # notify user if there's more than one match
         print 'found more than matching task for', tf_name, sample_name
         for column in columns:
             print header_list[column]
-    scores = np.asarray(read_array[:, columns[0]],
-                        dtype='float') # default to first match
+    # default to first match
+    scores = np.asarray(read_array[:, columns[0]], dtype='float')
     
     return scores
 
-def score_seq_with_deepbind_model(tf_id, sample, input_fasta, output_dir):
+def score_seq_with_deepsea_model(tf_id, sample, input_fasta, output_dir):
     '''scores sequences and returns arrays with scores
     TODO: check rundeepsea.py is in PATH
     '''
@@ -128,95 +139,89 @@ def score_seq_with_deepbind_model(tf_id, sample, input_fasta, output_dir):
                                             sample)
    
     return scores
-    
-def get_probabilites_from_scores(scores):
-    '''pass scores through sigmoid
-    '''
-    
-    return 1. / (1. + np.exp(-1.*scores))
 
 def normalize_deepsea_scores(scores, tf_id, sample):
     '''
     normalizes raw deepsea scores based on formula provided in
     http://deepsea.princeton.edu/help/
     '''
-    tf_name = get_deepsea_tf_name(tf_id) # get deepsea tf name
-    sample_name = get_deepsea_sample_name(sample) # get deepsea sample name
+    tf_name = get_deepsea_tf_name(tf_id)
+    sample_name = get_deepsea_sample_name(sample)
+    # deepsea score normalization table
+    # XXX maybe rename this file to something more descriptive
     full_table = np.loadtxt(
         './posproportion.txt', skiprows=1, delimiter='\t', dtype='str')
-    matching_sample_indices = full_table[:, 1] == sample_name
-    matching_sample_table =  full_table[matching_sample_indices, :]
-    matching_sample_tf_indices = matching_sample_table[:, 2] == tf_name
+    matching_sample_indices = (full_table[:, 1] == sample_name)
+    matching_sample_table = full_table[matching_sample_indices, :]
+    matching_sample_tf_indices = (matching_sample_table[:, 2] == tf_name)
     matching_sample_tf_table = matching_sample_table[
         matching_sample_tf_indices, :]
-    c_train = float(matching_sample_tf_table[0, -1]) # default to first match
+    # default to first match
+    # XXX print out a warning if there's more than 1 match
+    c_train = float(matching_sample_tf_table[0, -1]) 
+    ## Formula is taken from the deepsea website (
+    ##     http://deepsea.princeton.edu/help/ bullet point 6) 
     # evaluate 1/(1+exp(-( log(P/(1-P))+log(5%/(1-5%))-log(c_train/(1-c_train ))) ))
-    normalized_scores = 1/(1+np.exp(-(np.log(np.divide(scores, 1-scores))+log(0.05/0.95)-log(c_train/(1.-c_train))))) 
+    # normalize by the percent positives in the training set (?) says the website....
+    alpha = 0.05
+    normalized_scores = 1/(1+np.exp(-(np.log(np.divide(scores, 1-scores))
+                                      +log(alpha/(1-alpha))
+                                      -log(c_train/(1.-c_train))
+                                   ))) 
     
     return normalized_scores
 
-def evaluate_predictions(probs, y_validation):
-    '''
-    '''
-    preds = np.asarray(probs > 0.5, dtype='int')
-    true_pos = y_validation == 1
-    true_neg = y_validation == 0
-    precision, recall, _ = precision_recall_curve(y_validation, probs)
-    prc = np.array([recall,precision])
-    auPRC = auc(recall, precision)
-    auROC = roc_auc_score(y_validation, probs)
-    classification_result = ClassificationResult(
-        None, None, None, None, None, None,
-        auROC, auPRC,
-        np.sum(preds[true_pos] == 1), np.sum(true_pos),
-        np.sum(preds[true_neg] == 0), np.sum(true_neg)
-    )
-
-    return classification_result
-
 def download_and_fix_deepsea():
-    if not os.path.exists("./DeepSEA-v0.93/rundeepsea_fixed.py"):
-        # download deepsea
-        download_deepsea_script = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "./download_deepsea.sh"))
+    BASE_PATH = os.path.abspath(os.path.dirname(__file__))
+    DEEPSEA_PATH = os.path.join(BASE_PATH, "./DeepSEA-v0.93/")
+    deepsea_script = os.path.join(
+        DEEPSEA_PATH, "rundeepsea_fixed.py")
+    patched_deepsea_script = os.path.join(
+        DEEPSEA_PATH, "rundeepsea.py")
+    download_deepsea_script = os.path.join(
+        BASE_PATH, "./download_deepsea.sh")
+    # If we've already done this, then continue
+    if os.path.exists(patched_deepsea_script):
+        return
+
+    initial_wd = os.getcwd()
+
+    # download deepsea
+    if not os.path.exists(download_deepsea_script):
+        os.chdir(BASE_PATH) # cd to run deepsea
         if not os.path.exists(download_deepsea_script):
             raise ValueError('download_deepsea.sh is missing! exiting!')
         process = subprocess.Popen(
             'bash %s' % download_deepsea_script, shell=True)
-        process.wait() # wait for it to finish
-        deepsea_lines = open('./DeepSEA-v0.93/rundeepsea.py', 'r').readlines()
-        with open('./DeepSEA-v0.93/rundeepsea_fixed.py', 'w') as wf:
-            wf.write('#!/usr/bin/env python') # modify 
-            for line in deepsea_lines[:16]:
-                wf.write(line)
-            # fix their bug
-            wf.write("outfilename = outdir + infilename.split(\'/\')[-1]+\'.out\'")
-            for line in deepsea_lines[16:]:
-                wf.write(line)
+        process.wait() 
+
+    ## XXX In the future use the UNIX patch command
+    os.chdir(DEEPSEA_PATH) # cd to run deepsea    
+    with open(deepsea_script, 'r') as fp:
+        deepsea_lines = fp.readlines()
+    with open(patched_deepsea_script, 'w') as wf:
+        wf.write('#!/usr/bin/env python') # modify 
+        for line in deepsea_lines[:16]:
+            wf.write(line)
+        # fix their bug
+        wf.write("outfilename = outdir + infilename.split(\'/\')[-1]+\'.out\'")
+        for line in deepsea_lines[16:]:
+            wf.write(line)
+    
+    os.chdir(initial_wd)
+    
+    return
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description='main script for testing rSeqDNN')
-    parser.add_argument('--genome-fasta', type=FastaFile, required=True,
-                        help='genome file to get sequences')
+    parser = init_prediction_script_argument_parser(
+        'main script for testing rSeqDNN')
 
-    parser.add_argument('--tf-id', required=True,
-                        help='TF to build model on')
-
-    parser.add_argument('--pos-regions', type=getFileHandle,
-                        help='regions with positive label')
-    parser.add_argument('--neg-regions', type=getFileHandle,
-                        help='regions with negative labels')
     parser.add_argument('--output-fasta-filename-prefix', required=True,
                         help='prefix for fasta files with test sequences')
-    parser.add_argument('--half-peak-width', type=int, default=500,
-                        help='half peak width about summits for training')
     parser.add_argument('--output-directory', required=True,
                         help='output directory for deepsea results')
-    parser.add_argument('--normalize', type=strtobool, default=True,
-                        help='normalize deepsea scores')
-    parser.add_argument( '--max-num-peaks-per-sample', type=int, 
-        help='the maximum number of peaks to parse for each sample (used for debugging)')
+    parser.add_argument('--dont-normalize', default=True, action='store_false',
+                        help='do not normalize deepsea scores')
 
     args = parser.parse_args()
     
@@ -231,47 +236,93 @@ def parse_args():
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
     
-    return peaks_and_labels, args.genome_fasta, args.output_fasta_filename_prefix, args.tf_id, args.output_directory, args.normalize
+    return ( peaks_and_labels, 
+             args.genome_fasta, 
+             args.output_fasta_filename_prefix, 
+             args.tf_id, 
+             args.output_directory, 
+             args.normalize,
+             args.threads)
+
+def run_deepsea(input_list):
+    '''
+    runs all functions
+    '''
+    ( validation_data, 
+      sample, 
+      contig, 
+      normalize, 
+      fasta_filename_prefix, 
+      genome_fasta_fname, 
+      tf_id, 
+      output_directory ) = input_list
+    genome_fasta = FastaFile(genome_fasta_fname)
+    
+    initial_wd = os.getcwd()
+    os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
+    # name fasta file, has to end with .fasta for deepsea to read it - facepalm.
+    subset_fasta_filename = "%s_%s_%s.fasta" % (
+        fasta_filename_prefix, sample, contig)
+    print subset_fasta_filename
+    
+    subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
+    subset_validation_data = validation_data.subset_data([sample], [contig])
+    encode_peaks_sequence_into_fasta_file(
+        subset_validation_data,
+        genome_fasta,
+        subset_fasta_filename,
+        subset_labels_filename)
+    
+    start_time = time.time()
+    scores = score_seq_with_deepsea_model(
+        tf_id, sample, subset_fasta_filename, output_directory)
+    end_time = time.time()
+    
+    os.chdir(initial_wd)
+    if normalize:
+        print 'normalizing scores...'
+        scores = normalize_deepsea_scores(scores, tf_id, sample)
+        print 'num of sequences: ', len(scores)
+        print 'time per sequence scoring: ', float(
+            end_time-start_time)/len(scores)
+    
+    result = evaluate_predictions(
+        scores, subset_validation_data.labels)
+    
+    return result
+
 
 def main():
     download_and_fix_deepsea()
-    peaks_and_labels, genome_fasta, fasta_filename_prefix, tf_id, output_directory, normalize = parse_args()
-    results = ClassificationResults()
-    cwd = os.getcwd()
-    os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
-    for train, valid in peaks_and_labels.iter_train_validation_subsets():
-        print 'writing sequences and labels to files..'
+    ( peaks_and_labels, 
+      genome_fasta, 
+      fasta_filename_prefix, 
+      tf_id, 
+      output_directory, 
+      normalize,
+      num_threads ) = parse_args()
+    inputs = []
+    for count, (train, valid) in enumerate(
+            peaks_and_labels.iter_train_validation_subsets()):        
         for sample in valid.sample_ids:
             for contig in valid.contigs:
-                # name fasta file, has to end with .fasta for deepsea to read it - facepalm.
-                subset_fasta_filename = '_'.join([fasta_filename_prefix, sample, contig]) + '.fasta'
-                print subset_fasta_filename
-                subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-                subset_validation_data = valid.subset_data([sample], [contig])
-                encode_peaks_sequence_into_fasta_file(subset_validation_data,
-                                                      genome_fasta,
-                                                      subset_fasta_filename,
-                                                      subset_labels_filename)
-                start_time = time.time()
-                scores = score_seq_with_deepbind_model(tf_id, sample,
-                                                       subset_fasta_filename,
-                                                       output_directory)
-                end_time = time.time()
-                os.chdir(cwd) # cd back
-                if normalize:
-                    print 'normalizing scores...'
-                    scores = normalize_deepsea_scores(scores, tf_id, sample)
-                print 'num of sequences: ', len(scores)
-                print 'time per sequence scoring: ', 1.*(end_time-start_time)/len(scores)
-                result = evaluate_predictions(scores,
-                                              subset_validation_data.labels)
-                print 'result: '
-                print result
-                break
-            break
-        print 'done!'
+                inputs.append([valid, 
+                               sample, 
+                               contig, 
+                               normalize,
+                               fasta_filename_prefix, 
+                               genome_fasta.filename,
+                               tf_id, 
+                               output_directory])
         break
 
+    for args in inputs:
+        run_deepsea(args)
 
+    print 'printing results from all cv runs...'
+    for i, result in enumerate(results):
+        print 'sample and contig: ', inputs[i][1], inputs[i][2]
+        print result
+   
 if __name__ == '__main__':
     main()
