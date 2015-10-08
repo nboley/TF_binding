@@ -18,6 +18,10 @@ def parse_args():
         'main script for estimating rSeqDNN accuracy via cross validation')
     parser.add_argument('--model-prefix', default='trainedmodel',
         help='Trained models will be written to (model_prefix).foldnum.h5"')
+    parser.add_argument('--only-test-one-fold', 
+                        default=False, action='store_true',
+        help='Only evaluate on a single cross validation fold.')
+
     args = parser.parse_args()
     
     if args.tf_id != None:
@@ -34,12 +38,16 @@ def parse_args():
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
     
-    return peaks_and_labels, args.genome_fasta, args.model_prefix
+    return ( peaks_and_labels, 
+             args.genome_fasta, 
+             args.model_prefix, 
+             args.only_test_one_fold )
 
 import cPickle as pickle
 
 def main():
-    peaks_and_labels, genome_fasta, model_ofname_prefix = parse_args()
+    ( peaks_and_labels, genome_fasta, model_ofname_prefix, only_test_one_fold
+    ) = parse_args()
     model = KerasModel(peaks_and_labels)
     results = ClassificationResults()
     for fold_index, (train, valid) in enumerate(
@@ -52,7 +60,8 @@ def main():
             encode_peaks_sequence_into_binary_array(
                 valid.peaks, genome_fasta), valid.labels))
         print results[-1]
-        #break
+        if only_test_one_fold: break
+    
     print 'Printing cross validation results:'
     for res in results:
         print res
