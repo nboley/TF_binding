@@ -7,7 +7,6 @@ import time
 import multiprocessing
 from math import log
 from distutils.util import strtobool
-from joblib import Parallel, delayed  
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
@@ -22,7 +21,9 @@ from pyTFbindtools.peaks import (
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
 
-from rSeqDNN import evaluate_predictions
+from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
+
+from grit.lib.multiprocessing_utils import fork_and_wait
 
 def encode_peaks_sequence_into_fasta_file(
         validation_data, fasta, fasta_ofname, labels_ofname):
@@ -172,25 +173,31 @@ def normalize_deepsea_scores(scores, tf_id, sample):
     return normalized_scores
 
 def download_and_fix_deepsea():
-    BASE_PATH = os.path.abspath(os.path.dirname(__file__)))
+    BASE_PATH = os.path.abspath(os.path.dirname(__file__))
+    DEEPSEA_PATH = os.path.join(BASE_PATH, "./DeepSEA-v0.93/")
     deepsea_script = os.path.join(
-        BASE_PATH, "./DeepSEA-v0.93/rundeepsea_fixed.py")
+        DEEPSEA_PATH, "rundeepsea_fixed.py")
     patched_deepsea_script = os.path.join(
-        BASE_PATH, "./DeepSEA-v0.93/rundeepsea.py")
+        DEEPSEA_PATH, "rundeepsea.py")
+    download_deepsea_script = os.path.join(
+        BASE_PATH, "./download_deepsea.sh")
     # If we've already done this, then continue
     if os.path.exists(patched_deepsea_script):
         return
-    
+
+    initial_wd = os.getcwd()
+
     # download deepsea
-    download_deepsea_script = os.path.join(
-        BASE_PATH, "./download_deepsea.sh")
     if not os.path.exists(download_deepsea_script):
-        raise ValueError('download_deepsea.sh is missing! exiting!')
-    process = subprocess.Popen(
-        'bash %s' % download_deepsea_script, shell=True)
-    process.wait() 
+        os.chdir(BASE_PATH) # cd to run deepsea
+        if not os.path.exists(download_deepsea_script):
+            raise ValueError('download_deepsea.sh is missing! exiting!')
+        process = subprocess.Popen(
+            'bash %s' % download_deepsea_script, shell=True)
+        process.wait() 
 
     ## XXX In the future use the UNIX patch command
+    os.chdir(DEEPSEA_PATH) # cd to run deepsea    
     with open(deepsea_script, 'r') as fp:
         deepsea_lines = fp.readlines()
     with open(patched_deepsea_script, 'w') as wf:
@@ -201,6 +208,9 @@ def download_and_fix_deepsea():
         wf.write("outfilename = outdir + infilename.split(\'/\')[-1]+\'.out\'")
         for line in deepsea_lines[16:]:
             wf.write(line)
+    
+    os.chdir(initial_wd)
+    
     return
 
 def parse_args():
@@ -246,9 +256,10 @@ def run_deepsea(input_list):
       contig, 
       normalize, 
       fasta_filename_prefix, 
-      genome_fasta, 
+      genome_fasta_fname, 
       tf_id, 
       output_directory ) = input_list
+    genome_fasta = FastaFile(genome_fasta_fname)
     
     initial_wd = os.getcwd()
     os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
@@ -258,12 +269,13 @@ def run_deepsea(input_list):
     print subset_fasta_filename
     
     subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-    subset_validation_data = valid.subset_data([sample], [contig])
-    encode_peaks_sequence_into_fasta_file(subset_validation_data,
-                                          genome_fasta,
-                                          subset_fasta_filename,
-                                          subset_labels_filename)
-
+    subset_validation_data = validation_data.subset_data([sample], [contig])
+    encode_peaks_sequence_into_fasta_file(
+        subset_validation_data,
+        genome_fasta,
+        subset_fasta_filename,
+        subset_labels_filename)
+    
     start_time = time.time()
     scores = score_seq_with_deepsea_model(
         tf_id, sample, subset_fasta_filename, output_directory)
@@ -297,15 +309,19 @@ def main():
             peaks_and_labels.iter_train_validation_subsets()):        
         for sample in valid.sample_ids:
             for contig in valid.contigs:
-                inputs.append([valid, sample, contig, normalize,
-                               fasta_filename_prefix, genome_fasta,
-                               tf_id, output_directory])
+                inputs.append([valid, 
+                               sample, 
+                               contig, 
+                               normalize,
+                               fasta_filename_prefix, 
+                               genome_fasta.filename,
+                               tf_id, 
+                               output_directory])
         break
-    
-    num_cores = multiprocessing.cpu_count()
-    print 'num_cores: ', num_cores
-    results = Parallel(n_jobs=num_cores)(delayed(run_deepsea)(input_list) 
-                                         for input_list in inputs)
+
+    for args in inputs:
+        run_deepsea(args)
+
     print 'printing results from all cv runs...'
     for i, result in enumerate(results):
         print 'sample and contig: ', inputs[i][1], inputs[i][2]
