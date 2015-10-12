@@ -16,7 +16,7 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'validation_chromosomes',
     'validation_samples', 
 
-    'auROC', 'auPRC', 
+    'auROC', 'auPRC', 'F1',
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
 
@@ -40,6 +40,7 @@ class ClassificationResult(ClassificationResultData):
         rv.append("Balanced Accuracy: %.3f" % self.balanced_accuracy )
         rv.append("auROC: %.3f" % self.auROC)
         rv.append("auPRC: %.3f" % self.auPRC)
+        rv.append("F1: %.3f" % self.F1)
         rv.append("Positive Accuracy: %.3f (%i/%i)" % (
             self.positive_accuracy, self.num_true_positives,self.num_positives))
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (

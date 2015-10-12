@@ -13,7 +13,7 @@ from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_yaml
 from sklearn.metrics import (
-    roc_auc_score, accuracy_score, precision_recall_curve, auc)
+    roc_auc_score, accuracy_score, precision_recall_curve, auc, f1_score)
 
 import theano.tensor as T
 
@@ -63,7 +63,6 @@ class KerasModelBase():
         convStack = 1
         convWidth = 4
         convHeight = 45
-        dropoutRate = 0.2
         maxPoolSize = 20
         maxPoolStride = 20
         numConvOutputs = ((self.seq_len - convHeight) + 1)
@@ -80,8 +79,8 @@ class KerasModelBase():
         self.model = Sequential()
         self.model.add(Convolution2D(
             numConv, convStack, 
-            convWidth, convHeight, activation="relu", init="he_normal"))
-        self.model.add(Dropout(dropoutRate))
+            convWidth, convHeight, 
+            activation="linear", init="he_normal"))
         self.model.add(MaxPooling2D(poolsize=(1,maxPoolSize),
                                     stride=(1,maxPoolStride)))
         self.model.add(Reshape(numConv,numMaxPoolOutputs))
@@ -121,9 +120,10 @@ class KerasModelBase():
         prc = np.array([recall,precision])
         auPRC = auc(recall, precision)
         auROC = roc_auc_score(y_validation, probs)
+        f1 = f1_score(y_validation, preds)
         classification_result = ClassificationResult(
             None, None, None, None, None, None,
-            auROC, auPRC, 
+            auROC, auPRC, f1,
             np.sum(preds[true_pos] == 1), np.sum(true_pos),
             np.sum(preds[true_neg] == 0), np.sum(true_neg)
         )
@@ -134,7 +134,7 @@ class KerasModel(KerasModelBase):
     def train_rSeqDNN_model(self,
                             data,
                             genome_fasta,
-                            out_filename_prefix,
+                            out_filename,
                             numEpochs=5):
         batch_size = 200
 
@@ -155,8 +155,6 @@ class KerasModel(KerasModelBase):
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)
 
-
-
         
         print("Initializing model from balanced training set.")
         self.compile('binary_crossentropy', Adam())
@@ -170,7 +168,7 @@ class KerasModel(KerasModelBase):
         print self.evaluate(b_X_validation, b_y_validation)
         
         print("Fitting the model with unbalanced training set.")
-        best_auPRC = 0
+        best_F1 = 0
         self.compile(expected_F1_loss, Adam()) # expected_F1_loss
         for epoch in xrange(numEpochs):
             self.model.fit(
@@ -182,10 +180,14 @@ class KerasModel(KerasModelBase):
                 nb_epoch=1)
             res = self.evaluate(X_validation, y_validation)
             print res
-            if (res.auPRC > best_auPRC):
+            if (res.F1 > best_F1):
                 print("highest auPRC accuracy so far. Saving weights.")
-                self.model.save_weights(out_filename_prefix,
+                self.model.save_weights(out_filename,
                                         overwrite=True)
-                best_auPRC = res.auPRC
+                best_F1 = res.F1
 
+        # load the best model
+        print "Loading best model"
+        self.model.load_weights(out_filename)
+        
         return self
