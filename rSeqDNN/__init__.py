@@ -27,16 +27,17 @@ def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
         description=description)
 
-    parser.add_argument('--genome-fasta', type=FastaFile, required=True,
-                        help='genome file to get sequences')
-
     parser.add_argument('--tf-id',
                         help='TF to build model on')
+    parser.add_argument('--annotation-id', type=int,
+        help='genome annotation to get peak sequence from (default: hg19)')
 
     parser.add_argument('--pos-regions', type=getFileHandle,
                         help='regions with positive label')
     parser.add_argument('--neg-regions', type=getFileHandle,
                         help='regions with negative labels')
+    parser.add_argument('--genome-fasta', type=FastaFile,
+                        help='genome file to get sequences')
 
     parser.add_argument('--half-peak-width', type=int, default=500,
                         help='half peak width about summits for training')

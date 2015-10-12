@@ -277,6 +277,7 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
     peaks_and_labels = PeaksAndLabels(
         iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             tf_id, 
+            annotation_id,
             half_peak_width, 
             max_n_peaks_per_sample, 
             skip_ambiguous_peaks))
