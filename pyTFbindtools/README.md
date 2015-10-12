@@ -1,6 +1,7 @@
-Random Documentation
+Code Snippets
+=============
 
-Accessing chromatin accessible regions with TF peak labels snippet
+<b>Accessing chromatin accessible regions with TF peak labels</b>
 
 The below will load an object that contains all roadmap chromatin accessible regions and CTCF binding labels (1 for bound, 0 for not). ctcf_peaks_and_labels is a PeaksAndLabels object and it has a couple useful functions. There's a caching layer on top that prevent the peaks from being labelled multiple times.  
 
