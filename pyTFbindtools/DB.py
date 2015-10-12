@@ -202,6 +202,18 @@ def sync_roadmap_DNASE_peak_files():
 # Get data from the local database
 #
 ################################################################################
+Genome = namedtuple('Genome', ['name', 'revision', 'species', 'filename'])
+def load_genome_metadata(annotation_id):
+    cur = conn.cursor()
+    query = """
+    SELECT name, revision, species, local_filename 
+      FROM genomes 
+     WHERE annotation_id=%i;"
+    """
+    cur.execute(query, (annotation_id))
+    res = cur.fetchall()
+    assert len(res) == 1
+    return Genome(*(res[0]))
 
 def find_cisbp_tfids(species, tf_name, uniprot_ids, ensemble_ids):
     cur = conn.cursor()
@@ -249,14 +261,16 @@ def encode_chipseq_exp_is_in_db(exp_id):
         return True
     return False
 
-def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
+def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(
+        tfid, annotation_id):
     cur = conn.cursor()    
     query = """
     SELECT roadmap_sample_id,
            dnase_peak_fname,
            chipseq_peak_fname
       FROM roadmap_matched_optimal_chipseq_peaks
-     WHERE tf_id = %s;
+     WHERE tf_id = %s
+       AND annotation_id = %s;
     """
     rv = defaultdict(lambda: (set(), set()))
     cur.execute(query, [tfid,])
@@ -265,7 +279,8 @@ def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
         rv[sample_id][1].add(dnase_peak_fname)
     return rv
 
-def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
+def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        tfid, annotation_id):
     cur = conn.cursor()    
     query = """
     SELECT roadmap_sample_id,
@@ -273,7 +288,8 @@ def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
            chipseq_peak_type,
            chipseq_peak_fname
       FROM roadmap_matched_chipseq_peaks
-     WHERE tf_id = %s;
+     WHERE tf_id = %s
+       AND annotation_id = %s;
     """
     rv = defaultdict(lambda: (defaultdict(set), set()))
     cur.execute(query, [tfid,])

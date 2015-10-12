@@ -207,15 +207,17 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         tf_id, 
+        annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
         skip_ambiguous_peaks=False):
     # put the import here to avoid errors if the database isn't available
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
-        tf_id)    
-    for (sample_index, (sample_id, (sample_chipseq_peaks_fnames, dnase_peaks_fnames)
-            )) in enumerate(peak_fnames.iteritems()):
+        tf_id, annotation_id)
+    for (sample_index, (sample_id, (
+            sample_chipseq_peaks_fnames, dnase_peaks_fnames)
+                )) in enumerate(peak_fnames.iteritems()):
         # for now, dont allow multiple set of DNASE peaks
         assert len(dnase_peaks_fnames) == 1
         dnase_peaks_fname = next(iter(dnase_peaks_fnames))
@@ -256,6 +258,7 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
 def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         tf_id, 
+        annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
         skip_ambiguous_peaks=False):
