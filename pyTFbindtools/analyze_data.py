@@ -15,7 +15,7 @@ import numpy as np
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import ( 
     AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier )
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
 
 from cross_validation import (
     ClassificationResult, ClassificationResults, iter_train_validation_splits )
@@ -139,6 +139,7 @@ def estimate_cross_validated_error(data, balance_data=False):
 
             roc_auc_score(validation.data[label], y_hat_prbs[:,1]),
             average_precision_score(validation.data[label], y_hat_prbs[:,1]),
+            f1_score(validation.data[label], y_hat),
 
             num_true_positives, positives.sum(),
             num_true_negatives, negatives.sum()
