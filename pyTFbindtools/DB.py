@@ -1,6 +1,6 @@
 import os
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 ################################################################################
 #
@@ -208,10 +208,14 @@ def load_genome_metadata(annotation_id):
     query = """
     SELECT name, revision, species, local_filename 
       FROM genomes 
-     WHERE annotation_id=%i;"
+     WHERE annotation_id=%s;
     """
-    cur.execute(query, (annotation_id))
+    cur.execute(query, [annotation_id,])
     res = cur.fetchall()
+    if len(res) == 0: 
+        raise ValueError, \
+            "No genome exists in the DB with annotation_id '%i' " \
+                % annotation_id
     assert len(res) == 1
     return Genome(*(res[0]))
 
@@ -273,7 +277,7 @@ def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(
        AND annotation_id = %s;
     """
     rv = defaultdict(lambda: (set(), set()))
-    cur.execute(query, [tfid,])
+    cur.execute(query, [tfid, annotation_id])
     for sample_id, dnase_peak_fname, chipseq_peak_fname in cur.fetchall():
         rv[sample_id][0].add(chipseq_peak_fname)
         rv[sample_id][1].add(dnase_peak_fname)
@@ -292,7 +296,7 @@ def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
        AND annotation_id = %s;
     """
     rv = defaultdict(lambda: (defaultdict(set), set()))
-    cur.execute(query, [tfid,])
+    cur.execute(query, [tfid, annotation_id])
     for ( sample_id, dnase_peak_fname, chipseq_peak_type, chipseq_peak_fname
            ) in cur.fetchall():
         rv[sample_id][0][chipseq_peak_type].add(chipseq_peak_fname)
