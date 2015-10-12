@@ -255,7 +255,7 @@ def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
     SELECT roadmap_sample_id,
            dnase_peak_fname,
            chipseq_peak_fname
-      FROM roadmap_matched_chipseq_experiments
+      FROM roadmap_matched_optimal_chipseq_peaks
      WHERE tf_id = %s;
     """
     rv = defaultdict(lambda: (set(), set()))
@@ -272,7 +272,7 @@ def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(tfid):
            dnase_peak_fname,
            chipseq_peak_type,
            chipseq_peak_fname
-      FROM all_roadmap_matched_chipseq_experiments
+      FROM roadmap_matched_chipseq_peaks
      WHERE tf_id = %s;
     """
     rv = defaultdict(lambda: (defaultdict(set), set()))
