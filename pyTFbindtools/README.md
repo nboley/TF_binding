@@ -12,7 +12,10 @@ The below will load an object that contains all roadmap chromatin accessible reg
     ctcf_peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
       # use CTCF (this ID can be found in the cisbp db on mitra by running
       # select * from tfs where tf_name = 'CTCF' and tf_species = 'Homo_sapiens';
-      tf_id='T044268_1.02', 
+      tf_id='T044268_1.02',
+      # use peaks called on the annotation with ID 1 (hg19)
+      # to list the genome annotations and their IDs use SELECT * FROM genomes;
+      annotation_id=1,
       # center all chromatin accessible region peaks on their summit, and make the 
       # peak 1000 bp wide (500 bp in either direction of the summit)
       half_peak_width=500,
@@ -25,4 +28,11 @@ The below will load an object that contains all roadmap chromatin accessible reg
       skip_ambiguous_peaks=False
     )
 
+<b>Load a genome annotation from the DB</b>
+To list all genome annotations currently in the database, use:
+    SELECT * FROM genomes;
 
+To load a fasta with the specified annotation_id:
+    from pyTFbindtools.DB import load_genome_metadata
+    genome_fasta = FastaFile(
+        load_genome_metadata(annotation_id).filename) 
