@@ -23,6 +23,7 @@ def parse_args():
         help='Only evaluate on a single cross validation fold.')
 
     args = parser.parse_args()
+    
     assert args.annotation_id is not None or args.genome_fasta is not None, \
         "Must set either --annotation-id or --genome-fasta"
     if args.genome_fasta is None:

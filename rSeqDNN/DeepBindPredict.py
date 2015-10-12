@@ -103,19 +103,38 @@ def parse_args():
     parser = init_prediction_script_argument_parser(
         'main script for testing rSeqDNN')
     args = parser.parse_args()
+
+    assert args.annotation_id is not None or args.genome_fasta is not None, \
+        "Must set either --annotation-id or --genome-fasta"
+    if args.genome_fasta is None:
+        assert args.annotation_id is not None
+        from pyTFbindtools.DB import load_genome_metadata
+        genome_fasta = FastaFile(
+            load_genome_metadata(args.annotation_id).filename) 
+    else:
+        genome_fasta = args.genome_fasta
     
-    if args.tf_id != None:
-        assert args.pos_regions == None and args.neg_regions == None, \
-            "It doesnt make sense to set both tf-id and either --pos-regions or --neg-regions"
+    if args.tf_id is not None:
+        assert args.pos_regions is None and args.neg_regions is None, \
+            "It doesnt make sense to set both --tf-id and either --pos-regions or --neg-regions"
+        assert args.annotation_id is not None, \
+            "--annotation-id must be set if --tf-id is set"
+        assert args.genome_fasta is None, \
+            "if --tf-id is set the genome fasta must be specified by the --annotation-id"
+
         peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-            args.tf_id, args.half_peak_width, args.max_num_peaks_per_sample)
+            args.tf_id,
+            args.annotation_id,
+            args.half_peak_width, 
+            args.max_num_peaks_per_sample, 
+            args.skip_ambiguous_peaks)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
-    
-    return peaks_and_labels, args.genome_fasta, args.tf_id, args.threads
+        
+    return peaks_and_labels, genome_fasta, args.tf_id, args.threads
 
 def main():
     peaks_and_labels, genome_fasta, tf_id, num_threads = parse_args()
