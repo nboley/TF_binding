@@ -101,8 +101,8 @@ def parse_arguments():
     parser.add_argument( '--skip-ambiguous-peaks', 
         default=False, action='store_true', 
         help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
-    parser.add_argument( '--half-peak-width', type=int, default=400,
-        help='Example accessible region peaks to be +/- --half-peak-width bases from the summit (default: 400)')
+    parser.add_argument( '--half-peak-width', type=int, default=500,
+        help='Example accessible region peaks to be +/- --half-peak-width bases from the summit (default: 500)')
     parser.add_argument( '--ofprefix', type=str, default='peakscores',
         help='Output file prefix (default peakscores)')
 
@@ -116,9 +116,7 @@ def parse_arguments():
     global NTHREADS
     NTHREADS = args.threads
 
-    fasta_fname = "/mnt/data/annotations/by_release/hg19.GRCh37/hg19.genome.fa"
-    fasta = FastaFile(fasta_fname)
-    print "Finished initializing fasta."
+    annotation_id = 1
 
     if args.selex_motif_id != None:
         motifs = load_selex_models_from_db(motif_ids=[args.selex_motif_id,])
@@ -135,26 +133,35 @@ def parse_arguments():
         motif_id=motifs[0].motif_id
     )
     
-    return (fasta, motif, ofname,
+    return (annotation_id, motif, ofname,
             args.half_peak_width,
             args.balance_data, args.skip_ambiguous_peaks,
             args.max_num_peaks_per_sample)
 
 def open_or_create_feature_file(
-        fasta, motif, ofname, 
+        annotation_id, motif, ofname, 
         half_peak_width, skip_ambiguous_peaks, 
         max_n_peaks_per_sample=None):
     try:
         return open(ofname)
     except IOError:
+        print "Initializng peaks"
+        
         print "Creating feature file '%s'" % ofname
         labeled_peaks = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             motif.tf_id, 
+            annotation_id,
             half_peak_width=half_peak_width, 
             max_n_peaks_per_sample=max_n_peaks_per_sample,
             skip_ambiguous_peaks=skip_ambiguous_peaks)
         print "Finished loading peaks."
 
+        from DB import load_genome_metadata
+        fasta_fname = load_genome_metadata(annotation_id).filename
+        fasta = FastaFile(fasta_fname)
+        print "Finished initializing fasta."
+
+        
         peak_cntr = Counter()
         build_predictors = BuildPredictorsFactory([motif,])
         with ThreadSafeFile(ofname + ".TMP", 'w') as ofp:
@@ -170,13 +177,13 @@ def open_or_create_feature_file(
         return getFileHandle(ofname)
 
 def main():
-    (fasta, motif, ofname, half_peak_width, 
+    (annotation_id, motif, ofname, half_peak_width, 
      balance_data, skip_ambiguous_peaks,
      max_num_peaks_per_sample
         ) = parse_arguments()
     # check to see if this file is cached. If not, create it
     feature_fp = open_or_create_feature_file(
-        fasta, motif, ofname, 
+        annotation_id, motif, ofname, 
         half_peak_width=half_peak_width,
         skip_ambiguous_peaks=skip_ambiguous_peaks,
         max_n_peaks_per_sample=max_num_peaks_per_sample)
