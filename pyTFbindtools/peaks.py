@@ -221,17 +221,20 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         # for now, dont allow multiple set of DNASE peaks
         assert len(dnase_peaks_fnames) == 1
         dnase_peaks_fname = next(iter(dnase_peaks_fnames))
-
+        
         optimal_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
             'optimal idr thresholded peaks']
         if len(optimal_sample_chipseq_peaks_fnames) == 0:
             continue
+
+        # try to use anshul's relaxed peaks for the full peak set. If it
+        # doesn't exist, then use all of the peaks in the DB
+        noisy_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
+            'anshul relaxed ranked peaks']
+        if len(noisy_sample_chipseq_peaks_fnames) == 0:
+            if skip_ambiguous_peaks:
+                raise ValueError, "No relaxed peak set exists for (tf_id, annotation, sample) (%s, %s, '%s'" % (tf_id, annotation, sample_id)
         
-        noisy_sample_chipseq_peaks_fnames = []
-        for peaks_type, fnames in sample_chipseq_peaks_fnames.iteritems():
-            if peaks_type == 'optimal idr thresholded peaks': continue
-            noisy_sample_chipseq_peaks_fnames.extend(fnames)
-                
         print "Loading peaks for sample '%s' (%i/%i)" % (
             sample_id, sample_index, len(peak_fnames))
         with getFileHandle(dnase_peaks_fname) as fp:
