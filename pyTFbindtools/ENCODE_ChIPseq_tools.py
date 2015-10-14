@@ -29,6 +29,35 @@ chipseq_peaks_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_C
 
 ################################################################################
 #
+# Find metadata associated with a particular ENCODE experiment ID
+#
+################################################################################
+def find_ENCODE_DCC_experiment_metadata(experiment_id):
+    """Find metadata associated with an ENCODE experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to find files for. 
+    Returns: labmetadata, description, num_treatments
+    """
+    URL = "https://www.encodeproject.org/experiments/{}/".format(experiment_id)
+    response = requests.get(URL, headers={'accept': 'application/json'})
+    response_json_dict = response.json()
+    treatments = sorted(
+        x['library']['biosample']['treatments']
+        for x in response_json_dict['replicates'] )
+    treatment_term_names = set()
+    for treatment in treatments:
+        treatment_term_names.update(x['treatment_term_name'] for x in treatment)
+    assert len(treatment_term_names) <= 1
+    return ( response_json_dict['lab'], 
+             response_json_dict['description'], 
+             (next(iter(treatment_term_names)) 
+              if len(treatment_term_names) ==1 
+              else None)
+            )
+
+################################################################################
+#
 # Find files associated with a particular ENCODE experiment ID
 #
 ################################################################################
