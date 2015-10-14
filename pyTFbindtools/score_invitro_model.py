@@ -278,7 +278,7 @@ def parse_arguments():
     motif = motifs[0]
     print "Finished loading motifs."
 
-    ofname = "predictors.{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{skip_ambiguous_peaks}.True.txt.gz".format(
+    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{skip_ambiguous_peaks}.True.txt.gz".format(
         prefix=args.ofprefix, 
         motif_id=motifs[0].motif_id,
         half_peak_width=args.half_peak_width,
