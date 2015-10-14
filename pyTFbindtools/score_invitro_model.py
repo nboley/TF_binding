@@ -53,7 +53,8 @@ class TFBindingData(object):
                 val = x
             else:
                 val = int(x.split(",")[0])
-            new_labels[i] = -1 if val <= 0 else 1
+            assert val in (-1, 0, 1)
+            new_labels[i] = val
         return new_labels
 
     def subset_data(self, sample_names, chrs):
@@ -91,18 +92,21 @@ class TFBindingData(object):
         self.contigs = sorted(contigs)
         
         return
-
+    
     def __init__(self, pandas_dataframe):
         self.data = pandas_dataframe
         self._initialize_metadata()
         # merge labels for factors with multiple Chipseq experiments in the 
         # same sample
-        for label_column in self.label_columns:
-            new_labels = self.merge_labels(self.data[label_column])
-            self.data.loc[:,label_column] = new_labels
+        #for label_column in self.label_columns:
+        #    new_labels = self.merge_labels(self.data[label_column])
+        #    self.data.loc[:,label_column] = new_labels
         return
 
 class SingleMotifBindingData(TFBindingData):
+    def remove_zero_labeled_entries(self):
+        return type(self)(self.data.iloc[self.labels != 0,:])
+
     def balance_data(self):
         """Return a copy of self where the number of positive and negative 
            samples is balanced. 
@@ -123,13 +127,27 @@ class SingleMotifBindingData(TFBindingData):
         assert len(self.motif_ids) == 1
         assert len(self.label_columns) == 1
 
-def estimate_cross_validated_error(data, balance_data=False):
+    @property
+    def labels(self):
+        return np.array(self.data[self.label_columns[0]])
+
+def estimate_cross_validated_error(
+        data, 
+        balance_data=False, 
+        validate_on_clean_labels=False,
+        train_on_clean_labels=True):
     res = ClassificationResults()
     for train, validation in data.iter_train_validation_data_subsets():
         if balance_data:
             train = train.balance_data()
             validation = validation.balance_data()
 
+        if train_on_clean_labels:
+            train = train.remove_zero_labeled_entries()
+        
+        if validate_on_clean_labels:
+            validation = validation.remove_zero_labeled_entries()
+        
         #clf_1 = DecisionTreeClassifier(max_depth=20)
         clf_1 = RandomForestClassifier(max_depth=10)
         #clf_1 = GradientBoostingClassifier(n_estimators=100)
@@ -137,13 +155,15 @@ def estimate_cross_validated_error(data, balance_data=False):
         all_predictors = [ x for x in train.columns
                            if not x.startswith('label') ]
         predictors = all_predictors
+        
         assert len(train.label_columns) == 1
         label = train.label_columns[0]
         
         mo = clf_1.fit(train.data[predictors], train.data[label])
         y_hat = mo.predict(validation.data[predictors])
         y_hat_prbs = mo.predict_proba(validation.data[predictors])
-        positives = np.array(validation.data[label] == 1)
+        # set the positives to include real positives and ambiguous positives
+        positives = np.array(validation.data[label] > -1)
         num_true_positives = (y_hat[positives] == 1).sum()
 
         negatives = np.array(validation.data[label] == -1)
@@ -157,9 +177,9 @@ def estimate_cross_validated_error(data, balance_data=False):
 
             validation.contigs, validation.sample_ids,
 
-            roc_auc_score(validation.data[label], y_hat_prbs[:,1]),
-            average_precision_score(validation.data[label], y_hat_prbs[:,1]),
-            f1_score(validation.data[label], y_hat),
+            roc_auc_score(validation.data[label] > -1, y_hat_prbs[:,1]),
+            average_precision_score(validation.data[label] > -1, y_hat_prbs[:,1]),
+            f1_score(validation.data[label] > -1, y_hat),
 
             num_true_positives, positives.sum(),
             num_true_negatives, negatives.sum()
