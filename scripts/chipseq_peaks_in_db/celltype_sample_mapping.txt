@@ -1,0 +1,85 @@
+SAEC	bronchial epithelial cell
+HepG2	HepG2
+HL-60	HL-60
+GM06990	GM06990
+HUVEC	endothelial cell of umbilical vein
+WI-38	WI38
+AG04449	fibroblast of upper leg skin
+HCFaa	cardiac fibroblast
+HPAF	fibroblast of pulmonary artery
+MCF10A-Er-Src	MCF 10A
+BE2_C	BE2C
+AoAF	fibroblast of the aortic adventitia
+BJ	BJ
+GM19239	GM19239
+HEK293	HEK293
+HEK293-T-REx	HEK293
+PFSK-1	PFSK-1
+PANC-1	Panc1
+AG09309	fibroblast of pedal digit skin
+WERI-Rb-1	WERI-Rb-1
+GM12872	GM12872
+GM10847	GM10847
+HRPEpiC	retinal pigment epithelial cell
+HFF	foreskin fibroblast
+RPTEC	epithelial cell of proximal tubule
+GM08714	GM08714
+SK-N-SH	SK-N-SH
+K562	K562
+HCPEpiC	choroid plexus epithelial cell
+HVMF	fibroblast of villous mesenchyme
+HMEC	mammary epithelial cell
+IMR90	IMR-90
+U2OS	U2OS
+GM19193	GM19193
+Caco-2	Caco-2
+Fibrobl	skin fibroblast
+GM12878	GM12878
+HA-sp	astrocyte of the spinal cord
+PBDE	erythroblast
+ProgFib	HGPS cell
+SK-N-SH_RA	SK-N-SH
+HMF	fibroblast of mammary gland
+GM19240	GM19240
+NHLF	fibroblast of lung
+GM12873	GM12873
+GM19099	GM19099
+NHDF-neo	foreskin fibroblast
+GM15510	GM15510
+HFF-Myc	HFF-Myc
+T-47D	T47D
+GM19238	GM19238
+MCF-7	MCF-7
+AG04450	fibroblast of lung
+HBMEC	brain microvascular endothelial cell
+NB4	NB4
+AG10803	fibroblast of skin of abdomen
+Gliobla	H54
+GM12892	GM12892
+GM12891	GM12891
+GM12874	GM12874
+HRE	kidney epithelial cell
+AG09319	fibroblast of gingiva
+PBDEFetal	erythroblast
+HCM	cardiac muscle cell
+Raji	Raji
+U87	U-87 MG
+H1-hESC	H1-hESC
+GM12875	GM12875
+NT2-D1	NT2/D1
+NHEK	keratinocyte
+SH-SY5Y	SH-SY5Y
+GM18951	GM18951
+HAc	astrocyte of the cerebellum
+GM12801	GM12801
+HCT-116	HCT116
+SK-N-MC	SK-N-MC
+HEEpiC	epithelial cell of esophagus
+GM18526	GM18526
+HeLa-S3	HeLa-S3
+HPF	fibroblast of lung
+GM18505	GM18505
+GM12865	GM12865
+ECC-1	Ishikawa
+GM12864	GM12864
+A549	A549

@@ -6,11 +6,13 @@ from collections import namedtuple, defaultdict
 import requests, json
 
 from pyTFbindtools import DB
-from pyTFbindtools.ENCODE_ChIPseq_tools import find_ENCODE_DCC_experiment_lab_metadata
+from pyTFbindtools.ENCODE_ChIPseq_tools import find_ENCODE_DCC_experiment_metadata
 cur = DB.conn.cursor()
 
-def load_merged_peak_fnames(
-        path='/mnt/data/ENCODE/peaks_spp/mar2012/distinct/combrep/regionPeak/'):
+MERGED_PEAKS_BASE_DIR = "/mnt/data/ENCODE/peaks_spp/mar2012/distinct/combrep/regionPeak/"
+OUTPUT_MERGED_PEAKS_BASE_DIR = "/mnt/data/TF_binding/in_vivo/ENCODE/anshuls_TF_peaks/combrep/pos_sorted/"
+
+def load_merged_peak_fnames(path=MERGED_PEAKS_BASE_DIR):
     fnames = []
     for fname in os.listdir(path):
         # skip histone marks
@@ -164,8 +166,9 @@ def find_experiment_id(metadata):
     cur.execute(query, [target_id, sample_type])
     valid_experiment_ids = []
     for (exp_id,) in cur.fetchall():
-        lab_metadata, description, treatment = find_ENCODE_DCC_experiment_lab_metadata(
-            exp_id)
+        ( lab_metadata, description, treatment
+            ) = find_ENCODE_DCC_experiment_metadata(exp_id)
+        
         lab_id = lab_metadata['@id']
         if lab_id != lab_id_mapping[metadata.LAB]: continue
         if metadata.TREATMENT == 'None' and treatment != None: continue
@@ -199,6 +202,62 @@ def infer_experiment_id(metadata):
             print "0", exp_id, desc
         assert False
 
+def insert_anshul_merged_peak_into_db(exp_id, local_fname):
+    """
+     encode_experiment_id    | text    | not null
+     bsid                    | text    | not null # merged
+     rep_key                 | text    | not null # merged
+     file_format             | text    | not null # bed
+     file_format_type        | text    | not null # narrowPeak
+     file_output_type        | text    | not null # anshul relaxed ranked peaks 
+     remote_filename         | text    | 
+     local_filename          | text    | 
+     encode_chipseq_peak_key | SERIAL  | not null #
+     annotation              | integer | not null # 
+    """
+    query = """
+    INSERT INTO encode_chipseq_peak_files
+    ( encode_experiment_id, bsid, rep_key, 
+      file_format, file_format_type, file_output_type, 
+      local_filename,
+      annotation ) VALUES (
+      %s, 'merged', 'merged',
+      'bed', 'narrowPeak', 'anshul relaxed ranked peaks',
+      %s,
+      1
+    );
+    """
+    assert os.path.isfile(local_fname)
+    cur.execute(query, [exp_id, local_fname])
+    return
+
+def insert_experiment_into_db(exp_id, target_id, sample_type):
+    """
+     encode_experiment_id | text    | not null
+     target               | integer | not null
+     sample_type          | text    | not null
+    """
+
+    # check if it already exists
+    query = """
+    SELECT target, sample_type 
+      FROM encode_chipseq_experiments 
+    WHERE encode_experiment_id = %s
+    """
+    cur.execute(query, [exp_id, ])
+    res = cur.fetchall()
+    # if it does exist, make sure that everything matches
+    if len(res) > 0:
+        assert len(res) == 1
+        res = res[0]
+        print res, target_id, sample_type
+        assert res[0] == target_id
+        assert res[1] == sample_type
+    # if it doesn't exist, insert it
+    else:
+        query = "INSERT INTO encode_chipseq_experiments VALUES (%s, %s, %s)"
+        cur.execute(query, [exp_id, target_id, sample_type])
+    return
 
 def main():
     all_metadata = load_metadata()
@@ -221,8 +280,13 @@ def main():
             assert sample_type != None
             exp_id = exp_id_mapping[fname_key]
             assert exp_id != None
-            print exp_id, target_id, sample_type, fname_key
-            
+            print "\t".join((fname_key, exp_id, str(target_id), sample_type))
+            #insert_experiment_into_db(exp_id, target_id, sample_type)
+            new_fname = (
+                OUTPUT_MERGED_PEAKS_BASE_DIR 
+                + fname.replace(".regionPeak.gz", ".narrowPeak.bgz") )
+            insert_anshul_merged_peak_into_db(exp_id, new_fname)
+    DB.conn.commit()
     ## Cache the cell types
     #with open("celltype_sample_mapping.txt", "w") as ofp: 
     #    for celltype, sample_type in cached_sample_types.items():
