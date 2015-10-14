@@ -7,8 +7,8 @@ def evaluate_predictions(probs, y_validation):
     '''Evaluate the quality of deep bind predictions.
     '''
     preds = np.asarray(probs > 0.5, dtype='int')
-    true_pos = y_validation == 1
-    true_neg = y_validation == 0
+    true_pos = (y_validation == 1)
+    true_neg = (y_validation == -1)
     precision, recall, _ = precision_recall_curve(y_validation, probs)
     prc = np.array([recall,precision])
     auPRC = auc(recall, precision)
@@ -17,7 +17,7 @@ def evaluate_predictions(probs, y_validation):
         None, None, None, None, None, None,
         auROC, auPRC,
         np.sum(preds[true_pos] == 1), np.sum(true_pos),
-        np.sum(preds[true_neg] == 0), np.sum(true_neg)
+        np.sum(preds[true_neg] == -1), np.sum(true_neg)
     )
 
     return classification_result

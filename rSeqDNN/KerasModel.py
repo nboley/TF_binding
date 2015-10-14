@@ -31,7 +31,7 @@ def expected_F1_loss(y_true, y_pred):
 
 def balance_matrices(X, labels):
     pos_full = X[(labels == 1)]
-    neg_full = X[(labels == 0)]
+    neg_full = X[(labels == -1)]
     sample_size = min(pos_full.shape[0], neg_full.shape[0])
     pos = pos_full[
         np.random.choice(pos_full.shape[0], sample_size, replace=False)]
@@ -114,8 +114,8 @@ class KerasModelBase():
             X_validation = self._reshape_coded_seqs_array(X_validation)
         preds = self.model.predict_classes(X_validation)
         probs = self.model.predict_proba(X_validation)
-        true_pos = y_validation == 1
-        true_neg = y_validation == 0
+        true_pos = (y_validation == 1)
+        true_neg = (y_validation == 0)
         precision, recall, _ = precision_recall_curve(y_validation, probs)
         prc = np.array([recall,precision])
         auPRC = auc(recall, precision)
