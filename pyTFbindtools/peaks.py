@@ -186,7 +186,7 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
         # if the contig isn't in the contig list, then it
         # can't be a valid peak
         if peak.contig not in fp.contigs: 
-            status.append(0)
+            status.append(-1)
             continue
         overlap_frac = 0.0
         for chipseq_pk in fp.fetch(*peak_coords):
@@ -202,7 +202,7 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
             status.append(1)
             continue
         else:
-            status.append(0)
+            status.append(-1)
     return status
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
@@ -210,7 +210,9 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
-        skip_ambiguous_peaks=False):
+        skip_ambiguous_peaks=False,
+        include_ambiguous_peaks=False):
+    assert not (skip_ambiguous_peaks and include_ambiguous_peaks)
     # put the import here to avoid errors if the database isn't available
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
@@ -224,16 +226,22 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         
         optimal_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
             'optimal idr thresholded peaks']
-        if len(optimal_sample_chipseq_peaks_fnames) == 0:
+        ambiguous_sample_chipseq_peak_fnames = sample_chipseq_peaks_fnames[
+            'anshul relaxed peaks']
+        # if we're not using ambiuous peaks and there are no optimal peaks,
+        # then skip this samples
+        if ( not include_ambiguous_peaks 
+             and len(optimal_sample_chipseq_peaks_fnames) == 0):
+            continue
+        # if there aren't any peak files then skip this samples
+        if ( len(ambiguous_sample_chipseq_peak_fnames) == 0 
+             and len(optimal_sample_chipseq_peaks_fnames) == 0):
             continue
 
-        # try to use anshul's relaxed peaks for the full peak set. If it
-        # doesn't exist, then use all of the peaks in the DB
-        noisy_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
-            'anshul relaxed peaks']
-        if len(noisy_sample_chipseq_peaks_fnames) == 0:
-            if skip_ambiguous_peaks:
-                raise ValueError, "No relaxed peak set exists for (tf_id, annotation, sample) (%s, %s, '%s'" % (tf_id, annotation, sample_id)
+        # try to use anshul's relaxed peaks for the relaxed peak set.
+        if (skip_ambiguous_peaks 
+            and len(ambiguous_sample_chipseq_peak_fnames) == 0):
+            raise ValueError, "No relaxed peak set exists for (tf_id, annotation, sample) (%s, %s, '%s'" % (tf_id, annotation, sample_id)
         
         print "Loading peaks for sample '%s' (%i/%i)" % (
             sample_id, sample_index, len(peak_fnames))
@@ -247,11 +255,17 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                     optimal_sample_chipseq_peaks_fnames, pk)
                 # merge labels
                 label = max(label)
-                if skip_ambiguous_peaks and label == 0:
+                if skip_ambiguous_peaks and label == -1:
                     noisy_label = classify_chipseq_peak(
-                        noisy_sample_chipseq_peaks_fnames, pk)
+                        ambiguous_sample_chipseq_peak_fnames, pk)
                     if max(noisy_label) == 1:
                         continue
+                if include_ambiguous_peaks and label == -1:
+                    relaxed_label = classify_chipseq_peak(
+                        ambiguous_sample_chipseq_peak_fnames, pk)
+                    if max(relaxed_label) == 1:
+                        label = 0
+                
                 yield PeakAndLabel(pk, sample_id, label)
                 num_peaks += 1
                 if ( max_n_peaks_per_sample is not None 
@@ -264,13 +278,15 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
-        skip_ambiguous_peaks=False):
+        skip_ambiguous_peaks=False,
+        include_ambiguous_peaks=False):
     """
     
     """
     # check for a pickled file int he current directory
-    pickle_fname = "peaks_and_label.%s.%s.%s.%s.obj" % (
-        tf_id, half_peak_width, max_n_peaks_per_sample, skip_ambiguous_peaks)
+    pickle_fname = "peaks_and_label.%s.%s.%s.%s.%s.obj" % (
+        tf_id, half_peak_width, max_n_peaks_per_sample, 
+        skip_ambiguous_peaks, include_ambiguous_peaks)
     try:
         with open(pickle_fname) as fp:
             print "Using pickled peaks_and_labels from '%s'." % pickle_fname 
@@ -283,7 +299,8 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             annotation_id,
             half_peak_width, 
             max_n_peaks_per_sample, 
-            skip_ambiguous_peaks))
+            skip_ambiguous_peaks,
+            include_ambiguous_peaks))
     with open(pickle_fname, "w") as ofp:
         pickle.dump(peaks_and_labels, ofp)
     return peaks_and_labels
