@@ -230,7 +230,7 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         # try to use anshul's relaxed peaks for the full peak set. If it
         # doesn't exist, then use all of the peaks in the DB
         noisy_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
-            'anshul relaxed ranked peaks']
+            'anshul relaxed peaks']
         if len(noisy_sample_chipseq_peaks_fnames) == 0:
             if skip_ambiguous_peaks:
                 raise ValueError, "No relaxed peak set exists for (tf_id, annotation, sample) (%s, %s, '%s'" % (tf_id, annotation, sample_id)
