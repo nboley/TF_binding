@@ -112,6 +112,14 @@ class PeaksAndLabels():
                 and pk_and_label.peak.contig in contigs
             )
 
+    def remove_zero_labeled_entries(self):
+        '''return subset of data wityh nonzero labels
+        '''
+        return PeaksAndLabels(
+                pk_and_label for pk_and_label in self 
+                if pk_and_label.label != 0
+            )
+
     def iter_train_validation_subsets(self):
         for train_indices, valid_indices in iter_train_validation_splits(
                 self.sample_ids, self.contigs):
@@ -254,7 +262,8 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                 label = classify_chipseq_peak(
                     optimal_sample_chipseq_peaks_fnames, pk)
                 # merge labels
-                label = max(label)
+                label = 0 if len(label) == 0 else max(label)
+                
                 if skip_ambiguous_peaks and label == -1:
                     noisy_label = classify_chipseq_peak(
                         ambiguous_sample_chipseq_peak_fnames, pk)

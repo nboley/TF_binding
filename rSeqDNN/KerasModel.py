@@ -37,14 +37,14 @@ def balance_matrices(X, labels):
         np.random.choice(pos_full.shape[0], sample_size, replace=False)]
     neg = neg_full[
         np.random.choice(neg_full.shape[0], sample_size, replace=False)]
-    return np.vstack((pos, neg)), np.array([1]*sample_size + [0]*sample_size)
+    return np.vstack((pos, neg)), np.array([1]*sample_size + [-1]*sample_size)
 
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), 4, pk_width))
+    data = 0.25 * np.ones((len(peaks), 4, pk_width), dtype='float32')
     for i, pk in enumerate(peaks):
         seq = fasta.fetch(pk.contig, pk.start, pk.stop)
         # skip sequences overrunning the contig boundary
@@ -80,7 +80,7 @@ class KerasModelBase():
         self.model.add(Convolution2D(
             numConv, convStack, 
             convWidth, convHeight, 
-            activation="linear", init="he_normal"))
+            activation="relu", init="he_normal"))
         self.model.add(MaxPooling2D(poolsize=(1,maxPoolSize),
                                     stride=(1,maxPoolStride)))
         self.model.add(Reshape(numConv,numMaxPoolOutputs))
@@ -115,7 +115,7 @@ class KerasModelBase():
         preds = self.model.predict_classes(X_validation)
         probs = self.model.predict_proba(X_validation)
         true_pos = (y_validation == 1)
-        true_neg = (y_validation == 0)
+        true_neg = (y_validation < 1)
         precision, recall, _ = precision_recall_curve(y_validation, probs)
         prc = np.array([recall,precision])
         auPRC = auc(recall, precision)
@@ -125,7 +125,7 @@ class KerasModelBase():
             None, None, None, None, None, None,
             auROC, auPRC, f1,
             np.sum(preds[true_pos] == 1), np.sum(true_pos),
-            np.sum(preds[true_neg] == 0), np.sum(true_neg)
+            np.sum(preds[true_neg] < 1), np.sum(true_neg)
         )
 
         return classification_result
@@ -166,10 +166,23 @@ class KerasModel(KerasModelBase):
                 batch_size=batch_size,
                 nb_epoch=3)
         print self.evaluate(b_X_validation, b_y_validation)
-        
+
+        """
         print("Fitting the model with unbalanced training set.")
-        best_F1 = 0
+        self.model.fit(
+            X_train, y_train,
+            validation_data=(X_validation, y_validation),
+            show_accuracy=True,
+            class_weight=weights,
+            batch_size=batch_size,
+            nb_epoch=1)
+        res = self.evaluate(X_validation, y_validation)
+        print res
+
+        print("Switiching to F1 loss function.")
         self.compile(expected_F1_loss, Adam()) # expected_F1_loss
+        """
+        best_F1 = 0
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
