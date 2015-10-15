@@ -247,8 +247,9 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             continue
 
         # try to use anshul's relaxed peaks for the relaxed peak set.
-        if (skip_ambiguous_peaks 
+        if ((skip_ambiguous_peaks or include_ambiguous_peaks) 
             and len(ambiguous_sample_chipseq_peak_fnames) == 0):
+            continue
             raise ValueError, "No relaxed peak set exists for (tf_id, annotation, sample) (%s, %s, '%s'" % (tf_id, annotation, sample_id)
         
         print "Loading peaks for sample '%s' (%i/%i)" % (
