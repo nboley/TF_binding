@@ -17,7 +17,7 @@ import pandas as pd
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import ( 
     AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier )
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
+from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
 from pysam import FastaFile, TabixFile
 
@@ -161,13 +161,17 @@ def estimate_cross_validated_error(
         
         mo = clf_1.fit(train.data[predictors], train.data[label])
         y_hat = mo.predict(validation.data[predictors])
-        y_hat_prbs = mo.predict_proba(validation.data[predictors])
+        y_hat_prbs = mo.predict_proba(validation.data[predictors])[:,1]
         # set the positives to include real positives and ambiguous positives
         positives = np.array(validation.data[label] > -1)
         num_true_positives = (y_hat[positives] == 1).sum()
 
         negatives = np.array(validation.data[label] == -1)
         num_true_negatives = (y_hat[negatives] == -1).sum()
+
+        precision, recall, _ = precision_recall_curve(positives, y_hat_prbs)
+        prc = np.array([recall,precision])
+        auPRC = auc(recall, precision)
 
         result_summary = ClassificationResult(
             set(train.sample_ids) != set(validation.sample_ids),
@@ -177,9 +181,9 @@ def estimate_cross_validated_error(
 
             validation.contigs, validation.sample_ids,
 
-            roc_auc_score(validation.data[label] > -1, y_hat_prbs[:,1]),
-            average_precision_score(validation.data[label] > -1, y_hat_prbs[:,1]),
-            f1_score(validation.data[label] > -1, y_hat),
+            roc_auc_score(positives, y_hat_prbs),
+            auPRC,
+            f1_score(positives, y_hat),
 
             num_true_positives, positives.sum(),
             num_true_negatives, negatives.sum()
@@ -267,7 +271,11 @@ def parse_arguments():
         help='Database cisbp motif ID')
 
     parser.add_argument( '--balance-data', default=False, action='store_true', 
-        help='Predict results of balanced labels')
+        help='Predict results on balanced labels')
+    parser.add_argument( '--validate-on-clean-labels', 
+        default=False, action='store_true', 
+        help='Validate the model on ChIP-seq peaks with clean labels')
+
     parser.add_argument( '--skip-ambiguous-peaks', 
         default=False, action='store_true', 
         help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
@@ -308,7 +316,9 @@ def parse_arguments():
     
     return (annotation_id, motif, ofname,
             args.half_peak_width,
-            args.balance_data, args.skip_ambiguous_peaks,
+            args.balance_data, 
+            args.skip_ambiguous_peaks,
+            args.validate_on_clean_labels,
             args.max_num_peaks_per_sample)
 
 def open_or_create_feature_file(
@@ -352,7 +362,7 @@ def open_or_create_feature_file(
 
 def main():
     (annotation_id, motif, ofname, half_peak_width, 
-     balance_data, skip_ambiguous_peaks,
+     balance_data, skip_ambiguous_peaks, validate_on_clean_labels,
      max_num_peaks_per_sample
         ) = parse_arguments()
     # check to see if this file is cached. If not, create it
@@ -363,7 +373,12 @@ def main():
         max_n_peaks_per_sample=max_num_peaks_per_sample)
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)
-    res = estimate_cross_validated_error(data, balance_data)
+    res = estimate_cross_validated_error(
+        data, 
+        balance_data=balance_data, 
+        validate_on_clean_labels=validate_on_clean_labels,
+        train_on_clean_labels=True)
+    
     print res
     with open(ofname + ".summary", "w") as ofp:
         print >> ofp, res.all_data
