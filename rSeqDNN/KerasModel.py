@@ -78,21 +78,15 @@ class KerasModelBase():
         
         # Define architecture     
         self.model = Sequential()
-        self.model.add(Convolution2D(
-            numConv, convStack, 
-            convWidth, convHeight, 
-            activation="relu", init="he_normal"))
-        self.model.add(MaxPooling2D(poolsize=(1,maxPoolSize),
-                                    stride=(1,maxPoolStride)))
-        self.model.add(Reshape(numConv,numMaxPoolOutputs))
+        self.model.add(Convolution2D(numConv, convWidth, convHeight, activation="relu", init="he_normal", input_shape=(1, 4, self.seq_len)));
+        self.model.add(MaxPooling2D(pool_size=(1,maxPoolSize), stride=(1,maxPoolStride)))
+        self.model.add(Reshape((numConv,numMaxPoolOutputs)))
         self.model.add(Permute((2,1)))
         # make the number of max pooling outputs the time dimension
-        self.model.add(GRU(numConv,gruHiddenVecSize,return_sequences=True))
-        self.model.add(TimeDistributedDense(gruHiddenVecSize,numFCNodes))
-        self.model.add(Reshape(numFCNodes*numMaxPoolOutputs))
-        self.model.add(Dense(numFCNodes*numMaxPoolOutputs,
-                             numOutputNodes,
-                             activation='sigmoid'))
+        self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
+        self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
+        self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
+        self.model.add(Dense(numOutputNodes,activation='sigmoid'))
 
     def compile(self, loss, optimizer, class_mode="binary"):
         print("Conpiling model (%s, %s, %s)" % (loss, optimizer, class_mode))
