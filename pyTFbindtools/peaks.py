@@ -101,7 +101,7 @@ class PeaksAndLabels():
             self.contigs.add(pk.contig)
         assert len(self.peak_widths) == 1
         # turn the list of labels into a numpy array
-        self.labels = np.array(self.labels, dtype=int)
+        self.labels = np.array(self.labels, dtype='float32')
         
     def subset_data(self, sample_names, contigs):
         '''return data covering sample+names and contigs

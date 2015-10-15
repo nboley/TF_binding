@@ -37,7 +37,8 @@ def balance_matrices(X, labels):
         np.random.choice(pos_full.shape[0], sample_size, replace=False)]
     neg = neg_full[
         np.random.choice(neg_full.shape[0], sample_size, replace=False)]
-    return np.vstack((pos, neg)), np.array([1]*sample_size + [-1]*sample_size)
+    return np.vstack((pos, neg)), np.array(
+        [1]*sample_size + [-1]*sample_size, dtype='float32')
 
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
@@ -143,18 +144,17 @@ class KerasModel(KerasModelBase):
         X_validation = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
                         data_stopping.peaks, genome_fasta))
-        y_validation = data_stopping.labels
+        y_validation = np.array(data_stopping.labels, dtype='float32')
         X_train = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
                         data_fitting.peaks, genome_fasta))
-        y_train = data_fitting.labels
+        y_train = np.array(data_fitting.labels, dtype='float32')
         weights = {len(y_train)/(len(y_train)-y_train.sum()), 
                    len(y_train)/y_train.sum()}
 
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
-        b_X_train, b_y_train = balance_matrices(X_train, y_train)
-
+        b_X_train, b_y_train = balance_matrices(X_train, y_train)        
         
         print("Initializing model from balanced training set.")
         self.compile('binary_crossentropy', Adam())
