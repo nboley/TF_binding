@@ -101,12 +101,8 @@ class KerasModelBase():
         self.model.compile(loss=loss, 
                            optimizer=optimizer,
                            class_mode=class_mode);
-            
-    def evaluate(self, X_validation, y_validation):
-        '''evaluate model
-        '''
-        if len(np.shape(X_validation)) == 3: # reshape to 4D if 3D
-            X_validation = self._reshape_coded_seqs_array(X_validation)
+
+    def evaluate_matrices(self, X_validation, y_validation):
         preds = self.model.predict_classes(X_validation)
         probs = self.model.predict_proba(X_validation)
         true_pos = (y_validation == 1)
@@ -124,6 +120,14 @@ class KerasModelBase():
         )
 
         return classification_result
+    
+    def evaluate(self, valid, genome_fasta, filter_ambiguous_labels=True):
+        '''evaluate model
+        '''
+        X_validation, y_validation = self.build_predictor_and_label_matrices(
+            valid, genome_fasta, filter_ambiguous_labels)
+        print y_validation
+        return self.evaluate_matrices(X_validation, y_validation)
 
     def _reshape_coded_seqs_array(self, coded_seqs):
         '''Reshape coded seqs into Keras acceptible format.
@@ -183,7 +187,7 @@ class KerasModel(KerasModelBase):
                 class_weight={1.0, 1.0},
                 batch_size=batch_size,
                 nb_epoch=3)
-        print self.evaluate(b_X_validation, b_y_validation)
+        print self.evaluate_matrices(b_X_validation, b_y_validation)
         
         print("Switiching to F1 loss function.")
         print("Compiling model with expected F1 loss.")
@@ -199,7 +203,7 @@ class KerasModel(KerasModelBase):
                 class_weight=class_prbs,
                 batch_size=batch_size,
                 nb_epoch=1)
-            res = self.evaluate(X_validation, y_validation)
+            res = self.evaluate_matrices(X_validation, y_validation)
             print res
 
             if (res.F1 + res.auPRC > best_average):

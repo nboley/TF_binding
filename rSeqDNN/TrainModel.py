@@ -47,7 +47,8 @@ def parse_args():
             args.annotation_id,
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
-            args.skip_ambiguous_peaks)
+            args.skip_ambiguous_peaks,
+            include_ambiguous_peaks=True)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
@@ -72,9 +73,7 @@ def main():
             train, 
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
-        results.append(fit_model.evaluate(
-            encode_peaks_sequence_into_binary_array(
-                valid.peaks, genome_fasta), valid.labels))
+        results.append(fit_model.evaluate(valid, genome_fasta, True))
         print results[-1]
         if only_test_one_fold: break
     

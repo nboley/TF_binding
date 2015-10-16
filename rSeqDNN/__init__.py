@@ -3,26 +3,6 @@ import argparse
 from pysam import FastaFile
 from pyTFbindtools.peaks import getFileHandle
 
-def evaluate_predictions(probs, y_validation):
-    '''Evaluate the quality of deep bind predictions.
-    '''
-    preds = np.asarray(probs > 0.5, dtype='int')
-    true_pos = (y_validation == 1)
-    true_neg = (y_validation == -1)
-    precision, recall, _ = precision_recall_curve(y_validation, probs)
-    prc = np.array([recall,precision])
-    auPRC = auc(recall, precision)
-    auROC = roc_auc_score(y_validation, probs)
-    classification_result = ClassificationResult(
-        None, None, None, None, None, None,
-        auROC, auPRC,
-        np.sum(preds[true_pos] == 1), np.sum(true_pos),
-        np.sum(preds[true_neg] == -1), np.sum(true_neg)
-    )
-
-    return classification_result
-
-
 def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
         description=description)
