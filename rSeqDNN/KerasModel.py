@@ -121,12 +121,11 @@ class KerasModelBase():
 
         return classification_result
     
-    def evaluate(self, valid, genome_fasta, filter_ambiguous_labels=True):
+    def evaluate(self, valid, genome_fasta, filter_ambiguous_labels=False):
         '''evaluate model
         '''
         X_validation, y_validation = self.build_predictor_and_label_matrices(
             valid, genome_fasta, filter_ambiguous_labels)
-        print y_validation
         return self.evaluate_matrices(X_validation, y_validation)
 
     def _reshape_coded_seqs_array(self, coded_seqs):

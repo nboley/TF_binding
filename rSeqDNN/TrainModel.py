@@ -57,12 +57,17 @@ def parse_args():
     return ( peaks_and_labels, 
              genome_fasta, 
              args.model_prefix, 
-             args.only_test_one_fold )
+             args.only_test_one_fold,
+             args.skip_ambiguous_peaks)
 
 import cPickle as pickle
 
 def main():
-    ( peaks_and_labels, genome_fasta, model_ofname_prefix, only_test_one_fold
+    ( peaks_and_labels, 
+      genome_fasta, 
+      model_ofname_prefix, 
+      only_test_one_fold,
+      skip_ambiguous_peaks
     ) = parse_args()
     model = KerasModel(peaks_and_labels)
     results = ClassificationResults()
@@ -72,7 +77,8 @@ def main():
             train, 
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
-        results.append(fit_model.evaluate(valid, genome_fasta, True))
+        results.append(
+            fit_model.evaluate(valid, genome_fasta, skip_ambiguous_peaks))
         print results[-1]
         if only_test_one_fold: break
     
