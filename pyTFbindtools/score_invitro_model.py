@@ -23,16 +23,16 @@ from pysam import FastaFile, TabixFile
 from grit.lib.multiprocessing_utils import (
     fork_and_wait, ThreadSafeFile, Counter )
 
-from peaks import (
+from pyTFbindtools.peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
     getFileHandle )
 
-from motif_tools import (
+from pyTFbindtools.motif_tools import (
     load_selex_models_from_db, 
     load_pwms_from_db, 
     score_region)
 
-from cross_validation import (
+from pyTFbindtools.cross_validation import (
     ClassificationResult, ClassificationResults, iter_train_validation_splits )
 
 
