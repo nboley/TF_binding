@@ -190,6 +190,7 @@ class KerasModel(KerasModelBase):
         self.compile(expected_F1_loss, Adam())
         best_auPRC = 0
         best_F1 = 0
+        best_average = 0
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
@@ -201,10 +202,10 @@ class KerasModel(KerasModelBase):
             res = self.evaluate(X_validation, y_validation)
             print res
 
-            if (res.F1 > best_F1):
-                print("highest F1 accuracy so far. Saving weights.")
+            if (res.F1 + res.auPRC > best_average):
+                print("highest auPRC + F1 score so far. Saving weights.")
                 self.model.save_weights(out_filename, overwrite=True)
-            
+                best_average = res.F1 + res.auPRC
             if (res.auPRC > best_auPRC):
                 best_auPRC = res.auPRC
             if (res.F1 > best_F1):
