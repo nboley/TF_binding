@@ -22,7 +22,8 @@ def getFileHandle(filename, mode="r"):
         return open(filename,mode)
 
 NarrowPeakData = namedtuple(
-    'NarrowPeak', ['contig', 'start', 'stop', 'summit', 'score'])
+    'NarrowPeak', ['contig', 'start', 'stop', 'summit', 
+                   'score', 'signalValue', 'pValue', 'qValue', 'idrValue'])
 
 class NarrowPeak(NarrowPeakData):
     @property
@@ -54,17 +55,20 @@ class PeaksAndLabelsThreadSafeIterator(object):
         else:
             raise StopIteration()
 
-PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label'])
+PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label', 'score'])
 class PeaksAndLabels():
     def __getitem__(self, index):
         return PeakAndLabel(
-            self.peaks[index], self.samples[index], self.labels[index])
+            self.peaks[index], 
+            self.samples[index], 
+            self.labels[index], 
+            self.scores[index])
     
     def __iter__(self):
         return (
-            PeakAndLabel(pk, sample, label) 
-            for pk, sample, label 
-            in izip(self.peaks, self.samples, self.labels)
+            PeakAndLabel(pk, sample, label, score) 
+            for pk, sample, label, score
+            in izip(self.peaks, self.samples, self.labels, self.scores)
         )
 
     def thread_safe_iter(self):
@@ -89,19 +93,22 @@ class PeaksAndLabels():
         self.peaks = []
         self.samples = []
         self.labels = []
+        self.scores = []
         self.sample_ids = set()
         self.contigs = set()
         self.peak_widths = set()
-        for pk, sample, label in peaks_and_labels:
+        for pk, sample, label, score in peaks_and_labels:
             self.peaks.append(pk)
             self.peak_widths.add(pk.pk_width)
             self.samples.append(sample)
             self.labels.append(label)
+            self.scores.append(score)
             self.sample_ids.add(sample)
             self.contigs.add(pk.contig)
         assert len(self.peak_widths) == 1
         # turn the list of labels into a numpy array
         self.labels = np.array(self.labels, dtype='float32')
+        self.scores = np.array(self.scores, dtype='float32')
         
     def subset_data(self, sample_names, contigs):
         '''return data covering sample+names and contigs
@@ -126,16 +133,18 @@ class PeaksAndLabels():
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
 
-def iter_summit_centered_peaks(
-        original_peaks, half_peak_width, 
-        max_n_peaks=None, retain_score=False):
+def iter_summit_centered_peaks(original_peaks, half_peak_width):
     for peak in original_peaks:
         centered_peak = NarrowPeak(
             peak.contig, 
             peak.start+peak.summit-half_peak_width, 
             peak.start+peak.summit+half_peak_width,
             half_peak_width, 
-            peak.score if retain_score else -1)
+            peak.score,
+            peak.signalValue,
+            peak.pValue,
+            peak.qValue,
+            peak.idrValue)
         # skip peaks that are too close to the contig start
         if centered_peak.start <= 0: continue
         yield centered_peak
@@ -156,33 +165,58 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
         chrm = data[0]
         start = int(data[1])
         stop = int(data[2])
-        try: score = float(data[6])
-        except IndexError: score = -1
+
         try: summit = int(data[9])
         except IndexError: summit = (stop-start)/2
-        yield NarrowPeak(chrm, start, stop, summit, score)
+
+        try: score = float(data[4])
+        except IndexError: score = -1.0
+        try: signalValue = float(data[6])
+        except IndexError: signalValue = -1.0
+        try: pValue = float(data[7])
+        except IndexError: pValue = -1.0
+        try: qValue = float(data[8])
+        except IndexError: qValue = -1.0
+        # idr Value's dont exist in narrowPeakFiles
+        idrValue = -1.0
+        
+        yield NarrowPeak(
+            chrm, start, stop, summit, 
+            score, signalValue, pValue, qValue, idrValue)
 
     return
 
 def load_labeled_peaks_from_beds(
-        pos_regions_fp, neg_regions_fp, half_peak_width=None):
+        pos_regions_fp, neg_regions_fp, 
+        half_peak_width=None):
     def iter_all_pks():        
         for pos_pk in iter_summit_centered_peaks(
                 iter_narrow_peaks(pos_regions_fp), half_peak_width):
-            yield PeakAndLabel(pos_pk, 'sample', 1)
+            yield PeakAndLabel(pos_pk, 'sample', 1, pos_pk.signalValue)
         for neg_pk in iter_summit_centered_peaks(
                 iter_narrow_peaks(neg_regions_fp), half_peak_width):
-            yield PeakAndLabel(neg_pk, 'sample', 0)
+            yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
     return PeaksAndLabels(iter_all_pks())
 
 
 chipseq_peaks_tabix_file_cache = {}
-def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
+def label_and_score_peak_with_chipseq_peaks(
+        chipseq_peak_fnames, 
+        peak, 
+        min_overlap_frac=0.5,
+        score_index=6 # defaults to signal value
+    ):
+    """Label peaks by which ChIPseq peaks they overlap.
+
+    Score is set to the maximum score over all overlapping peaks, or 0 if 
+    no peaks overlap. 
+    """
     pid = os.getppid()
     peak_coords = (peak.contig, 
                    peak.start, 
                    peak.stop)
-    status = []
+    labels = []
+    scores = []
     for fname in chipseq_peak_fnames:
         # get the tabix file pointer, opening it if necessary 
         try: 
@@ -194,33 +228,35 @@ def classify_chipseq_peak(chipseq_peak_fnames, peak, min_overlap_frac=0.5):
         # if the contig isn't in the contig list, then it
         # can't be a valid peak
         if peak.contig not in fp.contigs: 
-            status.append(-1)
+            labels.append(-1)
+            scores.append(0)
             continue
         overlap_frac = 0.0
+        score = 0
         for chipseq_pk in fp.fetch(*peak_coords):
-            c_start, c_stop = chipseq_pk.split()[1:3]
+            data = chipseq_pk.split()
+            c_start, c_stop = data[1:3]
             overlap = (
                 min(peak.stop, int(c_stop)) - max(peak.start, int(c_start)))
-            overlap_frac = max(
-                overlap_frac, 
-                float(overlap)/(int(c_stop) - int(c_start))
-            )
+            pk_overlap_frac = float(overlap)/(int(c_stop) - int(c_start))
+            if pk_overlap_frac > overlap_frac:
+                overlap_frac = pk_overlap_frac
+                score = data[score_index]
         
         if overlap_frac > min_overlap_frac:
-            status.append(1)
-            continue
+            labels.append(1)
+            scores.append(score) # XXX
         else:
-            status.append(-1)
-    return status
+            labels.append(-1)
+            scores.append(0)
+    return labels, scores
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         tf_id, 
         annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
-        skip_ambiguous_peaks=False,
         include_ambiguous_peaks=False):
-    assert not (skip_ambiguous_peaks and include_ambiguous_peaks)
     # put the import here to avoid errors if the database isn't available
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
@@ -247,10 +283,9 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             continue
 
         # try to use anshul's relaxed peaks for the relaxed peak set.
-        if ((skip_ambiguous_peaks or include_ambiguous_peaks) 
-            and len(ambiguous_sample_chipseq_peak_fnames) == 0):
+        if ( include_ambiguous_peaks 
+             and len(ambiguous_sample_chipseq_peak_fnames) == 0):
             continue
-            raise ValueError, "No relaxed peak set exists for (tf_id, annotation, sample) (%s, %s, '%s'" % (tf_id, annotation, sample_id)
         
         print "Loading peaks for sample '%s' (%i/%i)" % (
             sample_id, sample_index, len(peak_fnames))
@@ -260,23 +295,25 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                 pks_iter = iter_summit_centered_peaks(pks_iter, half_peak_width)
             num_peaks = 0
             for i, pk in enumerate(pks_iter):
-                label = classify_chipseq_peak(
+                labels, scores = label_and_score_peak_with_chipseq_peaks(
                     optimal_sample_chipseq_peaks_fnames, pk)
-                # merge labels
-                label = 0 if len(label) == 0 else max(label)
-                
-                if skip_ambiguous_peaks and label == -1:
-                    noisy_label = classify_chipseq_peak(
-                        ambiguous_sample_chipseq_peak_fnames, pk)
-                    if max(noisy_label) == 1:
-                        continue
+                # set the label to zero if there is no clean peak set
+                # (in this case all peaks will be labeled -1 or 1 )
+                # aggregate labels by taking the max over all labels
+                label, score = -1, 0
+                if len(labels) > 0:
+                    assert len(scores) > 0
+                    label = max(labels)
+                    score = max(scores)
                 if include_ambiguous_peaks and label == -1:
-                    relaxed_label = classify_chipseq_peak(
-                        ambiguous_sample_chipseq_peak_fnames, pk)
-                    if max(relaxed_label) == 1:
+                    (relaxed_labels, relaxed_scores
+                         ) = label_and_score_peak_with_chipseq_peaks(
+                             ambiguous_sample_chipseq_peak_fnames, pk)
+                    if max(relaxed_labels) == 1:
                         label = 0
+                        score = max(relaxed_scores)
                 
-                yield PeakAndLabel(pk, sample_id, label)
+                yield PeakAndLabel(pk, sample_id, label, score)
                 num_peaks += 1
                 if ( max_n_peaks_per_sample is not None 
                      and num_peaks >= max_n_peaks_per_sample): 
@@ -288,15 +325,15 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
-        skip_ambiguous_peaks=False,
         include_ambiguous_peaks=False):
     """
     
     """
     # check for a pickled file int he current directory
-    pickle_fname = "peaks_and_label.%s.%s.%s.%s.%s.obj" % (
-        tf_id, half_peak_width, max_n_peaks_per_sample, 
-        skip_ambiguous_peaks, include_ambiguous_peaks)
+    pickle_fname = "peaks_and_label.%s.%s.%s.%s.obj" % (
+        tf_id, half_peak_width, 
+        max_n_peaks_per_sample, 
+        include_ambiguous_peaks)
     try:
         with open(pickle_fname) as fp:
             print "Using pickled peaks_and_labels from '%s'." % pickle_fname 
@@ -309,7 +346,6 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             annotation_id,
             half_peak_width, 
             max_n_peaks_per_sample, 
-            skip_ambiguous_peaks,
             include_ambiguous_peaks))
     with open(pickle_fname, "w") as ofp:
         pickle.dump(peaks_and_labels, ofp)

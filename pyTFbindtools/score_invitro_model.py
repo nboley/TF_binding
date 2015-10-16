@@ -26,8 +26,7 @@ from grit.lib.multiprocessing_utils import (
 
 from peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
-    getFileHandle, 
-    classify_chipseq_peak)
+    getFileHandle )
 
 from motif_tools import (
     load_selex_models_from_db, 
@@ -336,8 +335,7 @@ def open_or_create_feature_file(
             annotation_id,
             half_peak_width=half_peak_width, 
             max_n_peaks_per_sample=max_n_peaks_per_sample,
-            skip_ambiguous_peaks=skip_ambiguous_peaks,
-            include_ambiguous_peaks=(False if skip_ambiguous_peaks else True))
+            include_ambiguous_peaks=True)
         print "Finished loading peaks."
 
         from DB import load_genome_metadata

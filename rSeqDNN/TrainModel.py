@@ -47,7 +47,6 @@ def parse_args():
             args.annotation_id,
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
-            args.skip_ambiguous_peaks,
             include_ambiguous_peaks=True)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
