@@ -130,6 +130,59 @@ class SingleMotifBindingData(TFBindingData):
     def labels(self):
         return np.array(self.data[self.label_columns[0]])
 
+class BindingModel():
+    def __init__(self):
+        #clf = DecisionTreeClassifier(max_depth=20)
+        self.clf = RandomForestClassifier(max_depth=10)
+        #clf = GradientBoostingClassifier(n_estimators=100)
+
+    def train(self, data):
+        self.predictors = [ x for x in data.columns
+                            if not x.startswith('label') ]
+        assert len(data.label_columns) == 1
+        self.label = data.label_columns[0]
+        self.train_data = data
+        self.mo = self.clf.fit(
+            data.data[self.predictors], data.data[self.label])
+        return
+
+    def predict(self, data):
+        return self.mo.predict(data.data[self.predictors])
+
+    def predict_proba(self, data):
+        return self.mo.predict_proba(data.data[self.predictors])[:,1]
+    
+    def evaluate(self, data):
+        y_hat = self.predict(data)
+        y_hat_prbs = self.predict_proba(data)
+
+        # set the positives to include real positives and ambiguous positives
+        positives = np.array(data.data[self.label] > -1)
+        num_true_positives = (y_hat[positives] == 1).sum()
+
+        negatives = np.array(data.data[self.label] == -1)
+        num_true_negatives = (y_hat[negatives] == -1).sum()
+
+        precision, recall, _ = precision_recall_curve(positives, y_hat_prbs)
+        prc = np.array([recall,precision])
+        auPRC = auc(recall, precision)
+
+        return ClassificationResult(
+            set(self.train_data.sample_ids) != set(data.sample_ids),
+            'validation',
+
+            self.train_data.contigs, self.train_data.sample_ids,
+
+            data.contigs, data.sample_ids,
+
+            roc_auc_score(positives, y_hat_prbs),
+            auPRC,
+            f1_score(positives, y_hat),
+
+            num_true_positives, positives.sum(),
+            num_true_negatives, negatives.sum()
+        )
+
 def estimate_cross_validated_error(
         data, 
         balance_data=False, 
@@ -146,49 +199,14 @@ def estimate_cross_validated_error(
         
         if validate_on_clean_labels:
             validation = validation.remove_zero_labeled_entries()
-        
-        #clf_1 = DecisionTreeClassifier(max_depth=20)
-        clf_1 = RandomForestClassifier(max_depth=10)
-        #clf_1 = GradientBoostingClassifier(n_estimators=100)
 
-        all_predictors = [ x for x in train.columns
-                           if not x.startswith('label') ]
-        predictors = all_predictors
-        
-        assert len(train.label_columns) == 1
-        label = train.label_columns[0]
-        
-        mo = clf_1.fit(train.data[predictors], train.data[label])
-        y_hat = mo.predict(validation.data[predictors])
-        y_hat_prbs = mo.predict_proba(validation.data[predictors])[:,1]
-        # set the positives to include real positives and ambiguous positives
-        positives = np.array(validation.data[label] > -1)
-        num_true_positives = (y_hat[positives] == 1).sum()
+        mo = BindingModel()
+        mo.train(train)
 
-        negatives = np.array(validation.data[label] == -1)
-        num_true_negatives = (y_hat[negatives] == -1).sum()
-
-        precision, recall, _ = precision_recall_curve(positives, y_hat_prbs)
-        prc = np.array([recall,precision])
-        auPRC = auc(recall, precision)
-
-        result_summary = ClassificationResult(
-            set(train.sample_ids) != set(validation.sample_ids),
-            'validation',
-
-            train.contigs, train.sample_ids,
-
-            validation.contigs, validation.sample_ids,
-
-            roc_auc_score(positives, y_hat_prbs),
-            auPRC,
-            f1_score(positives, y_hat),
-
-            num_true_positives, positives.sum(),
-            num_true_negatives, negatives.sum()
-        )
-        print result_summary
-        res.append(result_summary)
+        res_summary = mo.evaluate(validation)
+        print res_summary
+        res.append(res_summary)
+    
     return res
 
 def load_single_motif_data(fname):
