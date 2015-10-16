@@ -271,13 +271,10 @@ def parse_arguments():
 
     parser.add_argument( '--balance-data', default=False, action='store_true', 
         help='Predict results on balanced labels')
-    parser.add_argument( '--validate-on-clean-labels', 
-        default=False, action='store_true', 
-        help='Validate the model on ChIP-seq peaks with clean labels')
-
     parser.add_argument( '--skip-ambiguous-peaks', 
         default=False, action='store_true', 
-        help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
+        help='If set, only validate on the clean peak set')
+
     parser.add_argument( '--half-peak-width', type=int, default=500,
         help='Example accessible region peaks to be +/- --half-peak-width bases from the summit (default: 500)')
     parser.add_argument( '--ofprefix', type=str, default='peakscores',
@@ -305,24 +302,22 @@ def parse_arguments():
     motif = motifs[0]
     print "Finished loading motifs."
 
-    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{skip_ambiguous_peaks}.True.txt.gz".format(
+    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.txt.gz".format(
         prefix=args.ofprefix, 
         motif_id=motifs[0].motif_id,
         half_peak_width=args.half_peak_width,
         max_peaks_per_sample=args.max_num_peaks_per_sample,
-        skip_ambiguous_peaks=args.skip_ambiguous_peaks
     )
     
     return (annotation_id, motif, ofname,
             args.half_peak_width,
             args.balance_data, 
             args.skip_ambiguous_peaks,
-            args.validate_on_clean_labels,
             args.max_num_peaks_per_sample)
 
 def open_or_create_feature_file(
         annotation_id, motif, ofname, 
-        half_peak_width, skip_ambiguous_peaks, 
+        half_peak_width,  
         max_n_peaks_per_sample=None):
     try:
         return open(ofname)
@@ -360,14 +355,13 @@ def open_or_create_feature_file(
 
 def main():
     (annotation_id, motif, ofname, half_peak_width, 
-     balance_data, skip_ambiguous_peaks, validate_on_clean_labels,
+     balance_data, validate_on_clean_labels,
      max_num_peaks_per_sample
         ) = parse_arguments()
     # check to see if this file is cached. If not, create it
     feature_fp = open_or_create_feature_file(
         annotation_id, motif, ofname, 
         half_peak_width=half_peak_width,
-        skip_ambiguous_peaks=skip_ambiguous_peaks,
         max_n_peaks_per_sample=max_num_peaks_per_sample)
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)
