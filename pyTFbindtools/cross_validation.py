@@ -1,7 +1,11 @@
-from sklearn import cross_validation
-
 import itertools
 from collections import namedtuple
+
+import numpy as np
+
+from sklearn import cross_validation
+from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
+
 
 TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
@@ -20,7 +24,41 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
 
-class ClassificationResult(ClassificationResultData):
+class ClassificationResult(object):
+    _fields = ClassificationResultData._fields
+
+    def __iter__(self):
+        return iter(getattr(self, field) for field in self._fields)
+    
+    def __init__(self, labels, predicted_labels, predicted_prbs,
+                 is_cross_celltype=None, sample_type=None,
+                 train_chromosomes=None, train_samples=None,
+                 validation_chromosomes=None, validation_samples=None):
+        self.is_cross_celltype = is_cross_celltype
+        self.sample_type = sample_type
+
+        self.train_chromosomes = train_chromosomes
+        self.train_samples = train_samples
+
+        self.validation_chromosomes = validation_chromosomes
+        self.validation_samples = validation_samples
+        
+        positives = np.array(labels == 1)
+        self.num_true_positives = (predicted_labels[positives] == 1).sum()
+        self.num_positives = positives.sum()
+        
+        negatives = np.array(labels == -1)        
+        self.num_true_negatives = (predicted_labels[negatives] == -1).sum()
+        self.num_negatives = negatives.sum()
+        
+        self.auROC = roc_auc_score(positives, predicted_prbs)
+        precision, recall, _ = precision_recall_curve(positives, predicted_prbs)
+        prc = np.array([recall,precision])
+        self.auPRC = auc(recall, precision)
+        self.F1 = f1_score(positives, predicted_labels)
+        
+        return
+
     @property
     def positive_accuracy(self):
         return float(self.num_true_positives)/self.num_positives
@@ -44,7 +82,7 @@ class ClassificationResult(ClassificationResultData):
         rv.append("Positive Accuracy: %.3f (%i/%i)" % (
             self.positive_accuracy, self.num_true_positives,self.num_positives))
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (
-            self.negative_accuracy, self.num_true_negatives,self.num_negatives))
+            self.negative_accuracy, self.num_true_negatives, self.num_negatives))
         return "\t".join(rv)
 
 class ClassificationResults(list):

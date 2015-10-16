@@ -17,7 +17,6 @@ import pandas as pd
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import ( 
     AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier )
-from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
 from pysam import FastaFile, TabixFile
 
@@ -155,33 +154,7 @@ class BindingModel():
     def evaluate(self, data):
         y_hat = self.predict(data)
         y_hat_prbs = self.predict_proba(data)
-
-        # set the positives to include real positives and ambiguous positives
-        positives = np.array(data.data[self.label] > -1)
-        num_true_positives = (y_hat[positives] == 1).sum()
-
-        negatives = np.array(data.data[self.label] == -1)
-        num_true_negatives = (y_hat[negatives] == -1).sum()
-
-        precision, recall, _ = precision_recall_curve(positives, y_hat_prbs)
-        prc = np.array([recall,precision])
-        auPRC = auc(recall, precision)
-
-        return ClassificationResult(
-            set(self.train_data.sample_ids) != set(data.sample_ids),
-            'validation',
-
-            self.train_data.contigs, self.train_data.sample_ids,
-
-            data.contigs, data.sample_ids,
-
-            roc_auc_score(positives, y_hat_prbs),
-            auPRC,
-            f1_score(positives, y_hat),
-
-            num_true_positives, positives.sum(),
-            num_true_negatives, negatives.sum()
-        )
+        return ClassificationResult(data.data[self.label], y_hat, y_hat_prbs)
 
 def estimate_cross_validated_error(
         data, 

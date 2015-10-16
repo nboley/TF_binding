@@ -12,12 +12,14 @@ from keras.layers.core import (
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_yaml
-from sklearn.metrics import (
-    roc_auc_score, accuracy_score, precision_recall_curve, auc, f1_score)
 
 import theano.tensor as T
 
 def expected_F1_loss(y_true, y_pred):
+    min_label = T.min(y_true)
+    max_label = T.max(y_true)
+    y_true = (y_true - min_label)/(max_label - min_label)
+    
     expected_true_positives = T.sum(y_pred*y_true)
     expected_false_positives = T.sum(y_pred*(1-y_true))
     expected_false_negatives = T.sum((1-y_pred)*y_true)
@@ -104,22 +106,11 @@ class KerasModelBase():
 
     def evaluate_matrices(self, X_validation, y_validation):
         preds = self.model.predict_classes(X_validation)
+        # move the predicted labels into -1, 1 space
+        preds[preds == 0] = -1
         probs = self.model.predict_proba(X_validation)
-        true_pos = (y_validation == 1)
-        true_neg = (y_validation < 1)
-        precision, recall, _ = precision_recall_curve(y_validation, probs)
-        prc = np.array([recall,precision])
-        auPRC = auc(recall, precision)
-        auROC = roc_auc_score(y_validation, probs)
-        f1 = f1_score(y_validation, preds)
-        classification_result = ClassificationResult(
-            None, None, None, None, None, None,
-            auROC, auPRC, f1,
-            np.sum(preds[true_pos] == 1), np.sum(true_pos),
-            np.sum(preds[true_neg] < 1), np.sum(true_neg)
-        )
-
-        return classification_result
+        y_validation[y_validation == 0] = -1
+        return ClassificationResult(y_validation, preds, probs)
     
     def evaluate(self, valid, genome_fasta, filter_ambiguous_labels=False):
         '''evaluate model
@@ -146,7 +137,6 @@ class KerasModelBase():
             X = X[y != 0,:,:,:]
             y = y[y != 0]
 
-        y[y == -1] = 0
         return X, y
 
 
@@ -166,7 +156,7 @@ class KerasModel(KerasModelBase):
         X_train, y_train = self.build_predictor_and_label_matrices(
             data_fitting, genome_fasta, True)
         
-        neg_class_cnt = (y_train == 0).sum()
+        neg_class_cnt = (y_train == -1).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
         class_prbs = {float(neg_class_cnt)/len(y_train), 
