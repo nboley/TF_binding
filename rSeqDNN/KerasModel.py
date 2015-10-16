@@ -5,7 +5,7 @@ from pyTFbindtools.sequence import code_seq
 from pyTFbindtools.cross_validation import ClassificationResult
 
 from keras.preprocessing import sequence
-from keras.optimizers import SGD, RMSprop, Adagrad, Adam
+from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
 from keras.models import Sequential
 from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute)
@@ -31,7 +31,7 @@ def expected_F1_loss(y_true, y_pred):
 
 def balance_matrices(X, labels):
     pos_full = X[(labels == 1)]
-    neg_full = X[(labels == -1)]
+    neg_full = X[(labels < 1)]
     sample_size = min(pos_full.shape[0], neg_full.shape[0])
     pos = pos_full[
         np.random.choice(pos_full.shape[0], sample_size, replace=False)]
@@ -78,8 +78,16 @@ class KerasModelBase():
         
         # Define architecture     
         self.model = Sequential()
-        self.model.add(Convolution2D(numConv, convWidth, convHeight, activation="relu", init="he_normal", input_shape=(1, 4, self.seq_len)));
-        self.model.add(MaxPooling2D(pool_size=(1,maxPoolSize), stride=(1,maxPoolStride)))
+        self.model.add(Convolution2D(
+            numConv, 
+            convWidth, convHeight, 
+            activation="relu", init="he_normal", 
+            input_shape=(1, 4, self.seq_len)
+        ))
+        self.model.add(MaxPooling2D(
+            pool_size=(1,maxPoolSize), 
+            stride=(1,maxPoolStride)
+        ))
         self.model.add(Reshape((numConv,numMaxPoolOutputs)))
         self.model.add(Permute((2,1)))
         # make the number of max pooling outputs the time dimension
@@ -93,14 +101,6 @@ class KerasModelBase():
         self.model.compile(loss=loss, 
                            optimizer=optimizer,
                            class_mode=class_mode);
-
-    def _reshape_coded_seqs_array(self, coded_seqs):
-        '''Reshape coded seqs into Keras acceptible format.
-        '''
-        if len(np.shape(coded_seqs)) == 3:
-            return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
-        else:
-            return coded_seqs
             
     def evaluate(self, X_validation, y_validation):
         '''evaluate model
@@ -125,6 +125,28 @@ class KerasModelBase():
 
         return classification_result
 
+    def _reshape_coded_seqs_array(self, coded_seqs):
+        '''Reshape coded seqs into Keras acceptible format.
+        '''
+        if len(np.shape(coded_seqs)) == 3:
+            return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
+        else:
+            return coded_seqs
+
+    def build_predictor_and_label_matrices(
+            self, data, genome_fasta, filter_ambiguous_labels):
+        X = self._reshape_coded_seqs_array(
+                encode_peaks_sequence_into_binary_array(
+                    data.peaks, genome_fasta))
+        y = np.array(data.labels, dtype='float32')
+        if filter_ambiguous_labels:
+            X = X[y != 0,:,:,:]
+            y = y[y != 0]
+
+        y[y == -1] = 0
+        return X, y
+
+
 class KerasModel(KerasModelBase):
     def train_rSeqDNN_model(self,
                             data,
@@ -135,22 +157,24 @@ class KerasModel(KerasModelBase):
 
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        X_validation = self._reshape_coded_seqs_array(
-                encode_peaks_sequence_into_binary_array(
-                        data_stopping.peaks, genome_fasta))
-        y_validation = np.array(data_stopping.labels, dtype='float32')
-        X_train = self._reshape_coded_seqs_array(
-                encode_peaks_sequence_into_binary_array(
-                        data_fitting.peaks, genome_fasta))
-        y_train = np.array(data_fitting.labels, dtype='float32')
-        weights = {len(y_train)/(len(y_train)-y_train.sum()), 
-                   len(y_train)/y_train.sum()}
+        X_validation, y_validation = self.build_predictor_and_label_matrices(
+            data_stopping, genome_fasta, True)
 
+        X_train, y_train = self.build_predictor_and_label_matrices(
+            data_fitting, genome_fasta, True)
+        
+        neg_class_cnt = (y_train == 0).sum()
+        pos_class_cnt = (y_train == 1).sum()
+        assert neg_class_cnt + pos_class_cnt == len(y_train)
+        class_prbs = {float(neg_class_cnt)/len(y_train), 
+                      float(pos_class_cnt)/len(y_train)}
+
+        print("Initializing model from balanced training set.")
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)        
         
-        print("Initializing model from balanced training set.")
+        print("Compiling model with binary cross entropy loss.")
         self.compile('binary_crossentropy', Adam())
         self.model.fit(
                 b_X_train, b_y_train,
@@ -160,38 +184,31 @@ class KerasModel(KerasModelBase):
                 batch_size=batch_size,
                 nb_epoch=3)
         print self.evaluate(b_X_validation, b_y_validation)
-
-        """
-        print("Fitting the model with unbalanced training set.")
-        self.model.fit(
-            X_train, y_train,
-            validation_data=(X_validation, y_validation),
-            show_accuracy=True,
-            class_weight=weights,
-            batch_size=batch_size,
-            nb_epoch=1)
-        res = self.evaluate(X_validation, y_validation)
-        print res
-
+        
         print("Switiching to F1 loss function.")
-        self.compile(expected_F1_loss, Adam()) # expected_F1_loss
-        """
+        print("Compiling model with expected F1 loss.")
+        self.compile(expected_F1_loss, Adam())
+        best_auPRC = 0
         best_F1 = 0
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
                 validation_data=(X_validation, y_validation),
                 show_accuracy=True,
-                class_weight=weights,
+                class_weight=class_prbs,
                 batch_size=batch_size,
                 nb_epoch=1)
             res = self.evaluate(X_validation, y_validation)
             print res
+
             if (res.F1 > best_F1):
-                print("highest auPRC accuracy so far. Saving weights.")
-                self.model.save_weights(out_filename,
-                                        overwrite=True)
-                best_F1 = res.F1
+                print("highest F1 accuracy so far. Saving weights.")
+                self.model.save_weights(out_filename, overwrite=True)
+            
+            if (res.auPRC > best_auPRC):
+                best_auPRC = res.auPRC
+            if (res.F1 > best_F1):
+                best_F1 = res.F1                
 
         # load the best model
         print "Loading best model"
