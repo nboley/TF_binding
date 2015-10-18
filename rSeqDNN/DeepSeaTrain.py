@@ -117,6 +117,33 @@ def train_deepsea(input_list):
                                        training_stopping,
                                        genome_fasta)
 
+    # define deepsea training settings
+    learning_rate = '1'
+    learning_rate_decay = '8e-7'
+    weight_decay= '1e-6'
+    momentum = '0.9'
+    stdv = '0.05'
+    set_device = '1' # gpu device
+    # TODO: user specified
+    window_size = '1000'
+    max_kernel_norm = '0.9'
+    batch_size = '16'
+    l1_sparsity = '1e-8'
+    # train deepsea
+    command = ' '.join(['th main.lua',
+                        '-save', output_directory,
+                        '-LearningRate', learning_rate,
+                        '-LearningRateDecay', learning_rate_decay,
+                        '-weightDecay', weight_decay,
+                        '-momentum', momentum,
+                        '-stdv', stdv,
+                        '-setDevice', set_device,
+                        '-windowsize', window_size,
+                        '-max_kernel_norm', max_kernel_norm,
+                        '-batchSize', batch_size,
+                        '-L1Sparsity', l1_sparsity])
+    process = subprocess.Popen(command, shell=True)
+
 def main():
     download_and_fix_deepsea_training()
     ( peaks_and_labels, 
