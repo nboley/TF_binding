@@ -152,7 +152,7 @@ function train()
 
       -- load a mini-batch of validation data
       k = 1
-      for i = t,math.min(t+opt.batchSize-1,4000) do
+      for i = t,math.min(t+opt.batchSize-1, validData:size()) do
          input = validData.data[ { {shuffle[i]},{},{ 1+(1000-opt.windowsize)/2.0,1000-(1000-opt.windowsize)/2.0 } } ]:float()
          local target = validData.labels[shuffle[i]]:float()
          inputs[k]= input
