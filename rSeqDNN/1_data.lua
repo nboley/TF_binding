@@ -6,11 +6,11 @@ print 'Loading dataset'
 
 train_file = 'train.mat'
 valid_file = 'valid.mat'
-noutputs=919
+noutputs = 1
 
 
-tr_size = 4400000
-te_size = 4000 
+tr_size = 960
+te_size = 177 
 
 
 loaded = mattorch.load(train_file)
@@ -28,7 +28,6 @@ validData = {
 }
    
 print 'Finished loading dataset'
-
 
 
 
