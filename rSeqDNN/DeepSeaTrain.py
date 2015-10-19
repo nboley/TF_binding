@@ -129,6 +129,8 @@ def train_deepsea(input_list):
     max_kernel_norm = '0.9'
     batch_size = '16'
     l1_sparsity = '1e-8'
+    training_size = str(len(training_fitting.labels))
+    validation_size = str(len(training_stopping.labels))
     # train deepsea
     command = ' '.join(['th main.lua',
                         '-save', output_directory,
@@ -141,7 +143,9 @@ def train_deepsea(input_list):
                         '-windowsize', window_size,
                         '-max_kernel_norm', max_kernel_norm,
                         '-batchSize', batch_size,
-                        '-L1Sparsity', l1_sparsity])
+                        '-L1Sparsity', l1_sparsity,
+                        '-training_size', training_size,
+                        '-validation_size', validation_size])
     process = subprocess.Popen(command, shell=True)
 
 def main():
