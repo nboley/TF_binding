@@ -3,6 +3,9 @@ from collections import namedtuple
 
 import numpy as np
 
+from scipy.stats import spearmanr, rankdata
+from scipy.stats.mstats import mquantiles
+
 from sklearn import cross_validation
 from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
@@ -56,7 +59,7 @@ class ClassificationResult(object):
         prc = np.array([recall,precision])
         self.auPRC = auc(recall, precision)
         self.F1 = f1_score(positives, predicted_labels)
-        
+
         return
 
     @property
@@ -84,6 +87,43 @@ class ClassificationResult(object):
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (
             self.negative_accuracy, self.num_true_negatives, self.num_negatives))
         return "\t".join(rv)
+
+def find_optimal_ambiguous_peak_threshold(
+        mo, predictors, labels, peak_scores, num_thresh=100):
+    """Find the threshold that maximizes the F1 score.
+
+    """
+    # make a copy of the original ambiguous label set so that we can
+    # evaluate the labels at various thresholds 
+    original_labels = labels
+    labels = labels.copy()
+    # find the peaks with ambiguous labels and their scores
+    ambiguous_peaks = np.array(original_labels == 0)        
+    ambiguous_peak_scores = peak_scores[ambiguous_peaks]
+
+    # predict the label proabilities for every peak (ambiguous included)
+    y_hat_prbs = mo.predict_proba(predictors)
+    # determine the list of thresholds
+    ambiguous_thresholds = mquantiles(
+        ambiguous_peak_scores, 
+        np.arange(0.0,1.0,1.0/num_thresh)).tolist() + [1.0,]
+    # set all of the ambiguous peaks' labels to positive. This will change
+    # as we try different thresholds
+    labels[ambiguous_peaks] = 1.0
+    # for each threshold, change the labels and evaluate the model's 
+    # performance
+    best_f1 = 0.0
+    best_thresh = None
+    for thresh in ambiguous_thresholds:
+        ambig_peaks_below_threshold = (
+            ambiguous_peaks&(peak_scores <= thresh))
+        labels[ambig_peaks_below_threshold] = -1
+        res = mo.evaluate(predictors, labels)
+        if res.F1 > best_f1:
+            best_f1 = res.F1
+            best_thresh = thresh
+
+    return best_thresh
 
 class ClassificationResults(list):
     def __str__(self):

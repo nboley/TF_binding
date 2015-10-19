@@ -33,7 +33,10 @@ from pyTFbindtools.motif_tools import (
     score_region)
 
 from pyTFbindtools.cross_validation import (
-    ClassificationResult, ClassificationResults, iter_train_validation_splits )
+    ClassificationResult, 
+    ClassificationResults, 
+    iter_train_validation_splits, 
+    find_optimal_ambiguous_peak_threshold )
 
 
 NTHREADS = 1
@@ -78,6 +81,8 @@ class TFBindingData(object):
         """
         self.label_columns = [
             x for x in self.data.columns if x.startswith('label')]
+        self.score_columns = [
+            x for x in self.data.columns if x.startswith('score')]
         self.motif_ids = [
             x.split("__")[1] for x in self.label_columns]
         sample_ids = set()
@@ -137,24 +142,44 @@ class BindingModel():
 
     def train(self, data):
         self.predictors = [ x for x in data.columns
-                            if not x.startswith('label') ]
+                            if not x.startswith('label')
+                            and not x.startswith('score')]
         assert len(data.label_columns) == 1
         self.label = data.label_columns[0]
+        self.score = data.score_columns[0]
         self.train_data = data
         self.mo = self.clf.fit(
             data.data[self.predictors], data.data[self.label])
         return
 
-    def predict(self, data):
-        return self.mo.predict(data.data[self.predictors])
+    def predict(self, predictors):
+        return self.mo.predict(predictors)
 
-    def predict_proba(self, data):
-        return self.mo.predict_proba(data.data[self.predictors])[:,1]
+    def predict_proba(self, predictors):
+        return self.mo.predict_proba(predictors)[:,1]
     
-    def evaluate(self, data):
-        y_hat = self.predict(data)
-        y_hat_prbs = self.predict_proba(data)
-        return ClassificationResult(data.data[self.label], y_hat, y_hat_prbs)
+    def classify_ambiguous_peaks(self, validation_data, num_thresh=100):
+        # find the threhsold that optimizes the F1 score
+        best_thresh = find_optimal_ambiguous_peak_threshold(
+            self, 
+            validation_data.data[self.predictors], 
+            validation_data.data[self.label],
+            validation_data.data[self.score],
+            num_thresh)
+        # set the ambiguous peak labels 
+        ambiguous_peaks = (validation_data.data[self.label] == 0)
+        validation_data.data[self.label][ambiguous_peaks] = 1.0
+        ambig_peaks_below_threshold = (
+            ambiguous_peaks&(validation_data.data[self.score] <= best_thresh))
+        validation_data.data[self.label][ambig_peaks_below_threshold] = -1
+
+        return best_thresh
+        
+    def evaluate(self, predictors, labels):
+        y_hat = self.predict(predictors)
+        y_hat_prbs = self.predict_proba(predictors)
+        return ClassificationResult(
+            labels, y_hat, y_hat_prbs)
 
 def estimate_cross_validated_error(
         data, 
@@ -175,8 +200,9 @@ def estimate_cross_validated_error(
 
         mo = BindingModel()
         mo.train(train)
-
-        res_summary = mo.evaluate(validation)
+        mo.classify_ambiguous_peaks(validation)
+        res_summary = mo.evaluate(
+            validation.data[mo.predictors], validation.data[mo.label])
         print res_summary
         res.append(res_summary)
     
@@ -191,8 +217,10 @@ def load_single_motif_data(fname):
     
 class BuildPredictorsFactory(object):
     def build_header(self):
+        assert len(self.motifs) == 1
         header = ['region',] + [
-            "label__%s" % motif.motif_id for motif in self.motifs] + [
+            "label__%s" % motif.motif_id for motif in self.motifs] +[
+                "score__%s" % motif.motif_id for motif in self.motifs]+ [
                 "access_score",]
         for motif in self.motifs:
             for flank_size in self.flank_sizes:
@@ -242,10 +270,11 @@ def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
             continue
         if index%50000 == 0:
             print "%i/%i" % (index, len(peaks))
-        ofp.write("%s_%s\t%s\t%.4f\t%s\n" % (
+        ofp.write("%s_%s\t%s\t%.4f\t%.4f\t%s\n" % (
             labeled_peak.sample, 
             "_".join(str(x) for x in labeled_peak.peak).ljust(30), 
             labeled_peak.label, 
+            labeled_peak.score,
             labeled_peak.peak[-1],
             "\t".join("%.4e" % x for x in scores)))
     return
