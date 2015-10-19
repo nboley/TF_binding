@@ -4,13 +4,13 @@ require 'mattorch'
 
 print 'Loading dataset'
 
-train_file = 'train.mat'
-valid_file = 'valid.mat'
+train_file = opt.training_file
+valid_file = opt.validation_file
 noutputs = 1
 
 
-tr_size = 960
-te_size = 177 
+tr_size = opt.training_size
+te_size = opt.validation_size
 
 
 loaded = mattorch.load(train_file)
