@@ -1,3 +1,133 @@
+rSeqDNN
+
+1) model development
+   a. single TF sequence models compared with deepsea and deppbind
+   b. put simulations into testing framework 
+   c. sequence+shape models using in-vitro motifs
+   d. sequence+shape+accessibility models trained genome-wide
+   e. full integrative model: sequence, shape, accessibility, histone mods, MNase
+
+2) model analysis
+   a. scoring method that scores each bp given trained model
+   b. match high scoring subsequences to known motifs
+
+1a: implementation
+    - finish deepsea training code.
+      - fork deepsea code, make changes in this fork
+      - run deepsea on their training data
+      - write code to test re-trained model on their test data
+      - write code to train their model on our training set
+      - train their model on single TFs and test using our framework
+    :DL: 10/19
+
+    - finish deepbind training code.
+      - train their model on their data
+      - reproduce their test results
+      - write code to train their model on our data with our framework
+      - estimate CV results with our framework
+    :DL: 10/22
+
+1b: implementation (FINISHED 11/2)
+    - software framework
+      - simulation functions should output sequence with labels
+      - the solutions should be as minimal as possible
+      - the model architecture should be specified from biologically relevant
+        building blocks
+        - ie single embedded TF purely enthalpic model vs TF co-binding model
+    - write unit tests that systemtically evaluate each of these simulations
+      - single binding site sampled from PWM
+        - embedded random uniformly in the sequence vs. not embedded
+        - embedded in central 100bp vs. uniformly anywhere
+      - multiple binding sites sampled from single PWM
+        - embedded many times uniformly vs. embedded few times uniformly
+    :DL: 10/25
+    
+      - energetic based models
+        - use sequence only SELEX derived models to predict binding occupancy
+          under various chemical affinities, sample binding events, test ability
+          to discriminate
+        - add in steric hindrance
+        - add in best binding site in 50 bp window as the binding site, and then
+          steric hindrance
+    :DL: 10/28
+
+    - modify simulations to use rank regression 
+      - change each of the above to output ranks, and then see how well we can
+        predict the rank correlation
+    :DL: 11/2
+
+1c: implementation (FINISHED 11/15)
+    - integrate shape features
+      - write cython function to compute shape feature vector for sequence vector
+      - modify modeling code to compute both sequence and shape features
+        - have option for shape to be on/off
+        - modify score_invitro_models.py to also use shape features
+    :DL: 11/5
+
+    - integrate in-vitro motifs
+      - write function to initialize rSeqDNN convolution(s) from in-vitro motif
+        - have option to use either target TF's motifs, all motifs, or some subset of motifs
+        - write test to compare with and without shape fit
+          - PAPER HYPOTHESIS: which factors does shape help with?
+        - vary the convolutions size (I would guess that we can use smaller convolutions post shape)
+          - PAPER HYPOTHESIS: are long range effects mostly regulated by shape
+    :DL: 11/9
+          
+      - write model to use fixed convolutional layer, followed by sequence
+        - test sequence input at bottom versus higher layer
+        - will we be able to achieve the same performance with less convolutions?
+    :DL: 11/11
+
+      - integrate in-vitro nucleosome binding models
+        - have people done in-vitro on modified histones? e.g. acytelated
+    :DL: 11/14 (Nathan helps)
+
+    - learn TF binding sites in-vivo
+    :DL: 11/15 (Nathan helps)
+    
+    SIMULATION: (done inline above)
+    - test sequence+shape models
+      - synthetic binding model simulations 
+        - assume that the shape contributions to the energy are linear
+        - assume that the shape's energy binding contribution is a hard sigmoid
+        - simulate steric hindrance with various protein sizes
+          - when we simualte binding events, don't allow another binding event less than K bases away
+      - simulations using SELEX derived sequence+shape in-vitro motifs
+      - simulate TF binding conditional on nucleosome positions
+        - maybe use the ATACseq/DNASE for a prior on position
+
+      IDEAS TO CONSIDER:
+        - characterize utility of l1 regularization
+        - characterize convolution size and maxpooling
+
+1d: implementation (FINISHED 12/1 - ambitious)
+    NEED TO FIGURE THIS OUT
+    - Test on DNASE peaks
+    - Test on bins genome wide
+    
+    - integrate accessibility features
+      - write code to extract accessibility features from DB
+      - normalize/rank accessibility features across samples
+      - modify modeling code to compute accessibility features
+        - have option for accessibility to be on/off
+      
+1e: implementation: (FINISHED 1/15)
+    NEED TO FIGURE THIS OUT
+
+    SIMULATION:
+    - embedding of binding sites sampled from multiple PWMs
+      - one of 2 PWMs embedded uniformly vs. none embedded
+      - 2 PWMs embedded with fixed/variable gap vs. 2 PWMs embedded uniformly
+      - 2 PWMs with fixed gap vs. 2 PWMs with variable gap
+    - embedding of 61 pair PWM grammars from GEM
+      - single grammar per sequence: 62-class calssification
+      - 0-5 grammars per sequence: 62-task classification
+      - multiple grammars per sequence, grammars 1-20 vs grammars 21-61
+      - single grammar per sequence, grammars 1-20 vs grammars 21-61
+
+1f: writing (FINISHED 2/15)
+    FINISH WRITING AND SUBMIT PAPER
+
 SELEX.py
 
 1) Build a rnds and sequences object
