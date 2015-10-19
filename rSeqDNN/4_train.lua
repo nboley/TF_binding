@@ -145,7 +145,7 @@ function train()
 
    shuffle = torch.randperm(te_size)
 
-   for t = 1,4000,opt.batchSize do
+   for t = 1,math.min(cumt+opt.epochSize-1,validData:size()),opt.batchSize do
       local inputs = torch.Tensor(opt.batchSize, nfeats, width, height)
       local targets = torch.Tensor(opt.batchSize, noutputs)
       collectgarbage()
