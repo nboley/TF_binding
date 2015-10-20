@@ -158,7 +158,7 @@ class BindingModel():
     def predict_proba(self, predictors):
         return self.mo.predict_proba(predictors)[:,1]
     
-    def classify_ambiguous_peaks(self, validation_data, num_thresh=100):
+    def classify_ambiguous_peaks(self, validation_data, num_thresh=20):
         # find the threhsold that optimizes the F1 score
         best_thresh = find_optimal_ambiguous_peak_threshold(
             self, 
