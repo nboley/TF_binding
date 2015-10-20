@@ -53,6 +53,9 @@ class ClassificationResult(object):
         negatives = np.array(labels == -1)        
         self.num_true_negatives = (predicted_labels[negatives] == -1).sum()
         self.num_negatives = negatives.sum()
+
+        if positives.sum() + negatives.sum() < len(labels):
+            raise ValueError, "All labels must be either -1 or +1"
         
         self.auROC = roc_auc_score(positives, predicted_prbs)
         precision, recall, _ = precision_recall_curve(positives, predicted_prbs)
@@ -89,7 +92,7 @@ class ClassificationResult(object):
         return "\t".join(rv)
 
 def find_optimal_ambiguous_peak_threshold(
-        mo, predictors, labels, peak_scores, num_thresh=100):
+        mo, predictors, labels, peak_scores, num_thresh):
     """Find the threshold that maximizes the F1 score.
 
     """
