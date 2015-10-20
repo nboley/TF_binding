@@ -108,7 +108,9 @@ class PeaksAndLabels():
         assert len(self.peak_widths) == 1
         # turn the list of labels into a numpy array
         self.labels = np.array(self.labels, dtype='float32')
+        self.labels.flags.writeable = False
         self.scores = np.array(self.scores, dtype='float32')
+        self.scores.flags.writeable = False
         
     def subset_data(self, sample_names, contigs):
         '''return data covering sample+names and contigs
