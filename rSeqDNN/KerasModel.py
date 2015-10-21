@@ -67,6 +67,12 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
 def load_model(fname):
     pass
 
+def set_ambiguous_labels(labels, scores, threshold):
+    ambig_labels = (labels == 0)
+    labels[ambig_labels] = -1
+    labels[ambig_labels&(scores > threshold)] = 1
+    return labels
+
 class KerasModelBase():
     def __init__(self, peaks_and_labels, batch_size=200):
         self.batch_size = batch_size
@@ -159,17 +165,13 @@ class KerasModelBase():
             data, genome_fasta, filter_ambiguous_labels=filter_ambiguous_labels)
         # set the ambiguous labels
         if not filter_ambiguous_labels:
-            ambig_labels = (y_validation == 0)
-            y_validation[ambig_labels] = -1
-            y_validation[
-                ambig_labels&(data.scores > self.ambiguous_peak_threshold)
-            ] = 1
-            
             if plot_fname is not None:
                 plot_ambiguous_peaks(
-                    data.scores[ambig_labels], 
-                    self.predict_proba(X_validation)[ambig_labels], 
+                    data.scores[y_validation == 0], 
+                    self.predict_proba(X_validation)[y_validation == 0], 
                     plot_fname)
+            y_validation = set_ambiguous_labels(
+                y_validation, data.scores, self.ambiguous_peak_threshold)
  
         return self.evaluate(X_validation, y_validation)
 
@@ -275,5 +277,15 @@ class KerasModel(KerasModelBase):
         self.ambiguous_peak_threshold = \
             self.find_optimal_ambiguous_peak_threshold(
                 X_train, y_train, data_fitting.scores)
+        y_train = set_ambiguous_labels(
+            y_train, data_fitting.scores, self.ambiguous_peak_threshold)
+
+        X_validation, y_validation = self.build_predictor_and_label_matrices(
+            data_stopping, genome_fasta, filter_ambiguous_labels=False)
+        y_validation = set_ambiguous_labels(
+            y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
+
+        print("Re-fitting the model with the imputed data.")
+        self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
         
         return self
