@@ -1,9 +1,5 @@
 import numpy as np
 
-import cPickle as pickle
-import sys
-sys.setrecursionlimit(50000)
-
 from pyTFbindtools.sequence import code_seq
 
 from pyTFbindtools.cross_validation import (
@@ -102,25 +98,11 @@ class KerasModelBase():
         self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
         self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
         self.model.add(Dense(numOutputNodes,activation='sigmoid'))
-        self.model_config_hash = abs(hash(str(self.model.get_config())))
     
     def compile(self, loss, optimizer, class_mode="binary"):
-        loss_name = loss if isinstance(loss, str) else loss.__name__
-        fname = "MODEL.%s.%s.obj" % (self.model_config_hash, loss_name)
-        try:
-            #raise IOError, "tmp"
-            print "Loading pickled model '%s'" % fname 
-            with open(fname) as fp:
-                self.model = pickle.load(fp)
-            print "Finished loading pickled model."
-        except IOError:
-            print "ERROR loading pickled model - recompiling."
-            self.model.compile(loss=loss, 
-                               optimizer=optimizer,
-                               class_mode=class_mode)
-            print("Saving compiled model to pickle object." )
-            with open(fname, "w") as fp:
-                pickle.dump(self.model, fp)
+        self.model.compile(loss=loss, 
+                           optimizer=optimizer,
+                           class_mode=class_mode)
         
     def predict(self, predictors, verbose=False):
         preds = self.model.predict_classes(predictors, verbose=int(verbose))
