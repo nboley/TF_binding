@@ -1,5 +1,5 @@
 import itertools
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 
 import numpy as np
 
@@ -127,6 +127,32 @@ def find_optimal_ambiguous_peak_threshold(
             best_thresh = thresh
 
     return best_thresh
+
+def plot_ambiguous_peaks(scores, pred_prbs, ofname):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot
+
+    def make_boxplot(n_groups=20):
+        groups = defaultdict(list)
+        for i, (score, prb) in enumerate(sorted(zip(scores, pred_prbs))):
+            groups[(i*n_groups)/len(pred_prbs)].append(float(prb))
+        group_labels = sorted(int((x+0.5)*len(pred_prbs)/n_groups) 
+                              for x in groups.keys())
+        groups = [x[1] for x in sorted(groups.items())]
+        
+        matplotlib.pyplot.title("Sample Rank vs Peak Score")
+        matplotlib.pyplot.axis([0, len(pred_prbs), 0, 1])
+        matplotlib.pyplot.xlabel("Peak Rank")
+        matplotlib.pyplot.ylabel("Label")
+        matplotlib.pyplot.boxplot(groups, sym="")    
+        matplotlib.pyplot.xticks(
+            range(1,n_groups+1), group_labels, rotation='vertical')
+
+    fig = matplotlib.pyplot.figure(num=None, figsize=(10, 7.5))
+    make_boxplot()
+    matplotlib.pyplot.savefig(ofname)
+    return
 
 class ClassificationResults(list):
     def __str__(self):

@@ -8,7 +8,9 @@ import numpy as np
 from pyTFbindtools.sequence import code_seq
 
 from pyTFbindtools.cross_validation import (
-    ClassificationResult, find_optimal_ambiguous_peak_threshold )
+    ClassificationResult, 
+    find_optimal_ambiguous_peak_threshold, 
+    plot_ambiguous_peaks )
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -140,12 +142,16 @@ class KerasModelBase():
         return ClassificationResult(y_validation, preds, pred_probs)
     
     def evaluate_peaks_and_labels(
-            self, valid, genome_fasta, filter_ambiguous_labels=False):
+            self, valid, genome_fasta, 
+            filter_ambiguous_labels=False,
+            plot_fname=None):
         '''evaluate model
         '''
         X_validation, y_validation = self.build_predictor_and_label_matrices(
             valid, genome_fasta, filter_ambiguous_labels=False)
         ambiguous_labels = (y_validation == 0)
+        ambiguous_pred_prbs = self.predict_proba(X_validation)[ambiguous_labels]
+
         if ambiguous_labels.sum() > 0:
             ambiguous_thresh = find_optimal_ambiguous_peak_threshold(
                 self, 
@@ -158,6 +164,9 @@ class KerasModelBase():
                 ambiguous_labels&(valid.scores >= ambiguous_thresh)
             ] = 1
         
+            plot_ambiguous_peaks(
+                valid.scores[ambiguous_labels], ambiguous_pred_prbs, plot_fname)
+
         return self.evaluate(X_validation, y_validation)
 
     def _reshape_coded_seqs_array(self, coded_seqs):
@@ -233,7 +242,11 @@ class KerasModel(KerasModelBase):
                 class_weight=class_prbs,
                 batch_size=batch_size,
                 nb_epoch=1)
-            res = self.evaluate(X_validation, y_validation)
+            res = self.evaluate_peaks_and_labels(
+                data_stopping, 
+                genome_fasta, 
+                plot_fname=("ambig.epoch%i.png" % epoch))
+            #res = self.evaluate(X_validation, y_validation)
             print res
 
             if (res.F1 + res.auPRC > best_average):
