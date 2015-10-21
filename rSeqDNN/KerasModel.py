@@ -106,7 +106,7 @@ class KerasModelBase():
 
     @property
     def curr_model_config_hash(self):
-        abs(hash(str(self.model.get_config())))
+        return abs(hash(str(self.model.get_config())))
     
     def compile(self, loss, optimizer, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
@@ -125,7 +125,7 @@ class KerasModelBase():
             with open(fname, "w") as fp:
                 pickle.dump(self.model, fp)
 
-    def evaluate_matrices(self, X_validation, y_validation):
+    def predict(self, X_validation):
         preds = self.model.predict_classes(X_validation)
         # move the predicted labels into -1, 1 space
         preds[preds == 0] = -1
