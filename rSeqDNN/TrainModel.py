@@ -77,10 +77,14 @@ def main():
             train, 
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
-        results.append(
-            fit_model.evaluate_peaks_and_labels(
-                valid, genome_fasta, skip_ambiguous_peaks))
-        print results[-1]
+        res = fit_model.evaluate_peaks_and_labels(
+            valid, 
+            genome_fasta,
+            filter_ambiguous_labels=skip_ambiguous_peaks,
+            plot_fname=("ambig.fold%i.png" % fold_index)
+        )
+        print res
+        results.append(res)
         if only_test_one_fold: break
     
     print 'Printing cross validation results:'

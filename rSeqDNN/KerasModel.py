@@ -242,11 +242,7 @@ class KerasModel(KerasModelBase):
                 class_weight=class_prbs,
                 batch_size=batch_size,
                 nb_epoch=1)
-            res = self.evaluate_peaks_and_labels(
-                data_stopping, 
-                genome_fasta, 
-                plot_fname=("ambig.epoch%i.png" % epoch))
-            #res = self.evaluate(X_validation, y_validation)
+            res = self.evaluate(X_validation, y_validation)
             print res
 
             if (res.F1 + res.auPRC > best_average):

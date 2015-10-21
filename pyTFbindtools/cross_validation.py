@@ -142,7 +142,7 @@ def plot_ambiguous_peaks(scores, pred_prbs, ofname):
         groups = [x[1] for x in sorted(groups.items())]
         
         matplotlib.pyplot.title("Sample Rank vs Peak Score")
-        matplotlib.pyplot.axis([0, len(pred_prbs), 0, 1])
+        matplotlib.pyplot.axis([0, len(pred_prbs), -0.01, 1.01])
         matplotlib.pyplot.xlabel("Peak Rank")
         matplotlib.pyplot.ylabel("Label")
         matplotlib.pyplot.boxplot(groups, sym="")    
