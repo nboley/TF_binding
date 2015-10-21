@@ -37,7 +37,7 @@ def expected_F1_loss(y_true, y_pred):
     recall = expected_true_positives/(
         expected_true_positives + expected_false_negatives + 1.0)
 
-    return -2*precision*recall/(precision + recall + 1.0)
+    return (-1e-6 -2*precision*recall)/(precision + recall + 2e-6)
 
 def balance_matrices(X, labels):
     pos_full = X[(labels == 1)]
