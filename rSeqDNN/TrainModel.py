@@ -73,18 +73,25 @@ def main():
     results = ClassificationResults()
     for fold_index, (train, valid) in enumerate(
             peaks_and_labels.iter_train_validation_subsets()):
-        fit_model = model.train_rSeqDNN_model(
+        fit_model = model.train(
             train, 
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
+
+        clean_res = fit_model.evaluate_peaks_and_labels(
+            valid, 
+            genome_fasta,
+            filter_ambiguous_labels=True)
+        print "CLEAN:", clean_res
+        
         res = fit_model.evaluate_peaks_and_labels(
             valid, 
             genome_fasta,
-            filter_ambiguous_labels=skip_ambiguous_peaks,
-            plot_fname=("ambig.fold%i.png" % fold_index)
-        )
-        print res
+            filter_ambiguous_labels=False)
+        print "FULL:", res
         results.append(res)
+        
+        #plot_fname=("ambig.fold%i.png" % fold_index)
         if only_test_one_fold: break
     
     print 'Printing cross validation results:'

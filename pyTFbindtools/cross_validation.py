@@ -117,7 +117,8 @@ def find_optimal_ambiguous_peak_threshold(
     # performance
     best_f1 = 0.0
     best_thresh = None
-    for thresh in ambiguous_thresholds:
+    for i, thresh in enumerate(ambiguous_thresholds):
+        print "%i/%i..." % (i+1, len(ambiguous_thresholds))
         ambig_peaks_below_threshold = (
             ambiguous_peaks&(peak_scores <= thresh))
         labels[ambig_peaks_below_threshold] = -1
