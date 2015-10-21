@@ -1,3 +1,8 @@
+import sys
+sys.setrecursionlimit(50000)
+
+import cPickle as pickle
+
 import numpy as np
 
 from pyTFbindtools.sequence import code_seq
@@ -98,15 +103,31 @@ class KerasModelBase():
         self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
         self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
         self.model.add(Dense(numOutputNodes,activation='sigmoid'))
+
+    @property
+    def curr_model_config_hash(self):
+        abs(hash(str(self.model.get_config())))
     
     def compile(self, loss, optimizer, class_mode="binary"):
-        self.model.compile(loss=loss, 
-                           optimizer=optimizer,
-                           class_mode=class_mode)
-        
-    def predict(self, predictors, verbose=False):
-        preds = self.model.predict_classes(predictors, verbose=int(verbose))
-        # move the predicitons into 0,1 space
+        loss_name = loss if isinstance(loss, str) else loss.__name__
+        fname = "MODEL.%s.%s.obj" % (self.curr_model_config_hash, loss_name)
+        try:
+            print "Loading pickled model '%s'" % fname 
+            with open(fname) as fp:
+                self.model = pickle.load(fp)
+            print "Finished loading pickled model."
+        except IOError:
+            print "ERROR loading pickled model - recompiling."
+            self.model.compile(loss=loss, 
+                               optimizer=optimizer,
+                               class_mode=class_mode)
+            print("Saving compiled model to pickle object." )
+            with open(fname, "w") as fp:
+                pickle.dump(self.model, fp)
+
+    def evaluate_matrices(self, X_validation, y_validation):
+        preds = self.model.predict_classes(X_validation)
+        # move the predicted labels into -1, 1 space
         preds[preds == 0] = -1
         return preds
 
