@@ -109,7 +109,7 @@ def find_optimal_ambiguous_peak_threshold(
     # determine the list of thresholds
     ambiguous_thresholds = mquantiles(
         ambiguous_peak_scores, 
-        np.arange(0.0,1.0,1.0/num_thresh)).tolist() + [1.0,]
+        np.arange(0.0,1.0,1.0/(num_thresh-1))).tolist() + [1.0,]
     # set all of the ambiguous peaks' labels to positive. This will change
     # as we try different thresholds
     labels[ambiguous_peaks] = 1.0
@@ -118,7 +118,7 @@ def find_optimal_ambiguous_peak_threshold(
     best_f1 = 0.0
     best_thresh = None
     for i, thresh in enumerate(ambiguous_thresholds):
-        print "%i/%i..." % (i+1, len(ambiguous_thresholds))
+        print "%i/%i..." % (i+1, len(ambiguous_thresholds)),
         ambig_peaks_below_threshold = (
             ambiguous_peaks&(peak_scores <= thresh))
         labels[ambig_peaks_below_threshold] = -1

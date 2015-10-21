@@ -142,35 +142,6 @@ class KerasModelBase():
         return find_optimal_ambiguous_peak_threshold(
             self, X, y, scores, 20)
     
-    def set_ambiguous_labels(self, y, scores, threshold):
-        ambiguous_labels = (y == 0)
-        y[ambiguous_labels] = -1
-        y[ambiguous_labels&(scores >= threshold)] = 1
-        return y
-    
-    def plot_ambiguous_peaks(self):
-        raise NotImplementedError, "Need to finish this."
-        plot_ambiguous_peaks(
-            scores[ambiguous_labels], ambiguous_pred_prbs, plot_fname)
-    
-    """
-    def label_ambiguous_peaks(
-            X_validation, y_validation, scores, plot_fname=None):
-        y_validation = y_validation.copy()
-        ambiguous_labels = (y_validation == 0)
-        ambiguous_pred_prbs = self.predict_proba(X_validation)[ambiguous_labels]
-
-        if ambiguous_labels.sum() > 0:
-            # find the threshold
-            ambiguous_thresh = self.find_optimal_ambiguous_peak_threshold()
-            # set the ambiguous labels
-            y_validation[ambiguous_labels] = -1
-            y_validation[
-                ambiguous_labels&(valid.scores >= ambiguous_thresh)
-            ] = 1
-        
-        return y_validation
-    """
     def evaluate(self, X_validation, y_validation):
         preds = self.predict(X_validation)
         pred_probs = self.predict_proba(X_validation)        
@@ -180,18 +151,26 @@ class KerasModelBase():
             self, 
             data, 
             genome_fasta, 
-            filter_ambiguous_labels=False):
+            filter_ambiguous_labels=False,
+            plot_fname=None):
         '''evaluate model
         '''
         X_validation, y_validation = self.build_predictor_and_label_matrices(
             data, genome_fasta, filter_ambiguous_labels=filter_ambiguous_labels)
         # set the ambiguous labels
         if not filter_ambiguous_labels:
-            ambig_labels = y_validation == 0
+            ambig_labels = (y_validation == 0)
             y_validation[ambig_labels] = -1
             y_validation[
                 ambig_labels&(data.scores > self.ambiguous_peak_threshold)
             ] = 1
+            
+            if plot_fname is not None:
+                plot_ambiguous_peaks(
+                    data.scores[ambig_labels], 
+                    self.predict_proba(X_validation)[ambig_labels], 
+                    plot_fname)
+ 
         return self.evaluate(X_validation, y_validation)
 
     def _reshape_coded_seqs_array(self, coded_seqs):

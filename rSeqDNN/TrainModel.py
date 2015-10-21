@@ -87,11 +87,11 @@ def main():
         res = fit_model.evaluate_peaks_and_labels(
             valid, 
             genome_fasta,
-            filter_ambiguous_labels=False)
+            filter_ambiguous_labels=False,
+            plot_fname=("ambig.fold%i.png" % fold_index))
         print "FULL:", res
         results.append(res)
         
-        #plot_fname=("ambig.fold%i.png" % fold_index)
         if only_test_one_fold: break
     
     print 'Printing cross validation results:'
