@@ -127,8 +127,8 @@ class KerasModelBase():
             with open(fname, "w") as fp:
                 pickle.dump(self.model, fp)
 
-    def predict(self, X_validation):
-        preds = self.model.predict_classes(X_validation)
+    def predict(self, X_validation, verbose=False):
+        preds = self.model.predict_classes(X_validation, verbose=int(verbose))
         # move the predicted labels into -1, 1 space
         preds[preds == 0] = -1
         return preds
