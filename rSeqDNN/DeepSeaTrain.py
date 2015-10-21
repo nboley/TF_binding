@@ -116,7 +116,9 @@ def train_deepsea(input_list):
     encode_peaks_and_labels_in_matfile('valid.mat',
                                        training_stopping,
                                        genome_fasta)
-
+    encode_peaks_and_labels_in_matfile('test.mat',
+                                       validation_data,
+                                       genome_fasta)
     # define deepsea training settings
     learning_rate = '1'
     learning_rate_decay = '8e-7'
@@ -132,7 +134,7 @@ def train_deepsea(input_list):
     training_size = str(len(training_fitting.labels))
     validation_size = str(len(training_stopping.labels))
     # train deepsea
-    command = ' '.join(['th main.lua',
+    train_command = ' '.join(['th main.lua',
                         '-save', output_directory,
                         '-LearningRate', learning_rate,
                         '-LearningRateDecay', learning_rate_decay,
@@ -146,8 +148,25 @@ def train_deepsea(input_list):
                         '-L1Sparsity', l1_sparsity,
                         '-training_size', training_size,
                         '-validation_size', validation_size])
-    process = subprocess.Popen(command, shell=True)
-
+    train_process = subprocess.Popen(train_command, shell=True)
+    train_process.wait()
+    test_size = str(len(validation_data.labels))
+    test_command = ' '.join(['th test.lua',
+                        '-save', output_directory,
+                        '-LearningRate', learning_rate,
+                        '-LearningRateDecay', learning_rate_decay,
+                        '-weightDecay', weight_decay,
+                        '-momentum', momentum,
+                        '-stdv', stdv,
+                        '-setDevice', set_device,
+                        '-windowsize', window_size,
+                        '-max_kernel_norm', max_kernel_norm,
+                        '-batchSize', batch_size,
+                        '-L1Sparsity', l1_sparsity,
+                        '-training_size', training_size,
+                        '-validation_size', validation_size])
+    test_process = subprocess.Popen(test_command, shell=True)
+     
 def main():
     download_and_fix_deepsea_training()
     ( peaks_and_labels, 
