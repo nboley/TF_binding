@@ -269,7 +269,7 @@ class KerasModel(KerasModelBase):
         
         print("Fitting full training set with expected F1 loss.")
         self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
-
+        
         # build the predictor matrixes, including the ambiguous labels
         print("Setting the ambiguous labels peak threshold.")
         X_train, y_train = self.build_predictor_and_label_matrices(
@@ -284,6 +284,7 @@ class KerasModel(KerasModelBase):
             data_stopping, genome_fasta, filter_ambiguous_labels=False)
         y_validation = set_ambiguous_labels(
             y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
+        print self.evaluate(X_validation, y_validation)
 
         print("Re-fitting the model with the imputed data.")
         self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
