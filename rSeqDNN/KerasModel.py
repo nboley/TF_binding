@@ -21,10 +21,9 @@ from keras.models import model_from_yaml
 import theano.tensor as T
 
 def expected_F1_loss(y_true, y_pred):
-    y_true = T.clip(y_true, 0, 1)
-    #min_label = T.min(y_true)
-    #max_label = T.max(y_true)
-    #y_true = (y_true - min_label)/(max_label - min_label)
+    min_label = T.min(y_true)
+    max_label = T.max(y_true)
+    y_true = (y_true - min_label)/(max_label - min_label)
     
     expected_true_positives = T.sum(y_pred*y_true)
     expected_false_positives = T.sum(y_pred*(1-y_true))
