@@ -125,12 +125,9 @@ def score_seq_with_deepsea_model(tf_id, sample, input_fasta, output_dir):
     command = ' '.join(['python ./rundeepsea_fixed.py',
                         input_fasta,
                         output_dir])
-    # open tempfile, store command results there
-    with tempfile.NamedTemporaryFile() as tf:
-        process = subprocess.Popen(command,stdout=tf, shell=True)
-        process.wait() # wait for it to finish
-        tf.flush()
-        tf.seek(0)
+    # run command
+    process = subprocess.Popen(command,stdout=subprocess.PIPE, shell=True)
+    process.wait() # wait for it to finish
     wd = os.getcwd()
     output_filename = '/'.join([wd, output_dir, 'infile.fasta.out'])
     scores = get_scores_from_deepsea_output(open(output_filename).readlines(),
@@ -266,8 +263,10 @@ def run_deepsea(input_list):
     '''
     runs all functions
     '''
+    print 'starting deepsea run..'
     ( validation_data, 
-      sample, 
+      sample,
+      contigs,
       normalize, 
       fasta_filename_prefix, 
       genome_fasta_fname, 
@@ -283,9 +282,8 @@ def run_deepsea(input_list):
     print subset_fasta_filename
     
     subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-    # using only chr8-9, deepsea test data
     subset_validation_data = validation_data.subset_data([sample],
-                                                         ['chr8', 'chr9'])
+                                                         contigs)
     print 'num of examples in', sample
     print len(subset_validation_data.labels)
         
@@ -294,7 +292,7 @@ def run_deepsea(input_list):
         genome_fasta,
         subset_fasta_filename,
         subset_labels_filename)
-    
+
     start_time = time.time()
     scores = score_seq_with_deepsea_model(
         tf_id, sample, subset_fasta_filename, output_directory)
@@ -327,9 +325,11 @@ def main():
       normalize,
       num_threads ) = parse_args()
     inputs = []
-    for sample in validation_data.sample_ids:
-        inputs.append([validation_data, 
-                       sample, 
+    validation_contigs = ['chr8', 'chr9']
+    for sample in peaks_and_labels.sample_ids:
+        inputs.append([peaks_and_labels, 
+                       sample,
+                       validation_contigs,
                        normalize,
                        fasta_filename_prefix, 
                        genome_fasta.filename,
