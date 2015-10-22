@@ -112,6 +112,15 @@ class PeaksAndLabels():
                 and pk_and_label.peak.contig in contigs
             )
 
+    def remove_data(self, sample_names, contigs):
+        '''return data not covering sample_names and contigs                                                                                                                             
+        '''
+        return PeaksAndLabels(
+                pk_and_label for pk_and_label in self
+                if pk_and_label.sample not in sample_names
+                and pk_and_label.peak.contig not in contigs
+            )
+
     def remove_zero_labeled_entries(self):
         '''return subset of data wityh nonzero labels
         '''
