@@ -6,6 +6,7 @@ import tempfile
 import time  
 import multiprocessing
 from math import log
+from joblib import Parallel, delayed  
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
@@ -312,7 +313,6 @@ def run_deepsea(input_list):
     
     return result
 
-
 def main():
     download_and_fix_deepsea()
     ( peaks_and_labels, 
@@ -334,11 +334,8 @@ def main():
                        genome_fasta.filename,
                        tf_id, 
                        output_directory])
-        break
-    results = []
-    for args in inputs:
-        results.append(run_deepsea(args))
-
+    
+    results = Parallel(n_jobs=num_threads)(delayed(run_deepsea)(i) for i in inputs)      
     print 'printing results from all test runs...'
     for i, result in enumerate(results):
         print 'sample: ', inputs[i][1]
