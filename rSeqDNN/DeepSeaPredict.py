@@ -19,7 +19,6 @@ from pyTFbindtools.peaks import (
 )
 from pyTFbindtools.cross_validation import ClassificationResult
 from rSeqDNN import init_prediction_script_argument_parser
-from KerasModel import get_data_for_deepsea_comparison
 
 from grit.lib.multiprocessing_utils import fork_and_wait
 
