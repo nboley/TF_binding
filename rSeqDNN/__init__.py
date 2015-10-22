@@ -22,6 +22,16 @@ def evaluate_predictions(probs, y_validation):
 
     return classification_result
 
+def get_data_for_deepsea_comparison(peaks_and_labels):
+    '''exclude chr8-9 from training, put in validation
+    '''
+    samples = peaks_and_labels.samples
+    validation_data = peaks_and_labels.subset_data(samples,
+                                                   ['chr8', 'chr9'])
+    training_data = peaks_and_labels.remove_data([],
+                                                 ['chr8', 'chr9'])
+    
+    return [training_data, validation_data]
 
 def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
