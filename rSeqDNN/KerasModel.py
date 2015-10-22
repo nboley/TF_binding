@@ -1,8 +1,16 @@
+import sys
+sys.setrecursionlimit(50000)
+
+import cPickle as pickle
+
 import numpy as np
 
 from pyTFbindtools.sequence import code_seq
 
-from pyTFbindtools.cross_validation import ClassificationResult
+from pyTFbindtools.cross_validation import (
+    ClassificationResult, 
+    find_optimal_ambiguous_peak_threshold, 
+    plot_ambiguous_peaks )
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -12,12 +20,14 @@ from keras.layers.core import (
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_yaml
-from sklearn.metrics import (
-    roc_auc_score, accuracy_score, precision_recall_curve, auc, f1_score)
 
 import theano.tensor as T
 
 def expected_F1_loss(y_true, y_pred):
+    min_label = T.min(y_true)
+    max_label = T.max(y_true)
+    y_true = (y_true - min_label)/(max_label - min_label)
+    
     expected_true_positives = T.sum(y_pred*y_true)
     expected_false_positives = T.sum(y_pred*(1-y_true))
     expected_false_negatives = T.sum((1-y_pred)*y_true)
@@ -27,7 +37,7 @@ def expected_F1_loss(y_true, y_pred):
     recall = expected_true_positives/(
         expected_true_positives + expected_false_negatives + 1.0)
 
-    return -2*precision*recall/(precision + recall + 1.0)
+    return (-1e-6 -2*precision*recall)/(precision + recall + 2e-6)
 
 def balance_matrices(X, labels):
     pos_full = X[(labels == 1)]
@@ -57,8 +67,16 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
 def load_model(fname):
     pass
 
+def set_ambiguous_labels(labels, scores, threshold):
+    ambig_labels = (labels == 0)
+    labels[ambig_labels] = -1
+    labels[ambig_labels&(scores > threshold)] = 1
+    return labels
+
 class KerasModelBase():
-    def __init__(self, peaks_and_labels):
+    def __init__(self, peaks_and_labels, batch_size=200):
+        self.batch_size = batch_size
+        
         self.seq_len = peaks_and_labels.max_peak_width
         numConv = 30
         convStack = 1
@@ -96,34 +114,66 @@ class KerasModelBase():
         self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
         self.model.add(Dense(numOutputNodes,activation='sigmoid'))
 
+    @property
+    def curr_model_config_hash(self):
+        return abs(hash(str(self.model.get_config())))
+    
     def compile(self, loss, optimizer, class_mode="binary"):
-        print("Conpiling model (%s, %s, %s)" % (loss, optimizer, class_mode))
-        self.model.compile(loss=loss, 
-                           optimizer=optimizer,
-                           class_mode=class_mode);
-            
+        loss_name = loss if isinstance(loss, str) else loss.__name__
+        fname = "MODEL.%s.%s.obj" % (self.curr_model_config_hash, loss_name)
+        try:
+            print "Loading pickled model '%s'" % fname 
+            with open(fname) as fp:
+                self.model = pickle.load(fp)
+            print "Finished loading pickled model."
+        except IOError:
+            print "ERROR loading pickled model - recompiling."
+            self.model.compile(loss=loss, 
+                               optimizer=optimizer,
+                               class_mode=class_mode)
+            print("Saving compiled model to pickle object." )
+            with open(fname, "w") as fp:
+                pickle.dump(self.model, fp)
+
+    def predict(self, X_validation, verbose=False):
+        preds = self.model.predict_classes(X_validation, verbose=int(verbose))
+        # move the predicted labels into -1, 1 space
+        preds[preds == 0] = -1
+        return preds
+
+    def predict_proba(self, predictors, verbose=False):
+        return self.model.predict_proba(predictors, verbose=int(verbose))
+    
+    def find_optimal_ambiguous_peak_threshold(self, X, y, scores):
+        return find_optimal_ambiguous_peak_threshold(
+            self, X, y, scores, 20)
+    
     def evaluate(self, X_validation, y_validation):
+        preds = self.predict(X_validation)
+        pred_probs = self.predict_proba(X_validation)        
+        return ClassificationResult(y_validation, preds, pred_probs)
+    
+    def evaluate_peaks_and_labels(
+            self, 
+            data, 
+            genome_fasta, 
+            filter_ambiguous_labels=False,
+            plot_fname=None):
         '''evaluate model
         '''
-        if len(np.shape(X_validation)) == 3: # reshape to 4D if 3D
-            X_validation = self._reshape_coded_seqs_array(X_validation)
-        preds = self.model.predict_classes(X_validation)
-        probs = self.model.predict_proba(X_validation)
-        true_pos = (y_validation == 1)
-        true_neg = (y_validation < 1)
-        precision, recall, _ = precision_recall_curve(y_validation, probs)
-        prc = np.array([recall,precision])
-        auPRC = auc(recall, precision)
-        auROC = roc_auc_score(y_validation, probs)
-        f1 = f1_score(y_validation, preds)
-        classification_result = ClassificationResult(
-            None, None, None, None, None, None,
-            auROC, auPRC, f1,
-            np.sum(preds[true_pos] == 1), np.sum(true_pos),
-            np.sum(preds[true_neg] < 1), np.sum(true_neg)
-        )
-
-        return classification_result
+        X_validation, y_validation = self.build_predictor_and_label_matrices(
+            data, genome_fasta, filter_ambiguous_labels=filter_ambiguous_labels)
+        # set the ambiguous labels
+        if not filter_ambiguous_labels:
+            if plot_fname is not None:
+                plot_ambiguous_peaks(
+                    data.scores[y_validation == 0], 
+                    self.predict_proba(X_validation)[y_validation == 0], 
+                    plot_fname)
+            y_validation = set_ambiguous_labels(
+                y_validation, data.scores, self.ambiguous_peak_threshold)
+ 
+        return self.evaluate(X_validation, y_validation)
 
     def _reshape_coded_seqs_array(self, coded_seqs):
         '''Reshape coded seqs into Keras acceptible format.
@@ -143,33 +193,12 @@ class KerasModelBase():
             X = X[y != 0,:,:,:]
             y = y[y != 0]
 
-        y[y == -1] = 0
         return X, y
 
 
 class KerasModel(KerasModelBase):
-    def train_rSeqDNN_model(self,
-                            data,
-                            genome_fasta,
-                            out_filename,
-                            numEpochs=5):
-        batch_size = 200
-
-        # split into fitting and early stopping
-        data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data_stopping, genome_fasta, True)
-
-        X_train, y_train = self.build_predictor_and_label_matrices(
-            data_fitting, genome_fasta, True)
-        
-        neg_class_cnt = (y_train == 0).sum()
-        pos_class_cnt = (y_train == 1).sum()
-        assert neg_class_cnt + pos_class_cnt == len(y_train)
-        class_prbs = {float(neg_class_cnt)/len(y_train), 
-                      float(pos_class_cnt)/len(y_train)}
-
-        print("Initializing model from balanced training set.")
+    def _fit_with_balanced_data(
+            self, X_train, y_train, X_validation, y_validation, numEpochs):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)        
@@ -181,23 +210,32 @@ class KerasModel(KerasModelBase):
                 validation_data=(b_X_validation, b_y_validation),
                 show_accuracy=True,
                 class_weight={1.0, 1.0},
-                batch_size=batch_size,
-                nb_epoch=3)
+                batch_size=self.batch_size,
+                nb_epoch=numEpochs)
         print self.evaluate(b_X_validation, b_y_validation)
-        
+        return self
+
+    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs):
+        neg_class_cnt = (y_train == -1).sum()
+        pos_class_cnt = (y_train == 1).sum()
+        assert neg_class_cnt + pos_class_cnt == len(y_train)
+        class_prbs = {float(neg_class_cnt)/len(y_train), 
+                      float(pos_class_cnt)/len(y_train)}
+
         print("Switiching to F1 loss function.")
         print("Compiling model with expected F1 loss.")
         self.compile(expected_F1_loss, Adam())
         best_auPRC = 0
         best_F1 = 0
         best_average = 0
+        out_filename = "fit_weights.obj"
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
                 validation_data=(X_validation, y_validation),
                 show_accuracy=True,
                 class_weight=class_prbs,
-                batch_size=batch_size,
+                batch_size=self.batch_size,
                 nb_epoch=1)
             res = self.evaluate(X_validation, y_validation)
             print res
@@ -211,8 +249,44 @@ class KerasModel(KerasModelBase):
             if (res.F1 > best_F1):
                 best_F1 = res.F1                
 
-        # load the best model
+        # load and return the best model
         print "Loading best model"
         self.model.load_weights(out_filename)
+        return self
+
+    def train(self, data, genome_fasta, out_filename, numEpochs=8):
+        # split into fitting and early stopping
+        data_fitting, data_stopping = next(data.iter_train_validation_subsets())
+        X_validation, y_validation = self.build_predictor_and_label_matrices(
+            data_stopping, genome_fasta, filter_ambiguous_labels=True)
+
+        X_train, y_train = self.build_predictor_and_label_matrices(
+            data_fitting, genome_fasta, filter_ambiguous_labels=True)
+
+        print("Initializing model from balanced training set.")
+        self._fit_with_balanced_data(
+            X_train, y_train, X_validation, y_validation, numEpochs=3)
+        
+        print("Fitting full training set with expected F1 loss.")
+        self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
+        
+        # build the predictor matrixes, including the ambiguous labels
+        print("Setting the ambiguous labels peak threshold.")
+        X_train, y_train = self.build_predictor_and_label_matrices(
+            data_fitting, genome_fasta, filter_ambiguous_labels=False)
+        self.ambiguous_peak_threshold = \
+            self.find_optimal_ambiguous_peak_threshold(
+                X_train, y_train, data_fitting.scores)
+        y_train = set_ambiguous_labels(
+            y_train, data_fitting.scores, self.ambiguous_peak_threshold)
+
+        X_validation, y_validation = self.build_predictor_and_label_matrices(
+            data_stopping, genome_fasta, filter_ambiguous_labels=False)
+        y_validation = set_ambiguous_labels(
+            y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
+        print self.evaluate(X_validation, y_validation)
+
+        print("Re-fitting the model with the imputed data.")
+        self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
         
         return self

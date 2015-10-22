@@ -17,9 +17,6 @@ from pyTFbindtools.peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 )
 
-from pyTFbindtools.cross_validation import (
-    ClassificationResults, ClassificationResult)
-
 from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
 
 from grit.lib.multiprocessing_utils import fork_and_wait

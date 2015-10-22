@@ -1,7 +1,14 @@
-from sklearn import cross_validation
-
 import itertools
-from collections import namedtuple
+from collections import namedtuple, defaultdict
+
+import numpy as np
+
+from scipy.stats import spearmanr, rankdata
+from scipy.stats.mstats import mquantiles
+
+from sklearn import cross_validation
+from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
+
 
 TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
@@ -20,7 +27,44 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
 
-class ClassificationResult(ClassificationResultData):
+class ClassificationResult(object):
+    _fields = ClassificationResultData._fields
+
+    def __iter__(self):
+        return iter(getattr(self, field) for field in self._fields)
+    
+    def __init__(self, labels, predicted_labels, predicted_prbs,
+                 is_cross_celltype=None, sample_type=None,
+                 train_chromosomes=None, train_samples=None,
+                 validation_chromosomes=None, validation_samples=None):
+        self.is_cross_celltype = is_cross_celltype
+        self.sample_type = sample_type
+
+        self.train_chromosomes = train_chromosomes
+        self.train_samples = train_samples
+
+        self.validation_chromosomes = validation_chromosomes
+        self.validation_samples = validation_samples
+        
+        positives = np.array(labels == 1)
+        self.num_true_positives = (predicted_labels[positives] == 1).sum()
+        self.num_positives = positives.sum()
+        
+        negatives = np.array(labels == -1)        
+        self.num_true_negatives = (predicted_labels[negatives] == -1).sum()
+        self.num_negatives = negatives.sum()
+
+        if positives.sum() + negatives.sum() < len(labels):
+            raise ValueError, "All labels must be either -1 or +1"
+        
+        self.auROC = roc_auc_score(positives, predicted_prbs)
+        precision, recall, _ = precision_recall_curve(positives, predicted_prbs)
+        prc = np.array([recall,precision])
+        self.auPRC = auc(recall, precision)
+        self.F1 = f1_score(positives, predicted_labels)
+
+        return
+
     @property
     def positive_accuracy(self):
         return float(self.num_true_positives)/self.num_positives
@@ -44,8 +88,72 @@ class ClassificationResult(ClassificationResultData):
         rv.append("Positive Accuracy: %.3f (%i/%i)" % (
             self.positive_accuracy, self.num_true_positives,self.num_positives))
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (
-            self.negative_accuracy, self.num_true_negatives,self.num_negatives))
+            self.negative_accuracy, self.num_true_negatives, self.num_negatives))
         return "\t".join(rv)
+
+def find_optimal_ambiguous_peak_threshold(
+        mo, predictors, labels, peak_scores, num_thresh):
+    """Find the threshold that maximizes the F1 score.
+
+    """
+    # make a copy of the original ambiguous label set so that we can
+    # evaluate the labels at various thresholds 
+    original_labels = labels
+    labels = labels.copy()
+    # find the peaks with ambiguous labels and their scores
+    ambiguous_peaks = np.array(original_labels == 0)        
+    ambiguous_peak_scores = peak_scores[ambiguous_peaks]
+
+    # predict the label proabilities for every peak (ambiguous included)
+    y_hat_prbs = mo.predict_proba(predictors)
+    # determine the list of thresholds
+    ambiguous_thresholds = mquantiles(
+        ambiguous_peak_scores, 
+        np.arange(0.0,1.0,1.0/(num_thresh-1))).tolist() + [1.0,]
+    # set all of the ambiguous peaks' labels to positive. This will change
+    # as we try different thresholds
+    labels[ambiguous_peaks] = 1.0
+    # for each threshold, change the labels and evaluate the model's 
+    # performance
+    best_f1 = 0.0
+    best_thresh = None
+    for i, thresh in enumerate(ambiguous_thresholds):
+        print "Testing thresh %i/%i" % (i+1, len(ambiguous_thresholds))
+        ambig_peaks_below_threshold = (
+            ambiguous_peaks&(peak_scores <= thresh))
+        labels[ambig_peaks_below_threshold] = -1
+        res = mo.evaluate(predictors, labels)
+        if res.F1 > best_f1:
+            best_f1 = res.F1
+            best_thresh = thresh
+
+    return best_thresh
+
+def plot_ambiguous_peaks(scores, pred_prbs, ofname):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot
+
+    def make_boxplot(n_groups=20):
+        groups = defaultdict(list)
+        for i, (score, prb) in enumerate(sorted(zip(scores, pred_prbs))):
+            groups[(i*n_groups)/len(pred_prbs)].append(float(prb))
+        group_labels = sorted(int((x+0.5)*len(pred_prbs)/n_groups) 
+                              for x in groups.keys())
+        groups = [x[1] for x in sorted(groups.items())]
+        
+        matplotlib.pyplot.title("Sample Rank vs Peak Score")
+        matplotlib.pyplot.axis([0, len(pred_prbs), -0.01, 1.01])
+        matplotlib.pyplot.xlabel("Peak Rank")
+        matplotlib.pyplot.ylabel("Label")
+        matplotlib.pyplot.boxplot(groups, sym="")    
+        matplotlib.pyplot.xticks(
+            range(1,n_groups+1), group_labels, rotation='vertical')
+
+    fig = matplotlib.pyplot.figure(num=None, figsize=(10, 7.5))
+    make_boxplot()
+    matplotlib.pyplot.savefig(ofname)
+    return
 
 class ClassificationResults(list):
     def __str__(self):

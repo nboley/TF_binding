@@ -3,25 +3,30 @@ import argparse
 from pysam import FastaFile
 from pyTFbindtools.peaks import getFileHandle
 
-def evaluate_predictions(probs, y_validation):
-    '''Evaluate the quality of deep bind predictions.
-    '''
-    preds = np.asarray(probs > 0.5, dtype='int')
-    true_pos = (y_validation == 1)
-    true_neg = (y_validation == -1)
-    precision, recall, _ = precision_recall_curve(y_validation, probs)
-    prc = np.array([recall,precision])
-    auPRC = auc(recall, precision)
-    auROC = roc_auc_score(y_validation, probs)
-    classification_result = ClassificationResult(
-        None, None, None, None, None, None,
-        auROC, auPRC,
-        np.sum(preds[true_pos] == 1), np.sum(true_pos),
-        np.sum(preds[true_neg] == -1), np.sum(true_neg)
-    )
+import theano
 
-    return classification_result
+import os
 
+def config_theano(device, num_omp_threads=1):
+    assert device[:3] in ('cpu', 'gpu')
+    os.environ['THEANO_FLAGS'] = "'device=%s'" % device
+    os.environ['OMP_NUM_THREADS'] = str(num_omp_threads)
+    #theano.config.device = device
+    theano.config.optimizer = 'fast_compile'
+
+    # if the device is a cpu, assume we're in debuggin mode and set flags
+    # appropriately
+    if device == 'cpu':
+        theano.config.mode='FAST_COMPILE'
+        theano.config.exception_verbosity='high'
+        theano.config.openmp=True        
+    else:
+        theano.config.mode='FAST_RUN'
+        #theano.config.cuda.root='/usr/local/cuda'
+        theano.config.floatX='float32'
+        theano.config.warn_float64='warn'
+        theano.config.assert_no_cpu_op='warn'
+    return
 
 def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
@@ -45,10 +50,17 @@ def init_prediction_script_argument_parser(description):
         default=False, action='store_true', 
         help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
 
+    #parser.add_argument('--device', type=str, required=True,
+    #                    choices=['cpu', 'gpu', 'gpu1', 'gpu2', 'gpu3', 'gpu4'],
+    #                    help='Use the specified device.')
     parser.add_argument('-t', '--threads', type=int, default=1,
                         help='Number of threads to use')
 
     parser.add_argument( '--max-num-peaks-per-sample', type=int, 
         help='the maximum number of peaks to parse for each sample (used for debugging)')
+    
+    # set up the theano environemnt as soon as possible
+    #args, _ = parser.parse_known_args()
+    #config_theano(args.device, args.threads)
     
     return parser

@@ -25,8 +25,6 @@ from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
 
-
-
 def get_deepbind_model_id(tf_id):
     if tf_id=='T014210_1.02': # MYC
         return 'D00785.001'
@@ -148,9 +146,14 @@ def main():
         fork_and_wait(num_threads, score_regions_with_deepbind, args)
         ofp.close()
         peaks, prbs, labels = load_predictions(ofname)
-        res = evaluate_predictions(prbs, labels)
+        # XXX Untested 
+        pred_labels = np.zeros(len(prbs))
+        pred_labels[prbs > 0.5] = 1.0
+        pred_labels[prbs <= 0.5] = -1.0
+        res = ClassificationResult(labels, pred_labels, prbs)
+        results.append(res)
         print "Fold_%i" % fold_i, res
-
+    print results
 
 if __name__ == '__main__':
     main()

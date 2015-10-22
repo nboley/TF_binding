@@ -17,25 +17,26 @@ import pandas as pd
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import ( 
     AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier )
-from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
 from pysam import FastaFile, TabixFile
 
 from grit.lib.multiprocessing_utils import (
     fork_and_wait, ThreadSafeFile, Counter )
 
-from peaks import (
+from pyTFbindtools.peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
-    getFileHandle, 
-    classify_chipseq_peak)
+    getFileHandle )
 
-from motif_tools import (
+from pyTFbindtools.motif_tools import (
     load_selex_models_from_db, 
     load_pwms_from_db, 
     score_region)
 
-from cross_validation import (
-    ClassificationResult, ClassificationResults, iter_train_validation_splits )
+from pyTFbindtools.cross_validation import (
+    ClassificationResult, 
+    ClassificationResults, 
+    iter_train_validation_splits, 
+    find_optimal_ambiguous_peak_threshold )
 
 
 NTHREADS = 1
@@ -80,6 +81,8 @@ class TFBindingData(object):
         """
         self.label_columns = [
             x for x in self.data.columns if x.startswith('label')]
+        self.score_columns = [
+            x for x in self.data.columns if x.startswith('score')]
         self.motif_ids = [
             x.split("__")[1] for x in self.label_columns]
         sample_ids = set()
@@ -131,6 +134,53 @@ class SingleMotifBindingData(TFBindingData):
     def labels(self):
         return np.array(self.data[self.label_columns[0]])
 
+class BindingModel():
+    def __init__(self):
+        #clf = DecisionTreeClassifier(max_depth=20)
+        self.clf = RandomForestClassifier(max_depth=10)
+        #clf = GradientBoostingClassifier(n_estimators=100)
+
+    def train(self, data):
+        self.predictors = [ x for x in data.columns
+                            if not x.startswith('label')
+                            and not x.startswith('score')]
+        assert len(data.label_columns) == 1
+        self.label = data.label_columns[0]
+        self.score = data.score_columns[0]
+        self.train_data = data
+        self.mo = self.clf.fit(
+            data.data[self.predictors], data.data[self.label])
+        return
+
+    def predict(self, predictors):
+        return self.mo.predict(predictors)
+
+    def predict_proba(self, predictors):
+        return self.mo.predict_proba(predictors)[:,1]
+    
+    def classify_ambiguous_peaks(self, validation_data, num_thresh=20):
+        # find the threhsold that optimizes the F1 score
+        best_thresh = find_optimal_ambiguous_peak_threshold(
+            self, 
+            validation_data.data[self.predictors], 
+            validation_data.data[self.label],
+            validation_data.data[self.score],
+            num_thresh)
+        # set the ambiguous peak labels 
+        ambiguous_peaks = (validation_data.data[self.label] == 0)
+        validation_data.data[self.label][ambiguous_peaks] = 1.0
+        ambig_peaks_below_threshold = (
+            ambiguous_peaks&(validation_data.data[self.score] <= best_thresh))
+        validation_data.data[self.label][ambig_peaks_below_threshold] = -1
+
+        return best_thresh
+        
+    def evaluate(self, predictors, labels):
+        y_hat = self.predict(predictors)
+        y_hat_prbs = self.predict_proba(predictors)
+        return ClassificationResult(
+            labels, y_hat, y_hat_prbs)
+
 def estimate_cross_validated_error(
         data, 
         balance_data=False, 
@@ -147,49 +197,15 @@ def estimate_cross_validated_error(
         
         if validate_on_clean_labels:
             validation = validation.remove_zero_labeled_entries()
-        
-        #clf_1 = DecisionTreeClassifier(max_depth=20)
-        clf_1 = RandomForestClassifier(max_depth=10)
-        #clf_1 = GradientBoostingClassifier(n_estimators=100)
 
-        all_predictors = [ x for x in train.columns
-                           if not x.startswith('label') ]
-        predictors = all_predictors
-        
-        assert len(train.label_columns) == 1
-        label = train.label_columns[0]
-        
-        mo = clf_1.fit(train.data[predictors], train.data[label])
-        y_hat = mo.predict(validation.data[predictors])
-        y_hat_prbs = mo.predict_proba(validation.data[predictors])[:,1]
-        # set the positives to include real positives and ambiguous positives
-        positives = np.array(validation.data[label] > -1)
-        num_true_positives = (y_hat[positives] == 1).sum()
-
-        negatives = np.array(validation.data[label] == -1)
-        num_true_negatives = (y_hat[negatives] == -1).sum()
-
-        precision, recall, _ = precision_recall_curve(positives, y_hat_prbs)
-        prc = np.array([recall,precision])
-        auPRC = auc(recall, precision)
-
-        result_summary = ClassificationResult(
-            set(train.sample_ids) != set(validation.sample_ids),
-            'validation',
-
-            train.contigs, train.sample_ids,
-
-            validation.contigs, validation.sample_ids,
-
-            roc_auc_score(positives, y_hat_prbs),
-            auPRC,
-            f1_score(positives, y_hat),
-
-            num_true_positives, positives.sum(),
-            num_true_negatives, negatives.sum()
-        )
-        print result_summary
-        res.append(result_summary)
+        mo = BindingModel()
+        mo.train(train)
+        mo.classify_ambiguous_peaks(validation)
+        res_summary = mo.evaluate(
+            validation.data[mo.predictors], validation.data[mo.label])
+        print res_summary
+        res.append(res_summary)
+    
     return res
 
 def load_single_motif_data(fname):
@@ -201,8 +217,10 @@ def load_single_motif_data(fname):
     
 class BuildPredictorsFactory(object):
     def build_header(self):
+        assert len(self.motifs) == 1
         header = ['region',] + [
-            "label__%s" % motif.motif_id for motif in self.motifs] + [
+            "label__%s" % motif.motif_id for motif in self.motifs] +[
+                "score__%s" % motif.motif_id for motif in self.motifs]+ [
                 "access_score",]
         for motif in self.motifs:
             for flank_size in self.flank_sizes:
@@ -252,10 +270,11 @@ def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
             continue
         if index%50000 == 0:
             print "%i/%i" % (index, len(peaks))
-        ofp.write("%s_%s\t%s\t%.4f\t%s\n" % (
+        ofp.write("%s_%s\t%s\t%.4f\t%.4f\t%s\n" % (
             labeled_peak.sample, 
             "_".join(str(x) for x in labeled_peak.peak).ljust(30), 
             labeled_peak.label, 
+            labeled_peak.score,
             labeled_peak.peak[-1],
             "\t".join("%.4e" % x for x in scores)))
     return
@@ -272,13 +291,10 @@ def parse_arguments():
 
     parser.add_argument( '--balance-data', default=False, action='store_true', 
         help='Predict results on balanced labels')
-    parser.add_argument( '--validate-on-clean-labels', 
-        default=False, action='store_true', 
-        help='Validate the model on ChIP-seq peaks with clean labels')
-
     parser.add_argument( '--skip-ambiguous-peaks', 
         default=False, action='store_true', 
-        help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
+        help='If set, only validate on the clean peak set')
+
     parser.add_argument( '--half-peak-width', type=int, default=500,
         help='Example accessible region peaks to be +/- --half-peak-width bases from the summit (default: 500)')
     parser.add_argument( '--ofprefix', type=str, default='peakscores',
@@ -306,24 +322,22 @@ def parse_arguments():
     motif = motifs[0]
     print "Finished loading motifs."
 
-    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{skip_ambiguous_peaks}.True.txt.gz".format(
+    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.txt.gz".format(
         prefix=args.ofprefix, 
         motif_id=motifs[0].motif_id,
         half_peak_width=args.half_peak_width,
         max_peaks_per_sample=args.max_num_peaks_per_sample,
-        skip_ambiguous_peaks=args.skip_ambiguous_peaks
     )
     
     return (annotation_id, motif, ofname,
             args.half_peak_width,
             args.balance_data, 
             args.skip_ambiguous_peaks,
-            args.validate_on_clean_labels,
             args.max_num_peaks_per_sample)
 
 def open_or_create_feature_file(
         annotation_id, motif, ofname, 
-        half_peak_width, skip_ambiguous_peaks, 
+        half_peak_width,  
         max_n_peaks_per_sample=None):
     try:
         return open(ofname)
@@ -336,8 +350,7 @@ def open_or_create_feature_file(
             annotation_id,
             half_peak_width=half_peak_width, 
             max_n_peaks_per_sample=max_n_peaks_per_sample,
-            skip_ambiguous_peaks=skip_ambiguous_peaks,
-            include_ambiguous_peaks=(False if skip_ambiguous_peaks else True))
+            include_ambiguous_peaks=True)
         print "Finished loading peaks."
 
         from DB import load_genome_metadata
@@ -362,14 +375,13 @@ def open_or_create_feature_file(
 
 def main():
     (annotation_id, motif, ofname, half_peak_width, 
-     balance_data, skip_ambiguous_peaks, validate_on_clean_labels,
+     balance_data, validate_on_clean_labels,
      max_num_peaks_per_sample
         ) = parse_arguments()
     # check to see if this file is cached. If not, create it
     feature_fp = open_or_create_feature_file(
         annotation_id, motif, ofname, 
         half_peak_width=half_peak_width,
-        skip_ambiguous_peaks=skip_ambiguous_peaks,
         max_n_peaks_per_sample=max_num_peaks_per_sample)
     print "Loading feature file '%s'" % ofname
     data = load_single_motif_data(feature_fp.name)

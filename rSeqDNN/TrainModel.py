@@ -47,7 +47,7 @@ def parse_args():
             args.annotation_id,
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
-            args.skip_ambiguous_peaks)
+            include_ambiguous_peaks=True)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
@@ -57,25 +57,41 @@ def parse_args():
     return ( peaks_and_labels, 
              genome_fasta, 
              args.model_prefix, 
-             args.only_test_one_fold )
+             args.only_test_one_fold,
+             args.skip_ambiguous_peaks)
 
 import cPickle as pickle
 
 def main():
-    ( peaks_and_labels, genome_fasta, model_ofname_prefix, only_test_one_fold
+    ( peaks_and_labels, 
+      genome_fasta, 
+      model_ofname_prefix, 
+      only_test_one_fold,
+      skip_ambiguous_peaks
     ) = parse_args()
     model = KerasModel(peaks_and_labels)
     results = ClassificationResults()
     for fold_index, (train, valid) in enumerate(
             peaks_and_labels.iter_train_validation_subsets()):
-        fit_model = model.train_rSeqDNN_model(
+        fit_model = model.train(
             train, 
             genome_fasta, 
             '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
-        results.append(fit_model.evaluate(
-            encode_peaks_sequence_into_binary_array(
-                valid.peaks, genome_fasta), valid.labels))
-        print results[-1]
+
+        clean_res = fit_model.evaluate_peaks_and_labels(
+            valid, 
+            genome_fasta,
+            filter_ambiguous_labels=True)
+        print "CLEAN:", clean_res
+        
+        res = fit_model.evaluate_peaks_and_labels(
+            valid, 
+            genome_fasta,
+            filter_ambiguous_labels=False,
+            plot_fname=("ambig.fold%i.png" % fold_index))
+        print "FULL:", res
+        results.append(res)
+        
         if only_test_one_fold: break
     
     print 'Printing cross validation results:'
