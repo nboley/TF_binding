@@ -323,8 +323,7 @@ def main():
       normalize,
       num_threads ) = parse_args()
     print 'restricting deepsea predictions to its test data..'
-    ( training_data,
-      validation_data ) = get_data_for_deepsea_comparison(peaks_and_labels)
+    _, validation_data = get_data_for_deepsea_comparison(peaks_and_labels)
     inputs = []
     for sample in validation_data.sample_ids:
         print 'num of examples in', sample
