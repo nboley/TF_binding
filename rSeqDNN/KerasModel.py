@@ -23,6 +23,17 @@ from keras.models import model_from_yaml
 
 import theano.tensor as T
 
+def get_data_for_deepsea_comparison(peaks_and_labels):
+    '''exclude chr8-9 from training, put in validation
+    '''
+    samples = peaks_and_labels.samples
+    training_data = peaks_and_labels.remove_data([],
+                                                 ['chr8', 'chr9'])
+    validation_data = peaks_and_labels.subset_data(samples,
+                                                   ['chr8', 'chr9'])
+    
+    return [training_data, validation_data]
+
 def expected_F1_loss(y_true, y_pred):
     min_label = T.min(y_true)
     max_label = T.max(y_true)
