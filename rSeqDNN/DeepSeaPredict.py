@@ -16,8 +16,8 @@ from pyTFbindtools.peaks import (
     getFileHandle, 
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 )
-
-from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
+from pyTFbindtools.cross_validation import ClassificationResult
+from rSeqDNN import init_prediction_script_argument_parser
 
 from grit.lib.multiprocessing_utils import fork_and_wait
 
@@ -217,8 +217,8 @@ def parse_args():
                         help='prefix for fasta files with test sequences')
     parser.add_argument('--output-directory', required=True,
                         help='output directory for deepsea results')
-    parser.add_argument('--dont-normalize', default=True, action='store_false',
-                        help='do not normalize deepsea scores')
+    parser.add_argument('--normalize', default=True,
+                        help='normalize deepsea scores')
 
     args = parser.parse_args()
 
@@ -302,10 +302,14 @@ def run_deepsea(input_list):
         print 'time per sequence scoring: ', float(
             end_time-start_time)/len(scores)
     
-    result = evaluate_predictions(
-        scores, subset_validation_data.labels)
+    pred_labels = np.zeros(len(scores))
+    pred_labels[scores > 0.5] = 1.0
+    pred_labels[scores <= 0.5] = -1.0
+    result = ClassificationResult(subset_validation_data.labels,
+                                  pred_labels,
+                                  scores)
     
-    return result
+    return res
 
 
 def main():
@@ -330,10 +334,12 @@ def main():
                                genome_fasta.filename,
                                tf_id, 
                                output_directory])
+                break
+            break
         break
-
+    results = []
     for args in inputs:
-        run_deepsea(args)
+        results.append(run_deepsea(args))
 
     print 'printing results from all cv runs...'
     for i, result in enumerate(results):
