@@ -327,6 +327,9 @@ def main():
       validation_data ) = get_data_for_deepsea_comparison(peaks_and_labels)
     inputs = []
     for sample in validation_data.sample_ids:
+        print 'num of examples in', sample
+        print len(validation_data.subset_data([sample],
+                                              validation_data.contigs).labels)
         inputs.append([validation_data, 
                        sample, 
                        normalize,
