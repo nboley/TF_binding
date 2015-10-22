@@ -283,8 +283,12 @@ def run_deepsea(input_list):
     print subset_fasta_filename
     
     subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
+    # using only chr8-9, deepsea test data
     subset_validation_data = validation_data.subset_data([sample],
-                                                         validation_data.contigs)
+                                                         ['chr8', 'chr9'])
+    print 'num of examples in', sample
+    print len(subset_validation_data.labels)
+        
     encode_peaks_sequence_into_fasta_file(
         subset_validation_data,
         genome_fasta,
@@ -322,13 +326,8 @@ def main():
       output_directory, 
       normalize,
       num_threads ) = parse_args()
-    print 'restricting deepsea predictions to its test data..'
-    _, validation_data = get_data_for_deepsea_comparison(peaks_and_labels)
     inputs = []
     for sample in validation_data.sample_ids:
-        print 'num of examples in', sample
-        print len(validation_data.subset_data([sample],
-                                              validation_data.contigs).labels)
         inputs.append([validation_data, 
                        sample, 
                        normalize,
