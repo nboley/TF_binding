@@ -18,6 +18,7 @@ from pyTFbindtools.peaks import (
 )
 from pyTFbindtools.cross_validation import ClassificationResult
 from rSeqDNN import init_prediction_script_argument_parser
+from KerasModel import get_data_for_deepsea_comparison
 
 from grit.lib.multiprocessing_utils import fork_and_wait
 
@@ -266,7 +267,6 @@ def run_deepsea(input_list):
     '''
     ( validation_data, 
       sample, 
-      contig, 
       normalize, 
       fasta_filename_prefix, 
       genome_fasta_fname, 
@@ -277,12 +277,13 @@ def run_deepsea(input_list):
     initial_wd = os.getcwd()
     os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
     # name fasta file, has to end with .fasta for deepsea to read it - facepalm.
-    subset_fasta_filename = "%s_%s_%s.fasta" % (
-        fasta_filename_prefix, sample, contig)
+    subset_fasta_filename = "%s_%s.fasta" % (
+        fasta_filename_prefix, sample)
     print subset_fasta_filename
     
     subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-    subset_validation_data = validation_data.subset_data([sample], [contig])
+    subset_validation_data = validation_data.subset_data([sample],
+                                                         validation_data.contigs)
     encode_peaks_sequence_into_fasta_file(
         subset_validation_data,
         genome_fasta,
@@ -309,7 +310,7 @@ def run_deepsea(input_list):
                                   pred_labels,
                                   scores)
     
-    return res
+    return result
 
 
 def main():
@@ -321,29 +322,26 @@ def main():
       output_directory, 
       normalize,
       num_threads ) = parse_args()
+    print 'restricting deepsea predictions to its test data..'
+    ( training_data,
+      validation_data ) = get_data_for_deepsea_comparison(peaks_and_labels)
     inputs = []
-    for count, (train, valid) in enumerate(
-            peaks_and_labels.iter_train_validation_subsets()):        
-        for sample in valid.sample_ids:
-            for contig in valid.contigs:
-                inputs.append([valid, 
-                               sample, 
-                               contig, 
-                               normalize,
-                               fasta_filename_prefix, 
-                               genome_fasta.filename,
-                               tf_id, 
-                               output_directory])
-                break
-            break
+    for sample in validation_data.sample_ids:
+        inputs.append([validation_data, 
+                       sample, 
+                       normalize,
+                       fasta_filename_prefix, 
+                       genome_fasta.filename,
+                       tf_id, 
+                       output_directory])
         break
     results = []
     for args in inputs:
         results.append(run_deepsea(args))
 
-    print 'printing results from all cv runs...'
+    print 'printing results from all test runs...'
     for i, result in enumerate(results):
-        print 'sample and contig: ', inputs[i][1], inputs[i][2]
+        print 'sample: ', inputs[i][1]
         print result
    
 if __name__ == '__main__':
