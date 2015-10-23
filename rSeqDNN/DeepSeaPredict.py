@@ -15,27 +15,22 @@ from pysam import FastaFile
 from pyTFbindtools.peaks import (
     load_labeled_peaks_from_beds, 
     getFileHandle, 
-    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
+    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    PeaksAndLabelsThreadSafeIterator
 )
 from pyTFbindtools.cross_validation import ClassificationResult
 from rSeqDNN import init_prediction_script_argument_parser
 
-from grit.lib.multiprocessing_utils import fork_and_wait
+from grit.lib.multiprocessing_utils import ThreadSafeFile, fork_and_wait
 
 def encode_peaks_sequence_into_fasta_file(
-        validation_data, fasta, fasta_ofname, labels_ofname):
-    '''writes data peaks sequence into file and saves labels
+        validation_data_iterator, fasta, fasta_ofname):
+    '''writes data peaks sequence into file
     '''
-    np.savetxt(labels_ofname, validation_data.labels)
-    peaks = validation_data.peaks
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
     with open(fasta_ofname, 'w') as wf:
-        for i, pk in enumerate(peaks):
+        for i, (pk, _, _, _) in enumerate(validation_data_iterator):
             seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-            # if the sequence is not hte same size as the peak,
+            # if the sequence is not the same size as the peak,
             # it must run off the chromosome so skip it
             if len(seq) != pk.pk_width: 
                 continue
@@ -207,6 +202,21 @@ def download_and_fix_deepsea():
     
     return
 
+def load_results(fname):
+    '''load results from deepsea run
+    '''
+    labels = []
+    pred_labels = []
+    scores = []
+    with open(fname) as fp:
+        for line in fp:
+            label, pred_label, score = line.split()
+            labels.append(float(label))
+            pred_labels.append(float(pred_label))
+            scores.append(float(score))
+            
+    return np.array(labels), np.array(pred_labels), np.array(scores)
+
 def parse_args():
     parser = init_prediction_script_argument_parser(
         'main script for testing rSeqDNN')
@@ -263,14 +273,20 @@ def run_deepsea(input_list):
     runs all functions
     '''
     print 'starting deepsea run..'
-    ( validation_data, 
+    ( validation_data_iterator, 
       sample,
       contigs,
       normalize, 
       fasta_filename_prefix, 
       genome_fasta_fname, 
       tf_id, 
-      output_directory ) = input_list
+      output_directory,
+      ofp ) = input_list
+    # check objects are thread safe
+    assert isinstance(
+        validation_data_iterator, PeaksAndLabelsThreadSafeIterator)
+    assert isinstance(
+        ofp, ThreadSafeFile)
     genome_fasta = FastaFile(genome_fasta_fname)
     
     initial_wd = os.getcwd()
@@ -281,16 +297,13 @@ def run_deepsea(input_list):
     print subset_fasta_filename
     
     subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-    subset_validation_data = validation_data.subset_data([sample],
-                                                         contigs)
     print 'num of examples in', sample
-    print len(subset_validation_data.labels)
+    print len(validation_data_iterator.peaks_and_labels.labels)
         
     encode_peaks_sequence_into_fasta_file(
-        subset_validation_data,
+        validation_data_iterator,
         genome_fasta,
-        subset_fasta_filename,
-        subset_labels_filename)
+        subset_fasta_filename)
 
     start_time = time.time()
     scores = score_seq_with_deepsea_model(
@@ -308,12 +321,14 @@ def run_deepsea(input_list):
     pred_labels = np.zeros(len(scores))
     pred_labels[scores > 0.5] = 1.0
     pred_labels[scores <= 0.5] = -1.0
-    result = ClassificationResult(subset_validation_data.labels,
-                                  pred_labels,
-                                  scores)
+    labels = validation_data_iterator.peaks_and_labels.labels
+    assert len(labels)==len(pred_labels)
+    assert len(pred_labels)==len(scores)
+    for i in xrange(len(scores)):
+        ofp.write("%f %f %f\n" % (labels[i],
+                                  pred_labels[i],
+                                  scores[i])) 
     
-    return result
-
 def main():
     download_and_fix_deepsea()
     ( peaks_and_labels, 
@@ -323,23 +338,29 @@ def main():
       output_directory, 
       normalize,
       num_threads ) = parse_args()
-    inputs = []
+    results = []
     validation_contigs = ['chr8', 'chr9']
     for sample in peaks_and_labels.sample_ids:
-        inputs.append([peaks_and_labels, 
-                       sample,
-                       validation_contigs,
-                       normalize,
-                       fasta_filename_prefix, 
-                       genome_fasta.filename,
-                       tf_id, 
-                       output_directory])
-    
-    results = Parallel(n_jobs=num_threads)(delayed(run_deepsea)(i) for i in inputs)      
+        print 'subsetting to deepsea test data...'
+        validation_data = peaks_and_labels.subset_data([sample],
+                                                       validation_contigs)
+        print 'creating thread safe iterator..'
+        validation_data_iterator = validation_data.thread_safe_iter()
+        ofname = "deepsea.results.%s.%s.txt" % (tf_id, sample)
+        ofp = ThreadSafeFile(ofname, "w")
+        inputs = [[validation_data_iterator, sample, validation_contigs,
+                  normalize, fasta_filename_prefix, genome_fasta.filename,
+                  tf_id, output_directory, ofp]]
+        print 'spawning deepsea run...'
+        fork_and_wait(num_threads, run_deepsea, inputs)
+        ofp.close()
+        labels, pred_labels, scores = load_results(ofname)
+        result = ClassificationResult(labels, pred_labels, scores)
+        results.append(result)
     print 'printing results from all test runs...'
-    for i, result in enumerate(results):
-        print 'sample: ', inputs[i][1]
-        print result
+    for i, sample in enumerate(peaks_and_labels.sample_ids):
+        print 'sample: ', sample
+        print results[i]
    
 if __name__ == '__main__':
     main()
