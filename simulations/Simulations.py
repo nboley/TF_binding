@@ -95,11 +95,11 @@ class SimpleSimulations(SimulatedData):
 				embed_in_background = synthetic.EmbedInABackground(
     				backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(seqLength=seq_len),
     				embedders=embedder)
-    		else: # number of motifs sampled from poisson 
-    			embedder = non_positional_poisson_embedder()
-    			embed_in_background = synthetic.EmbedInABackground(
-    			backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(seqLength=seq_len),
-    			embedders=embedder)
+    			else: # number of motifs sampled from poisson 
+    				embedder = non_positional_poisson_embedder()
+    				embed_in_background = synthetic.EmbedInABackground(
+    				backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(seqLength=seq_len),
+    				embedders=embedder)
 		else: # positional embedding
 			assert isinstance(centered, int), 'Must pass in integer for BPs to embed motif in.' 
 			if (mean_motifs == None and max_motifs == None): # fixed number of motifs generated
@@ -107,11 +107,11 @@ class SimpleSimulations(SimulatedData):
 				embed_in_background = synthetic.EmbedInABackground(
     				backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(seqLength=seq_len),
     				embedders=embedder)
-    		else: # number of motifs sampled from poisson 
-    			embedder = positional_poisson_embedder()
-    			embed_in_background = synthetic.EmbedInABackground(
-    			backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(seqLength=seq_len),
-    			embedders=embedder)
+    			else: # number of motifs sampled from poisson 
+    				embedder = positional_poisson_embedder()
+    				embed_in_background = synthetic.EmbedInABackground(
+    				backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(seqLength=seq_len),
+    				embedders=embedder)
 		
 		sequence_set = synthetic.GenerateSequenceNTimes(embed_in_background, num_seq);
 		synthetic.printSequences(self.pos_out, sequence_set);
