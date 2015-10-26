@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import tempfile
 scripts_dir = os.environ.get("UTIL_SCRIPTS_DIR")
 if (scripts_dir is None):
     raise Exception("Please set environment variable UTIL_SCRIPTS_DIR")
@@ -21,28 +22,28 @@ class SimpleSimulations:
         return []
 
     def non_positional_fixed_embedder(self, num_motifs):
-        return
-        [synthetic.RepeatedEmbedder(
+        embedder = [synthetic.RepeatedEmbedder(
             synthetic.SubstringEmbedder(
                 substringGenerator=synthetic.PwmSamplerFromLoadedMotifs(
                     loadedMotifs=self.loaded_motifs,motifName=self.motif_name),
                 positionGenerator=synthetic.UniformPositionGenerator()),
             quantityGenerator=synthetic.FixedQuantityGenerator(num_motifs))
         ]
+        return embedder
 
     def positional_fixed_embedder(self, num_motifs, central_bp):
-        return
-        [synthetic.RepeatedEmbedder(
+        embedder = [synthetic.RepeatedEmbedder(
             synthetic.SubstringEmbedder(
                 substringGenerator=synthetic.PwmSamplerFromLoadedMotifs(
                     loadedMotifs=self.loaded_motifs,motifName=self.motif_name),
                 positionGenerator=synthetic.InsideCentralBp(central_bp)),
             quantityGenerator=synthetic.FixedQuantityGenerator(num_motifs))
         ]
+        return embedder
 
     def non_positional_poisson_embedder(self, mean_motifs, max_motifs):
-        return ## TODO: support min_motifs
-        [synthetic.RepeatedEmbedder(
+        ## TODO: support min_motifs
+        embedder = [synthetic.RepeatedEmbedder(
             synthetic.SubstringEmbedder(
                 substringGenerator=synthetic.PwmSamplerFromLoadedMotifs(
                     loadedMotifs=loaded_motifs,motifName=motif_name),
@@ -51,6 +52,7 @@ class SimpleSimulations:
                 synthetic.PoissonQuantityGenerator(mean_motifs),
                 theMax=max_motifs))
         ]
+        return embedder
 
 def get_simulation_embedders(simulation_type, simple_simulation):
     '''get positive and negative embedders
@@ -61,14 +63,29 @@ def get_simulation_embedders(simulation_type, simple_simulation):
     else:
         raise ValueError('simulation type not supported!')
 
-def generate_peaks_and_labels(positive_embedder, negative_embedder):
+def generate_sequences_from_embedder(embedder, sequence_length, num_examples):
+    '''simulates embedded in random sequence 
+    '''
+    embed_in_background = synthetic.EmbedInABackground(
+        backgroundGenerator=synthetic.ZeroOrderBackgroundGenerator(
+            seqLength=sequence_length), embedders=embedder)
+    sequences = synthetic.GenerateSequenceNTimes(embed_in_background,
+                                                    num_examples)
+    fasta_lines = []
+    generatedSequences = sequences.generateSequences() 
+    for generatedSequence in generatedSequences:
+        fasta_lines.append(generatedSequence.seq)
+    
+    return fasta_lines
+
+def generate_peaks_and_labels(positive_sequence, negative_sequences):
     '''generate peaks and labels object
     TODO: 
     unfirom sample
     different contigs for train/valid/test data
     '''
     pass
-
+    
 def parse_args():
     parser = argparse.ArgumentParser(
         description='main script for testing KerasModel on simulations')
@@ -93,8 +110,14 @@ def main():
             ( positive_embedder,
               negative_embedder ) = get_simulation_embedders(simulation_type,
                                                              simple_simulation)
-            peaks_and_labels = generate_peaks_and_labels(positive_embedder,
-                                                         negative_embedder)
+            positive_sequences = generate_sequences_from_embedder(
+                positive_embedder, 100, 1000)
+            negative_sequences = generate_sequences_from_embedder(
+                negative_embedder, 100, 1000)
+            print 'sequences type: ', type(positive_sequences)
+            print positive_sequences[:3]
+            peaks_and_labels = generate_peaks_and_labels(positive_sequences,
+                                                         negative_sequences)
 
 
 if __name__ == '__main__':
