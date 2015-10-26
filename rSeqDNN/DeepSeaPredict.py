@@ -253,13 +253,13 @@ def parse_args():
             args.annotation_id,
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
-            args.skip_ambiguous_peaks)
+            args.include_ambiguous_peaks)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
-        
+    
     return ( peaks_and_labels, 
              genome_fasta, 
              args.output_fasta_filename_prefix, 
