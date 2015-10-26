@@ -295,8 +295,9 @@ def run_deepsea(input_list):
     initial_wd = os.getcwd()
     os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
     # name fasta file, has to end with .fasta for deepsea to read it - facepalm.
-    subset_fasta_filename = "%s_%s.fasta" % (
-        fasta_filename_prefix, sample)
+    pid = str(int(os.getpid()))
+    subset_fasta_filename = "%s_%s_%s.fasta" % (
+        fasta_filename_prefix, sample, pid)
     fasta_tsf = ThreadSafeFile(subset_fasta_filename, "w")
 
     labels = encode_peaks_sequence_into_fasta_file(
@@ -304,10 +305,10 @@ def run_deepsea(input_list):
         genome_fasta,
         fasta_tsf)
     fasta_tsf.close()
-    
+    subset_output_directory = output_directory + pid
     start_time = time.time()
     scores = score_seq_with_deepsea_model(
-        tf_id, sample, subset_fasta_filename, output_directory)
+        tf_id, sample, subset_fasta_filename, subset_output_directory)
     end_time = time.time()
     
     os.chdir(initial_wd)
