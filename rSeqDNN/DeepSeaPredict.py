@@ -34,6 +34,8 @@ def encode_peaks_sequence_into_fasta_file(
         # it must run off the chromosome so skip it
         if len(seq) != pk.pk_width: 
             continue
+        if label == 0:
+            label = -1.0
         fasta_tsf.write('>'+str(i)+'\n')
         fasta_tsf.write(seq+'\n')
         labels.append(label)
@@ -207,7 +209,7 @@ def download_and_fix_deepsea():
 
 def load_results(fname):
     '''load results from deepsea run
-    '''
+OB    '''
     labels = []
     pred_labels = []
     scores = []
