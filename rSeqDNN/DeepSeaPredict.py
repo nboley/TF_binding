@@ -24,18 +24,21 @@ from rSeqDNN import init_prediction_script_argument_parser
 from grit.lib.multiprocessing_utils import ThreadSafeFile, fork_and_wait
 
 def encode_peaks_sequence_into_fasta_file(
-        validation_data_iterator, fasta, fasta_ofname):
+        validation_data_iterator, fasta, fasta_tsf):
     '''writes data peaks sequence into file
     '''
-    with open(fasta_ofname, 'w') as wf:
-        for i, (pk, _, _, _) in enumerate(validation_data_iterator):
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-            # if the sequence is not the same size as the peak,
-            # it must run off the chromosome so skip it
-            if len(seq) != pk.pk_width: 
-                continue
-            wf.write('>'+str(i)+'\n')
-            wf.write(seq+'\n')
+    labels = []
+    for i, (pk, _, label, _) in enumerate(validation_data_iterator):
+        seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+        # if the sequence is not the same size as the peak,
+        # it must run off the chromosome so skip it
+        if len(seq) != pk.pk_width: 
+            continue
+        fasta_tsf.write('>'+str(i)+'\n')
+        fasta_tsf.write(seq+'\n')
+        labels.append(label)
+    
+    return np.array(labels) 
 
 def get_deepsea_sample_name(sample):
     if sample=='E003':
@@ -78,7 +81,7 @@ def get_deepsea_tf_name(tf_id):
     if tf_id=='T014210_1.02': # MYC
         return 'c-Myc'
     elif tf_id=='T011266_1.02': # MAX
-        return 'MAX'
+        return 'Max'
     elif tf_id=='T044261_1.02': # YY1
         return 'YY1'
     elif tf_id=='T044268_1.02': # CTCF
@@ -294,17 +297,14 @@ def run_deepsea(input_list):
     # name fasta file, has to end with .fasta for deepsea to read it - facepalm.
     subset_fasta_filename = "%s_%s.fasta" % (
         fasta_filename_prefix, sample)
-    print subset_fasta_filename
-    
-    subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-    print 'num of examples in', sample
-    print len(validation_data_iterator.peaks_and_labels.labels)
-        
-    encode_peaks_sequence_into_fasta_file(
+    fasta_tsf = ThreadSafeFile(subset_fasta_filename, "w")
+
+    labels = encode_peaks_sequence_into_fasta_file(
         validation_data_iterator,
         genome_fasta,
-        subset_fasta_filename)
-
+        fasta_tsf)
+    fasta_tsf.close()
+    
     start_time = time.time()
     scores = score_seq_with_deepsea_model(
         tf_id, sample, subset_fasta_filename, output_directory)
@@ -321,7 +321,6 @@ def run_deepsea(input_list):
     pred_labels = np.zeros(len(scores))
     pred_labels[scores > 0.5] = 1.0
     pred_labels[scores <= 0.5] = -1.0
-    labels = validation_data_iterator.peaks_and_labels.labels
     assert len(labels)==len(pred_labels)
     assert len(pred_labels)==len(scores)
     for i in xrange(len(scores)):
