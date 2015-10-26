@@ -2,11 +2,14 @@ import argparse
 import os
 import sys
 import tempfile
+import random
 scripts_dir = os.environ.get("UTIL_SCRIPTS_DIR")
 if (scripts_dir is None):
     raise Exception("Please set environment variable UTIL_SCRIPTS_DIR")
 sys.path.insert(0, scripts_dir)
 from synthetic import synthetic
+
+random.seed(1)
 
 class SimpleSimulations:
     '''
