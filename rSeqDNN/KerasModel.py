@@ -2,8 +2,8 @@ import sys
 sys.setrecursionlimit(50000)
 
 import cPickle as pickle
-
 import numpy as np
+import json
 
 from pyTFbindtools.sequence import code_seq
 
@@ -74,49 +74,95 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels, batch_size=200):
+    def __init__(self, peaks_and_labels, model_def_file=None, batch_size=200):
+
         self.batch_size = batch_size
-        
         self.seq_len = peaks_and_labels.max_peak_width
-        numConv = 30
-        convStack = 1
-        convWidth = 4
-        convHeight = 45
-        maxPoolSize = 20
-        maxPoolStride = 20
-        numConvOutputs = ((self.seq_len - convHeight) + 1)
-        numMaxPoolOutputs = int(((numConvOutputs-maxPoolSize)/maxPoolStride)+1)
-        gruHiddenVecSize = 35
-        numFCNodes = 45
-        numOutputNodes = 1
-        
-        # this fixes an implementation bug in Keras. If this is not true,
-        # then the code runs much more slowly
-        assert maxPoolSize%maxPoolStride == 0
-        
-        # Define architecture     
-        self.model = Sequential()
-        self.model.add(Convolution2D(
-            numConv, 
-            convWidth, convHeight, 
-            activation="relu", init="he_normal", 
-            input_shape=(1, 4, self.seq_len)
-        ))
-        self.model.add(MaxPooling2D(
-            pool_size=(1,maxPoolSize), 
-            stride=(1,maxPoolStride)
-        ))
-        self.model.add(Reshape((numConv,numMaxPoolOutputs)))
-        self.model.add(Permute((2,1)))
-        # make the number of max pooling outputs the time dimension
-        self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
-        self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
-        self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
-        self.model.add(Dense(numOutputNodes,activation='sigmoid'))
+
+        if (model_def_file is not None):
+            self.model_def_file = model_def_file
+            self.parse_model_def_file() # parse and update self.model
+        else: # resort to defaults
+            numConv = 30
+            convStack = 1
+            convWidth = 4
+            convHeight = 45
+            maxPoolSize = 20
+            maxPoolStride = 20
+            numConvOutputs = ((self.seq_len - convHeight) + 1)
+            numMaxPoolOutputs = int(((numConvOutputs-maxPoolSize)/maxPoolStride)+1)
+            gruHiddenVecSize = 35
+            numFCNodes = 45
+            numOutputNodes = 1
+            
+            # this fixes an implementation bug in Keras. If this is not true,
+            # then the code runs much more slowly
+            assert maxPoolSize%maxPoolStride == 0
+            
+            # Define architecture     
+            self.model = Sequential()
+            self.model.add(Convolution2D(
+                numConv, 
+                convWidth, convHeight, 
+                activation="relu", init="he_normal", 
+                input_shape=(1, 4, self.seq_len)
+            ))
+            self.model.add(MaxPooling2D(
+                pool_size=(1,maxPoolSize), 
+                stride=(1,maxPoolStride)
+            ))
+            self.model.add(Reshape((numConv,numMaxPoolOutputs)))
+            self.model.add(Permute((2,1)))
+            # make the number of max pooling outputs the time dimension
+            self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
+            self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
+            self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
+            self.model.add(Dense(numOutputNodes,activation='sigmoid'))
 
     @property
     def curr_model_config_hash(self):
         return abs(hash(str(self.model.get_config())))
+
+    def parse_model_def_file(self):
+        model_dict = json.loads(open(self.model_def_file,"rb").read())
+        # parse architecture parameters
+        architecture = model_dict["architecture"]
+        num_conv = architecture["num-conv"];
+        conv_stack = architecture["conv-stack"];
+        conv_height = architecture["conv-height"];
+        conv_width = architecture["conv-width"];
+        dropout_rate = architecture["dropout"];
+        max_pool_size = architecture["maxpool-size"];
+        max_pool_stride = architecture["maxpool-stride"];
+        num_conv_out = ((self.seq_len - conv_height) + 1);
+        num_max_pool_out = int(((num_conv_out-max_pool_size)/max_pool_stride)+1)
+        # if CNN-RNN is specified, parse GRU size
+        if (architecture["type"] == "cnn-rnn"): 
+            gru_hidden_vec_size = architecture["gru-hidden-size"];
+            num_fc_nodes = architecture["num-fc-nodes"];
+
+        # setup Sequential() model
+        self.model = Sequential()
+        self.model.add(Convolution2D(
+            num_conv, conv_width, conv_height, 
+            activation="relu", init="he_normal", 
+            input_shape=(conv_stack, 4, self.seq_len)
+        ))
+        self.model.add(MaxPooling2D(
+            pool_size=(1,max_pool_size), 
+            stride=(1,max_pool_stride)
+        ))
+        if (architecture["type"] == "cnn-rnn"):
+            self.model.add(Reshape((num_conv,num_max_pool_out)))
+            self.model.add(Permute((2,1)))
+            # make the number of max pooling outputs the time dimension
+            self.model.add(GRU(output_dim=gru_hidden_vec_size,return_sequences=True))
+            self.model.add(TimeDistributedDense(num_fc_nodes,activation="relu"))
+            self.model.add(Reshape((num_fc_nodes*num_max_pool_out,)))
+            self.model.add(Dense(1,activation='sigmoid'))
+        else:
+            self.model.add(Reshape((num_conv*num_max_pool_out,)))
+            self.model.add(Dense(1,activation='sigmoid'))
     
     def compile(self, loss, optimizer, use_model_file, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
@@ -234,7 +280,13 @@ class KerasModel(KerasModelBase):
         best_auPRC = 0
         best_F1 = 0
         best_average = 0
-        out_filename = "fit_weights.obj"
+
+        if self.model_def_file:
+            out_filename = (self.model_def_file).split(".json")[0]
+            out_filename = out_filename + ".obj"
+        else:
+            out_filename = "fit_weights.obj"
+
         for epoch in xrange(numEpochs):
             self.model.fit(
                 X_train, y_train,
@@ -300,3 +352,4 @@ class KerasModel(KerasModelBase):
                   unbalanced_train_epochs, use_model_file)
         
         return self
+
