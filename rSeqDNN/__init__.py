@@ -50,6 +50,9 @@ def init_prediction_script_argument_parser(description):
         default=False, action='store_true', 
         help='Include regions that dont overlap the optimal peak set but do overlap a relaxed set')
 
+    parser.add_argument('--model-definition-file', type=str, default=None,
+        		help='JSON file containing model architecture.')
+
     #parser.add_argument('--device', type=str, required=True,
     #                    choices=['cpu', 'gpu', 'gpu1', 'gpu2', 'gpu3', 'gpu4'],
     #                    help='Use the specified device.')
