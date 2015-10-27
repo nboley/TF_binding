@@ -118,19 +118,23 @@ class KerasModelBase():
     def curr_model_config_hash(self):
         return abs(hash(str(self.model.get_config())))
     
-    def compile(self, loss, optimizer, class_mode="binary"):
+    def compile(self, loss, optimizer, use_model_file, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
         fname = "MODEL.%s.%s.obj" % (self.curr_model_config_hash, loss_name)
-        try:
-            print "Loading pickled model '%s'" % fname 
-            with open(fname) as fp:
-                self.model = pickle.load(fp)
-            print "Finished loading pickled model."
-        except IOError:
-            print "ERROR loading pickled model - recompiling."
+        if use_model_file:
+            try:
+                print "Loading pickled model '%s'" % fname 
+                with open(fname) as fp:
+                    self.model = pickle.load(fp)
+                print "Finished loading pickled model."
+            except IOError:
+                raise ValueError("ERROR loading picked model!exiting!")
+        else:
+            print "compiling model..."
             self.model.compile(loss=loss, 
                                optimizer=optimizer,
                                class_mode=class_mode)
+        if use_model_file:    
             print("Saving compiled model to pickle object." )
             with open(fname, "w") as fp:
                 pickle.dump(self.model, fp)
@@ -198,13 +202,14 @@ class KerasModelBase():
 
 class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
-            self, X_train, y_train, X_validation, y_validation, numEpochs):
+            self, X_train, y_train, X_validation, y_validation, numEpochs,
+            use_model_file):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)        
         
         print("Compiling model with binary cross entropy loss.")
-        self.compile('binary_crossentropy', Adam())
+        self.compile('binary_crossentropy', Adam(), use_model_file)
         self.model.fit(
                 b_X_train, b_y_train,
                 validation_data=(b_X_validation, b_y_validation),
@@ -215,7 +220,8 @@ class KerasModel(KerasModelBase):
         print self.evaluate(b_X_validation, b_y_validation)
         return self
 
-    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs):
+    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs,
+             use_model_file):
         neg_class_cnt = (y_train == -1).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
@@ -224,7 +230,7 @@ class KerasModel(KerasModelBase):
 
         print("Switiching to F1 loss function.")
         print("Compiling model with expected F1 loss.")
-        self.compile(expected_F1_loss, Adam())
+        self.compile(expected_F1_loss, Adam(), use_model_file)
         best_auPRC = 0
         best_F1 = 0
         best_average = 0
@@ -254,7 +260,8 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(out_filename)
         return self
 
-    def train(self, data, genome_fasta, out_filename, numEpochs=8):
+    def train(self, data, genome_fasta, out_filename, use_model_file,
+              balanced_train_epochs=3, unbalanced_train_epochs=8):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
         X_validation, y_validation = self.build_predictor_and_label_matrices(
@@ -265,10 +272,12 @@ class KerasModel(KerasModelBase):
 
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
-            X_train, y_train, X_validation, y_validation, numEpochs=3)
+            X_train, y_train, X_validation, y_validation,
+            balanced_train_epochs, use_model_file)
         
         print("Fitting full training set with expected F1 loss.")
-        self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
+        self._fit(X_train, y_train, X_validation, y_validation,
+                  unbalanced_train_epochs, use_model_file)
         
         # build the predictor matrixes, including the ambiguous labels
         print("Setting the ambiguous labels peak threshold.")
@@ -287,6 +296,7 @@ class KerasModel(KerasModelBase):
         print self.evaluate(X_validation, y_validation)
 
         print("Re-fitting the model with the imputed data.")
-        self._fit(X_train, y_train, X_validation, y_validation, numEpochs)
+        self._fit(X_train, y_train, X_validation, y_validation,
+                  unbalanced_train_epochs, use_model_file)
         
         return self

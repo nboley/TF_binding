@@ -21,6 +21,9 @@ def parse_args():
     parser.add_argument('--only-test-one-fold', 
                         default=False, action='store_true',
         help='Only evaluate on a single cross validation fold.')
+    parser.add_argument('--use-model-file',
+                        default=False, action='store_true',
+        help='pickle model during training to avoid recompiling.')
 
     args = parser.parse_args()
     
@@ -58,7 +61,7 @@ def parse_args():
              genome_fasta, 
              args.model_prefix, 
              args.only_test_one_fold,
-             args.skip_ambiguous_peaks)
+             args.use_model_file )
 
 import cPickle as pickle
 
@@ -67,7 +70,7 @@ def main():
       genome_fasta, 
       model_ofname_prefix, 
       only_test_one_fold,
-      skip_ambiguous_peaks
+      use_model_file
     ) = parse_args()
     model = KerasModel(peaks_and_labels)
     results = ClassificationResults()
@@ -76,7 +79,8 @@ def main():
         fit_model = model.train(
             train, 
             genome_fasta, 
-            '%s.%i.hd5' % (model_ofname_prefix, fold_index+1))
+            '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
+            use_model_file)
 
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid, 
