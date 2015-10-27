@@ -34,8 +34,8 @@ def encode_peaks_sequence_into_fasta_file(
         # it must run off the chromosome so skip it
         if len(seq) != pk.pk_width: 
             continue
-        if label == 0:
-            label = -1.0
+        if label == 0: # skip ambiguous peaks if included
+            continue
         fasta_tsf.write('>'+str(i)+'\n')
         fasta_tsf.write(seq+'\n')
         labels.append(label)
