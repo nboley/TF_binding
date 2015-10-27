@@ -2,7 +2,10 @@ import os
 
 from pysam import FastaFile
 
-from rSeqDNN import init_prediction_script_argument_parser
+try:
+    from rSeqDNN import init_prediction_script_argument_parser
+except:
+    from __init__ import init_prediction_script_argument_parser
 
 from pyTFbindtools.peaks import (
     load_labeled_peaks_from_beds, 
@@ -61,7 +64,8 @@ def parse_args():
              genome_fasta, 
              args.model_prefix, 
              args.only_test_one_fold,
-             args.use_model_file )
+             args.use_model_file,
+             args.model_definition_file )
 
 import cPickle as pickle
 
@@ -70,9 +74,16 @@ def main():
       genome_fasta, 
       model_ofname_prefix, 
       only_test_one_fold,
-      use_model_file
+      use_model_file,
+      model_definition_file
     ) = parse_args()
-    model = KerasModel(peaks_and_labels)
+
+    if (model_definition_file is not None):
+        model = KerasModel(peaks_and_labels,
+            model_def_file=model_definition_file)
+    else:
+        model = KerasModel(peaks_and_labels)
+
     results = ClassificationResults()
     for fold_index, (train, valid) in enumerate(
             peaks_and_labels.iter_train_validation_subsets()):
@@ -105,3 +116,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
