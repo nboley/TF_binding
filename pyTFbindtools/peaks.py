@@ -138,9 +138,11 @@ class PeaksAndLabels():
                 if pk_and_label.label != 0
             )
 
-    def iter_train_validation_subsets(self):
+    def iter_train_validation_subsets(
+            self, validation_contigs=None, single_celltype=False):
         for train_indices, valid_indices in iter_train_validation_splits(
-                self.sample_ids, self.contigs):
+                self.sample_ids, self.contigs,
+                validation_contigs, single_celltype):
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
 

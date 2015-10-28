@@ -179,7 +179,9 @@ class ClassificationResults(list):
             rv.append("\t".join(str(x) for x in entry))
         return "\n".join(rv)
 
-def iter_train_validation_splits(sample_ids, contigs):
+def iter_train_validation_splits(sample_ids, contigs,
+                                 validation_contigs=None,
+                                 single_celltype=False):
     # determine the training and validation sets
     if len(sample_ids) == 1:
         train_samples = sample_ids
@@ -188,19 +190,29 @@ def iter_train_validation_splits(sample_ids, contigs):
     else:
         all_sample_folds = []
         for sample in sample_ids:
-            all_sample_folds.append(
-                ([x for x in sample_ids if x != sample], [sample,]))
+            if single_celltype:
+                all_sample_folds.append(([sample,], [sample,]))
+            else:
+                all_sample_folds.append(
+                    ([x for x in sample_ids if x != sample], [sample,]))
     # split the samples into validation and training
     non_test_chrs = sorted(
         set(contigs) - set("chr%i" % i for i in TEST_CHRS))
-    all_chr_folds = list(cross_validation.KFold(
-        len(non_test_chrs), n_folds=5))
-    for sample_fold, chr_fold in itertools.product(
-            all_sample_folds, all_chr_folds):
-        train_samples, validation_samples = sample_fold
-        train_chrs = [non_test_chrs[i] for i in chr_fold[0]]
-        validation_chrs = [non_test_chrs[i] for i in chr_fold[1]]
-        yield (
-            (train_samples, train_chrs), 
-            (validation_samples, validation_chrs))
+    if validation_contigs is None:
+        all_chr_folds = list(cross_validation.KFold(
+            len(non_test_chrs), n_folds=5))
+        for sample_fold, chr_fold in itertools.product(
+                all_sample_folds, all_chr_folds):
+            train_samples, validation_samples = sample_fold
+            train_chrs = [non_test_chrs[i] for i in chr_fold[0]]
+            validation_chrs = [non_test_chrs[i] for i in chr_fold[1]]
+            yield (
+                (train_samples, train_chrs), 
+                (validation_samples, validation_chrs))
+    else: # use provided validation contigs
+        train_chrs = set(non_test_chrs) - validation_contigs
+        for train_samples, validation_samples in all_sample_folds:
+            yield (
+                (train_samples, train_chrs),
+                (validation_samples, validation_contigs))
     return
