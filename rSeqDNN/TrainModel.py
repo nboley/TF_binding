@@ -27,6 +27,8 @@ def parse_args():
     parser.add_argument('--use-model-file',
                         default=False, action='store_true',
         help='pickle model during training to avoid recompiling.')
+    parser.add_argument('--model-definition-file', type=str, default=None,
+                    help='JSON file containing model architecture.')
 
     args = parser.parse_args()
     
