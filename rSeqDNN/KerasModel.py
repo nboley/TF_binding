@@ -78,9 +78,9 @@ class KerasModelBase():
 
         self.batch_size = batch_size
         self.seq_len = peaks_and_labels.max_peak_width
-
-        if (model_def_file is not None):
-            self.model_def_file = model_def_file
+        self.model_def_file = model_def_file
+            
+        if (self.model_def_file is not None):
             self.parse_model_def_file() # parse and update self.model
         else: # resort to defaults
             numConv = 30
@@ -281,7 +281,7 @@ class KerasModel(KerasModelBase):
         best_F1 = 0
         best_average = 0
 
-        if self.model_def_file:
+        if (self.model_def_file is not None):
             out_filename = (self.model_def_file).split(".json")[0]
             out_filename = out_filename + ".obj"
         else:
