@@ -1,5 +1,5 @@
 import os
-
+import numpy as np
 from pysam import FastaFile
 
 try:
@@ -29,6 +29,8 @@ def parse_args():
         help='pickle model during training to avoid recompiling.')
     parser.add_argument('--model-definition-file', type=str, default=None,
                     help='JSON file containing model architecture.')
+    parser.add_argument('--random-seed', type=int, default=1701,
+                    help='random seed. 1701 by default.')
 
     args = parser.parse_args()
     
@@ -67,7 +69,8 @@ def parse_args():
              args.model_prefix, 
              args.only_test_one_fold,
              args.use_model_file,
-             args.model_definition_file )
+             args.model_definition_file,
+             args.random_seed)
 
 import cPickle as pickle
 
@@ -77,9 +80,10 @@ def main():
       model_ofname_prefix, 
       only_test_one_fold,
       use_model_file,
-      model_definition_file
+      model_definition_file,
+      random_seed
     ) = parse_args()
-
+    np.random.seed(random_seed) # fix random seed    
     if (model_definition_file is not None):
         model = KerasModel(peaks_and_labels,
             model_def_file=model_definition_file)
