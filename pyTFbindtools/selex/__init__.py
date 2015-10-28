@@ -23,6 +23,7 @@ import pyTFbindtools
 
 from ..motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
+from ..sequence import code_seq
 
 # ignore theano warnings
 import warnings
@@ -162,6 +163,19 @@ def code_seqs(seqs, motif_len, seq_len, n_seqs=None, ON_GPU=True):
 
     """
     if n_seqs == None: n_seqs = len(seqs)
+    coded_seqs = np.zeros((n_seqs, 2, 3, seq_len))
+    for i, seq in enumerate(seqs):
+        # code seq, and then toss the A and N rows
+        coded_seq = code_seq(seq)
+        # ignore the A and N rows
+        coded_seqs[i,0,:,:] = coded_seq[(1,2,3),:]
+        # reverse complement the sequence
+        coded_seqs[i,1,:,:] = np.fliplr(coded_seq[(2,1,0),:])
+    conv = numpy.ones((3,6), dtype='float32')
+    print coded_seqs.shape
+    print 
+    assert False
+
     # leave 3 rows for each sequence base, and 6 for the shape params
     len_per_base = 3
     if USE_SHAPE:
@@ -174,6 +188,13 @@ def code_seqs(seqs, motif_len, seq_len, n_seqs=None, ON_GPU=True):
     for i, seq in enumerate(seqs):
         for j, param_values in enumerate(code_sequence(seq, motif_len)):
             coded_seqs[i, j, :] = param_values
+    print coded_seqs.shape
+    print coded_seqs[0,:,:]
+    print coded_seqs[0,:,:].shape
+    print motif_len
+    print seq_len
+    
+    assert False
     if ON_GPU:
         return theano.shared(coded_seqs)
     else:
@@ -210,7 +231,8 @@ def calc_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.bs_len, 
         len(random_seqs[0]), 
         ON_GPU=True)
-    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/float(len(random_seqs))
+    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/float(
+        len(random_seqs))
 
     calc_bg_energies = theano.function(
         [sym_e], random_coded_seqs.dot(sym_e).min(1))
