@@ -28,8 +28,8 @@ def code_seq(char* seq):
     cdef int i
     cdef int length = len(seq)
     cdef char coded_base
-    cdef np.ndarray[np.int32_t, ndim=2] coded_seq = np.zeros((5, length), dtype=np.int32)
-    #coded_seq = np.zeros((5,len(seq)))
+    cdef np.ndarray[np.int32_t, ndim=2] coded_seq = np.zeros(
+        (5, length), dtype=np.int32)
     for i in range(length):
         coded_seq[code_base(seq[i]), i] = 1
     return coded_seq

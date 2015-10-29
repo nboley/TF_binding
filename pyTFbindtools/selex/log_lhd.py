@@ -15,6 +15,19 @@ PARTITION_FN_SAMPLE_SIZE = 1000
 
 random_seqs = {}
 
+def test_calc_affinities():
+    """Place holder for some test code.
+
+    """
+    seq = 'GCGAATACC'
+    coded_seq = code_seq(seq)
+    RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+    RC_seq = "".join(RC_map[x] for x in seq[::-1])
+    coded_RC_seq = code_seq(RC_seq)
+
+    print coded_seqs.shape
+    print calc_affinities(coded_seqs, ddg_array )
+    
 def log_lhd_factory():
     import theano
     import theano.tensor as TT
@@ -23,6 +36,22 @@ def log_lhd_factory():
     # ignore theano warnings
     import warnings
     warnings.simplefilter("ignore")
+    
+    ## Theano function to calculate affinities
+    seqs = TT.tensor3(name='seqs')
+    ddg = TT.matrix(name='ddg')
+    fwd_bs_affinities = theano_conv2d(seqs, ddg[::-1,::-1])[:,0,:]
+    rc_ddg = (
+        TT.concatenate((ddg[(1,0),:], TT.zeros_like(ddg[(0,),:])), axis=0) 
+        - ddg[2,:])[:,::-1]
+    rc_bs_affinities = (
+        theano_conv2d(seqs, rc_ddg[::-1,::-1]) + ddg[2,:].sum()
+    )[:,0,:]
+
+    bs_affinities = TT.stack(
+        (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
+    seq_affinities = bs_affinities.min(1)
+    calc_affinities = theano.function([seqs, ddg], seq_affinities )
 
     sym_occ = TT.vector()
     sym_part_fn = TT.vector()
@@ -33,9 +62,7 @@ def log_lhd_factory():
 
     sym_seqs = TT.tensor3(name='seqs')
     sym_ddg = TT.matrix(name='ddg')
-    calc_energy_fn = theano.function(
-        [sym_seqs, sym_ddg], theano_conv2d(sym_seqs, sym_ddg).min(2)[:,0])
-
+    
     sym_e = TT.vector()
 
     calc_occ = theano.function([sym_chem_pot, sym_e], 
@@ -101,7 +128,7 @@ def log_lhd_factory():
             prot_conc):
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
-        energies = ref_energy + calc_energy_fn(
+        energies = ref_energy + calc_affinities(
             random_seqs[seq_len], ddg_array)
         expected_cnts = (4**seq_len)/float(len(random_seqs[seq_len]))
         curr_occupancies = expected_cnts*np.ones(
@@ -143,7 +170,7 @@ def log_lhd_factory():
         # score all of the sequences
         rnds_and_seq_ddgs = {}
         for rnd, rnd_coded_seqs in coded_seqs.iteritems():
-            rnds_and_seq_ddgs[rnd] = calc_energy_fn(rnd_coded_seqs, ddg_array)
+            rnds_and_seq_ddgs[rnd] = calc_affinities(rnd_coded_seqs, ddg_array)
 
         # calcualte the denominators
         chem_affinities, denominators = calc_lhd_denominators_and_chem_pots(
@@ -180,7 +207,7 @@ def calc_binding_site_energies(coded_seqs, ddg_array):
     n_bind_sites = coded_seqs.shape[2]-ddg_array.shape[1]+1
     rv = np.zeros((n_seqs, n_bind_sites), dtype='float32')
     for i, coded_seq in enumerate(coded_seqs):
-        rv[i,:] = convolve(coded_seq, ddg_array, mode='valid')
+        rv[i,:] = convolve(coded_seq, np.fliplr(np.flipud(ddg_array)), mode='valid')
     return rv
 
 #calc_log_lhd = None

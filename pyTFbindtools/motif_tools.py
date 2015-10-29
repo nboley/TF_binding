@@ -223,6 +223,13 @@ class DeltaDeltaGArray(np.ndarray):
     def calc_max_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()
         return ref_energy + base_contribs.max(1).sum()
+
+    def reverse_complement(self):
+        rc_array = np.zeros(self.shape, dtype=self.dtype)
+        ts_cont = float(self[2,:].sum())
+        rc_array[(0,1),:] = self[(1,0),:]
+        rc_array[:,:] -= self[2,:]
+        return ts_cont, rc_array.view(DeltaDeltaGArray)[:,::-1]
     
     @property
     def mean_energy(self):

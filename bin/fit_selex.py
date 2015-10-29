@@ -15,7 +15,7 @@ import pyTFbindtools.selex
 from pyTFbindtools.selex.log_lhd import calc_log_lhd, calc_binding_site_energies
 
 from pyTFbindtools.selex import (
-    find_pwm, code_seqs, calc_occ,
+    find_pwm, code_seq, code_seqs, code_RC_seqs, calc_occ,
     estimate_dg_matrix_with_adadelta,
     find_pwm_from_starting_alignment,
     PartitionedAndCodedSeqs, base_map,
@@ -85,9 +85,9 @@ def load_text_file(fp, maxnum=1e9):
 def load_fastq(fp, maxnum=1e9):
     seqs = []
     for i, line in enumerate(fp):
+        if i/4 >= maxnum: break
         if i%4 == 1:
             seqs.append(line.strip().upper())
-            if i/4 > maxnum: break
     return seqs
 
 def load_sequences(fnames):
@@ -99,7 +99,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs[rnd] = loader(fp) # , 100
+            rnds_and_seqs[rnd] = loader(fp, 178) # , 100
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -146,8 +146,6 @@ def parse_arguments():
                          help='Convergence tolerance for lhd change.')
     parser.add_argument( '--max-iter', type=float, default=1e5,
                          help='Maximum number of optimization iterations.')
-    parser.add_argument( '--momentum', type=float, default=0.1,
-                         help='Optimization tuning param (between 0 and 1).')
 
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
@@ -169,8 +167,6 @@ def parse_arguments():
 
     pyTFbindtools.selex.CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     pyTFbindtools.selex.MAX_NUM_ITER = int(args.max_iter)
-    assert args.momentum < 1 and args.momentum >= 0
-    pyTFbindtools.selex.MOMENTUM = args.momentum
     
     if args.random_seed != None:
         np.random.seed(args.random_seed)
@@ -243,6 +239,27 @@ def find_best_shift(coded_seqs, ddg_array):
     if left_base_score < right_base_score:
         return 'LEFT'
     return 'RIGHT'
+
+def test_RC_equiv():
+    """Make sure that the RC function works correctly.
+    
+    """
+    seq = 'GCGAATACC'
+    coded_seq = code_seq(seq)
+    RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+    RC_seq = "".join(RC_map[x] for x in seq[::-1])
+    coded_RC_seq = code_seq(RC_seq)
+    
+    print coded_seq
+    print coded_RC_seq
+    print calc_binding_site_energies(coded_seq[None,(1,2,3),:], ddg_array)
+    print calc_binding_site_energies(coded_RC_seq[None, (1,2,3),:], ddg_array)[:,::-1]
+    energy_diff, RC_ddg_array = ddg_array.reverse_complement()
+    print energy_diff + calc_binding_site_energies(coded_seq[None, (1,2,3),:], RC_ddg_array)
+    #print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
+    return
+
+    pass
 
 def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     pyTFbindtools.log("Coding sequences", 'VERBOSE')

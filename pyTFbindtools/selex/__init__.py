@@ -1,21 +1,16 @@
 import os, sys
 import math
 
-from itertools import product, izip, chain
+from itertools import izip, chain
 
 from collections import defaultdict, namedtuple
 
 import numpy as np
 np.random.seed(0)
 
-import matplotlib.pyplot as plt
-
 import theano
 
-from scipy.optimize import (
-    minimize, minimize_scalar, brentq, approx_fprime )
-from scipy.signal import convolve2d
-from numpy.fft import rfft, irfft
+from scipy.optimize import brentq, approx_fprime
 
 import random
 
@@ -28,21 +23,16 @@ from log_lhd import calc_log_lhd
 
 PARTITION_FN_SAMPLE_SIZE = 10000
 
-CMP_LHD_NUMERATOR_CALCS = False
-RANDOM_POOL_SIZE = None
 CONVERGENCE_MAX_LHD_CHANGE = None
 MAX_NUM_ITER = 10000
 
-EXPECTED_MEAN_ENERGY = -3.0
 CONSTRAIN_MEAN_ENERGY = True
+EXPECTED_MEAN_ENERGY = -3.0
 
 CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 8.0
 
 USE_SHAPE = False
-
-# during optimization, how much to account for previous values
-MOMENTUM = None
 
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
@@ -176,8 +166,27 @@ def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
         coded_seq = code_seq(seq)
         # ignore the A and N rows
         coded_seqs[i,:,:] = coded_seq[(1,2,3),:]
-
     return coded_seqs
+
+def code_RC_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
+    """Load SELEX data and encode all the subsequences. 
+
+    """
+    if n_seqs == None: n_seqs = len(seqs)
+
+    # leave 3 rows for each sequence base, and 6 for the shape params
+    len_per_base = 3
+    if USE_SHAPE:
+        len_per_base += 6
+
+    coded_seqs = np.zeros((n_seqs, len_per_base, seq_len), dtype='float32')
+    for i, seq in enumerate(seqs):
+        # code seq, and then toss the A and N rows
+        coded_seq = code_seq(seq)
+        # ignore the A and N rows
+        coded_seqs[i,:,:] = np.fliplr(np.flipud(coded_seq[:4,:]))[(1,2,3),:]
+    return coded_seqs
+
 
     #if ON_GPU:
     #    return theano.shared(coded_seqs)
