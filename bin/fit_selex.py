@@ -12,14 +12,14 @@ import pyTFbindtools
 
 import pyTFbindtools.selex
 
-from pyTFbindtools.selex.log_lhd import calc_log_lhd
-print calc_log_lhd
+from pyTFbindtools.selex.log_lhd import calc_log_lhd, calc_binding_site_energies
 
 from pyTFbindtools.selex import (
-    find_pwm, code_seqs, 
+    find_pwm, code_seqs, calc_occ,
     estimate_dg_matrix_with_adadelta,
     find_pwm_from_starting_alignment,
-    PartitionedAndCodedSeqs, base_map)
+    PartitionedAndCodedSeqs, base_map,
+    sample_random_coded_seqs)
 from pyTFbindtools.motif_tools import (
     load_energy_data, load_motifs, load_motif_from_text,
     logistic, Motif, R, T,
@@ -99,7 +99,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs[rnd] = loader(fp, 100) # None
+            rnds_and_seqs[rnd] = loader(fp) # , 100
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -201,39 +201,48 @@ def parse_arguments():
     return motif, rnds_and_seqs, int(args.random_seq_pool_size)
 
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
-    from pyTFbindtools.selex import random_seqs, code_seqs, calc_occ
-    random_coded_seqs = code_seqs(
-        random_seqs, ddg_array.motif_len, len(random_seqs[0]), ON_GPU=False)
-    energies = random_coded_seqs.dot(ddg_array).min(1)
-    min_energy_offsets = np.argmin(random_coded_seqs.dot(ddg_array), 1)
-    occs = calc_occ(energies, ref_energy, chem_pot)
-    pwm = np.zeros((ddg_array.motif_len, 4))
-
-    for seq, offset, occ in izip(random_seqs, min_energy_offsets, occs):
-        for base_pos, base in enumerate(seq[offset:offset+ddg_array.motif_len]):
-            pwm[base_pos,base_map(base)] += occ
-    pwm = pwm.T/pwm.sum(1)
+    pwm = np.zeros((4, ddg_array.motif_len), dtype=float)
+    mean_energy = ref_energy + chem_pot + ddg_array.mean_energy
+    for i, base_energies in enumerate(ddg_array.calc_base_contributions()):
+        base_mut_energies = mean_energy + base_energies.mean() - base_energies 
+        occs = logistic(base_mut_energies)
+        pwm[:,i] = occs/occs.sum()
     return pwm
 
-def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
-    pwm = find_pwm_from_starting_alignment(
-        rnds_and_seqs[-1], build_pwm_from_energies(ddg_array, ref_energy, -12))
-    left_shift_pwm = find_pwm_from_starting_alignment(
-        rnds_and_seqs[-1], np.hstack((np.zeros((4,1)), pwm.T)))    
-    right_shift_pwm = find_pwm_from_starting_alignment(
-        rnds_and_seqs[-1], np.hstack((pwm.T, np.zeros((4,1)))))    
-    # calculate the entropies, and shift int he direction that gives the
-    # smallest entropy
-    left_shift_score = -(
-        left_shift_pwm[0,:]*np.log(left_shift_pwm[0,:]+1e-6)).sum()
-    right_shift_score = -(
-        right_shift_pwm[-1,:]*np.log(right_shift_pwm[-1,:]+1e-6)).sum()
-    pyTFbindtools.log("Left shift entropy: %.2e" % left_shift_score, 'VERBOSE')
-    pyTFbindtools.log("Right shift entropy: %.2e" % right_shift_score,'VERBOSE')
-    if left_shift_score < right_shift_score:
-        return "LEFT"
-    else:
-        return "RIGHT"
+def calc_entropy(cnts):
+    ps = np.array(cnts, dtype=float)/cnts.sum()
+    return -(ps*np.log(ps+1e-6)).sum()
+
+def find_best_shift(coded_seqs, ddg_array):
+    # calculate the ddg energies for all binding sites. We use this to align
+    # the binding sities within the sequences
+    energies = calc_binding_site_energies(coded_seqs, ddg_array)
+    # find the index of the best offset
+    best_offsets = np.argmin(energies, 1)
+    # find the binding sites which align to the sequence boundary. We must 
+    # remove these because the flanking sequence is not random, and so it
+    # will bias the results
+    max_offset = coded_seqs.shape[2] - ddg_array.motif_len
+    bndry_alignments = (best_offsets > 0)&(best_offsets < max_offset)
+    non_bndry_best_offsets = best_offsets[bndry_alignments]
+
+    # find the distribution of bases left of the aligned binding sites
+    left_base_cnts = coded_seqs[
+        bndry_alignments,:,non_bndry_best_offsets-1].sum(0)
+    left_base_cnts = np.insert(
+        left_base_cnts, 0, bndry_alignments.shape[0]-left_base_cnts.sum())
+    left_base_score = calc_entropy(left_base_cnts)
+
+    # find the distribution of bases to the right of the aligned binding sites
+    right_base_cnts = coded_seqs[
+        bndry_alignments,:,non_bndry_best_offsets+ddg_array.motif_len].sum(0)
+    right_base_cnts = np.append(
+        right_base_cnts, bndry_alignments.shape[0]-right_base_cnts.sum())
+    right_base_score = calc_entropy(right_base_cnts)
+    
+    if left_base_score < right_base_score:
+        return 'LEFT'
+    return 'RIGHT'
 
 def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
@@ -267,7 +276,11 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
             str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
 
         new_lhd = calc_log_lhd(
-            ref_energy, ddg_array, 0)
+            ref_energy, 
+            ddg_array, 
+            partitioned_and_coded_rnds_and_seqs[0],
+            dna_conc,
+            prot_conc)
 
         opt_path.append([bs_len, new_lhd, ddg_array, ref_energy])
 
@@ -283,14 +296,17 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
             break
         
         pyTFbindtools.log("Finding best shift", 'VERBOSE')
-        shift_type = find_best_shift(rnds_and_seqs, ddg_array, ref_energy)
+        shift_type = find_best_shift(
+            partitioned_and_coded_rnds_and_seqs.validation[max(
+                partitioned_and_coded_rnds_and_seqs.validation.keys())],
+            ddg_array)
         if shift_type == 'LEFT':
             pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-            ddg_array = np.insert(ddg_array, 0, np.zeros(3, dtype='float32')
+            ddg_array = np.hstack((np.zeros((3,1), dtype='float32'), ddg_array)
                               ).view(DeltaDeltaGArray)
         elif shift_type == 'RIGHT':
             pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-            ddg_array = np.append(ddg_array, np.zeros(3, dtype='float32')).view(
+            ddg_array = np.hstack((ddg_array, np.zeros((3,1), dtype='float32'))).view(
                 DeltaDeltaGArray)
         else:
             assert False, "Unrecognized shift type '%s'" % shift_type

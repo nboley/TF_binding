@@ -11,8 +11,6 @@ np.random.seed(0)
 import matplotlib.pyplot as plt
 
 import theano
-import theano.tensor as TT
-from theano.tensor.signal.conv import conv2d as theano_conv2d
 
 from scipy.optimize import (
     minimize, minimize_scalar, brentq, approx_fprime )
@@ -23,13 +21,10 @@ import random
 
 import pyTFbindtools
 
-from ..motif_tools import (
+from pyTFbindtools.motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
-from ..sequence import code_seq
-
-# ignore theano warnings
-import warnings
-warnings.simplefilter("ignore")
+from pyTFbindtools.sequence import code_seq
+from log_lhd import calc_log_lhd
 
 PARTITION_FN_SAMPLE_SIZE = 10000
 
@@ -53,6 +48,13 @@ RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
 ShapeData = namedtuple(
     'ShapeData', ['HelT', 'MGW', 'LProT', 'RProT', 'LRoll', 'RRoll'])
+
+def sample_random_seqs(n_sims, seq_len):
+    return ["".join(random.choice('ACGT') for j in xrange(seq_len))
+            for i in xrange(n_sims)]
+
+def sample_random_coded_seqs(n_sims, seq_len):
+    return code_seqs(sample_random_seqs(n_sims, seq_len), seq_len, ON_GPU=True)
 
 def load_shape_data():
     prefix = os.path.join(os.path.dirname(__file__), './shape_data/')
@@ -79,9 +81,6 @@ def load_shape_data():
     return dict(shape_params)
 
 shape_data = load_shape_data()
-#for seq, values in shape_data.iteritems():
-#    print seq, values
-#assert False
 
 def base_map(base):
     if base == 'N':
@@ -180,10 +179,10 @@ def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
 
     return coded_seqs
 
-    if ON_GPU:
-        return theano.shared(coded_seqs)
-    else:
-        return coded_seqs
+    #if ON_GPU:
+    #    return theano.shared(coded_seqs)
+    #else:
+    #    return coded_seqs
 
 def find_consensus_bind_site(seqs, bs_len):
     # produce and initial alignment from the last round
@@ -299,12 +298,17 @@ def estimate_dg_matrix_with_adadelta(
 
     def extract_data_from_array(x):
         ref_energy = x[0]
-        ddg_array = x[1:].astype('float32').view(DeltaDeltaGArray)
+        ddg_array = x[1:].reshape(3,(len(x)-1)/3).astype('float32').view(DeltaDeltaGArray)
         return ref_energy, ddg_array
     
     def f_dg(x, train_index):
         ref_energy, ddg_array = extract_data_from_array(x)
-        rv = calc_log_lhd(ref_energy, ddg_array, train_index)
+        rv = calc_log_lhd(
+            ref_energy, 
+            ddg_array, 
+            partitioned_and_coded_rnds_and_seqs[train_index], 
+            dna_conc, 
+            prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
         return -rv + penalty
 
@@ -369,6 +373,11 @@ def estimate_dg_matrix_with_adadelta(
     x = ada_delta(x0)
 
     ref_energy, ddg_array = extract_data_from_array(x)
-    test_lhd = calc_log_lhd(ref_energy, ddg_array, 1)
+    test_lhd = calc_log_lhd(
+        ref_energy, 
+        ddg_array, 
+        partitioned_and_coded_rnds_and_seqs[1], 
+        dna_conc, 
+        prot_conc)
 
     return ddg_array, ref_energy, test_lhds, test_lhd

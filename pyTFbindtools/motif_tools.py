@@ -205,8 +205,8 @@ class DeltaDeltaGArray(np.ndarray):
         return self[coded_subseq].sum()
 
     def calc_base_contributions(self):
-        base_contribs = np.zeros((len(self)/3, 4))
-        base_contribs[:,1:4] = self.reshape((len(self)/3,3))
+        base_contribs = np.zeros((self.motif_len, 4))
+        base_contribs[:,1:4] = self.T
         return base_contribs
 
     def calc_normalized_base_conts(self, ref_energy):
@@ -226,11 +226,11 @@ class DeltaDeltaGArray(np.ndarray):
     
     @property
     def mean_energy(self):
-        return self.sum()/(len(self)/self.motif_len)
+        return self.sum()/3
     
     @property
     def motif_len(self):
-        return len(self)/3
+        return self.shape[1]
 
     def consensus_seq(self):
         base_contribs = self.calc_base_contributions()
