@@ -2,6 +2,7 @@ import os, sys
 import gzip
 
 from itertools import izip
+from collections import defaultdict
 
 sys.path.insert(0, "/home/nboley/src/TF_binding/")
 
@@ -11,11 +12,14 @@ import pyTFbindtools
 
 import pyTFbindtools.selex
 
+from pyTFbindtools.selex.log_lhd import calc_log_lhd
+print calc_log_lhd
+
 from pyTFbindtools.selex import (
     find_pwm, code_seqs, 
     estimate_dg_matrix_with_adadelta,
     find_pwm_from_starting_alignment,
-    PartitionedAndCodedSeqs, calc_log_lhd_factory, base_map)
+    PartitionedAndCodedSeqs, base_map)
 from pyTFbindtools.motif_tools import (
     load_energy_data, load_motifs, load_motif_from_text,
     logistic, Motif, R, T,
@@ -71,34 +75,31 @@ dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
 prot_conc = dna_conc/25 # mol/L (should be 25)
 #prot_conc *= 10
 
-def load_text_file(fp):
+def load_text_file(fp, maxnum=1e9):
     seqs = []
-    for line in fp:
+    for i, line in enumerate(fp):
         seqs.append(line.strip().upper())
+        if i > maxnum: break
     return seqs
 
-def load_fastq(fp):
+def load_fastq(fp, maxnum=1e9):
     seqs = []
     for i, line in enumerate(fp):
         if i%4 == 1:
             seqs.append(line.strip().upper())
+            if i/4 > maxnum: break
     return seqs
 
 def load_sequences(fnames):
     fnames = list(fnames)
-    rnds_and_seqs = []
+    rnds_and_seqs = {}
     rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
     rnds_and_fnames = dict(zip(rnd_nums, fnames))
-    for rnd in range(1, max(rnd_nums)+1):
-        if rnd not in rnds_and_fnames:
-            rnds_and_seqs.append([])
-            continue
-        else:
-            fname = rnds_and_fnames[rnd]
+    for rnd, fname in rnds_and_fnames.iteritems():
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs.append( loader(fp)[:10] ) #[:1000]
+            rnds_and_seqs[rnd] = loader(fp, 100) # None
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -235,18 +236,18 @@ def find_best_shift(rnds_and_seqs, ddg_array, ref_energy):
         return "RIGHT"
 
 def fit_model(rnds_and_seqs, ddg_array, ref_energy):
+    pyTFbindtools.log("Coding sequences", 'VERBOSE')
+    partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
+        rnds_and_seqs)
+
     opt_path = []
     prev_lhd = None
     while True:
         bs_len = ddg_array.motif_len
-        pyTFbindtools.log("Coding sequences", 'VERBOSE')
-        partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
-            rnds_and_seqs, bs_len)
-        
-        calc_log_lhd = calc_log_lhd_factory(
-            partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
-        
-        prev_lhd = calc_log_lhd(ref_energy, ddg_array, 0)
+        prev_lhd = calc_log_lhd(
+            ref_energy, ddg_array, 
+            partitioned_and_coded_rnds_and_seqs[0], 
+            dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')

@@ -12,9 +12,11 @@ import matplotlib.pyplot as plt
 
 import theano
 import theano.tensor as TT
+from theano.tensor.signal.conv import conv2d as theano_conv2d
 
 from scipy.optimize import (
     minimize, minimize_scalar, brentq, approx_fprime )
+from scipy.signal import convolve2d
 from numpy.fft import rfft, irfft
 
 import random
@@ -158,202 +160,30 @@ def code_sequence(seq, motif_len,
 
     return coded_bss
 
-def code_seqs(seqs, motif_len, seq_len, n_seqs=None, ON_GPU=True):
+def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
     """Load SELEX data and encode all the subsequences. 
 
     """
     if n_seqs == None: n_seqs = len(seqs)
-    coded_seqs = np.zeros((n_seqs, 2, 3, seq_len))
-    for i, seq in enumerate(seqs):
-        # code seq, and then toss the A and N rows
-        coded_seq = code_seq(seq)
-        # ignore the A and N rows
-        coded_seqs[i,0,:,:] = coded_seq[(1,2,3),:]
-        # reverse complement the sequence
-        coded_seqs[i,1,:,:] = np.fliplr(coded_seq[(2,1,0),:])
-    conv = numpy.ones((3,6), dtype='float32')
-    print coded_seqs.shape
-    print 
-    assert False
 
     # leave 3 rows for each sequence base, and 6 for the shape params
     len_per_base = 3
     if USE_SHAPE:
         len_per_base += 6
-    coded_seqs = np.zeros((n_seqs, 
-                           # number of binding sites*2 for reverse complement 
-                           2*(seq_len-motif_len+1), 
-                           motif_len*len_per_base), 
-                          dtype=theano.config.floatX)
+
+    coded_seqs = np.zeros((n_seqs, len_per_base, seq_len), dtype='float32')
     for i, seq in enumerate(seqs):
-        for j, param_values in enumerate(code_sequence(seq, motif_len)):
-            coded_seqs[i, j, :] = param_values
-    print coded_seqs.shape
-    print coded_seqs[0,:,:]
-    print coded_seqs[0,:,:].shape
-    print motif_len
-    print seq_len
-    
-    assert False
+        # code seq, and then toss the A and N rows
+        coded_seq = code_seq(seq)
+        # ignore the A and N rows
+        coded_seqs[i,:,:] = coded_seq[(1,2,3),:]
+
+    return coded_seqs
+
     if ON_GPU:
         return theano.shared(coded_seqs)
     else:
         return coded_seqs
-
-def sample_random_seqs(n_sims, seq_len):
-    return ["".join(random.choice('ACGT') for j in xrange(seq_len))
-            for i in xrange(n_sims)]
-
-random_seqs = sample_random_seqs(PARTITION_FN_SAMPLE_SIZE, 20)
-
-def calc_log_lhd_factory(
-        partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc):
-    dna_conc = np.array(dna_conc).astype('float32')
-    prot_conc = np.array(prot_conc).astype('float32')
-    
-    sym_occ = TT.vector()
-    sym_part_fn = TT.vector()
-    sym_u = TT.scalar('u')
-    sym_cons_dg = TT.scalar('cons_dg')
-    sym_chem_pot = TT.scalar('chem_pot')
-    sym_ddg = TT.vector('ddg')
-    sym_e = TT.vector()
-
-    calc_energy_fns = []
-    for rnds_and_coded_seqs in partitioned_and_coded_rnds_and_seqs:
-        calc_energy_fns.append([])
-        for x in rnds_and_coded_seqs:
-            calc_energy_fns[-1].append(
-                theano.function([sym_e], x.dot(sym_e).min(1)) )
-
-    random_coded_seqs = code_seqs(
-        random_seqs, 
-        partitioned_and_coded_rnds_and_seqs.bs_len, 
-        len(random_seqs[0]), 
-        ON_GPU=True)
-    expected_cnts = (4**partitioned_and_coded_rnds_and_seqs.seq_length)/float(
-        len(random_seqs))
-
-    calc_bg_energies = theano.function(
-        [sym_e], random_coded_seqs.dot(sym_e).min(1))
-    calc_occ = theano.function([sym_chem_pot, sym_e], 
-        1 / (1 + TT.exp((-sym_chem_pot+sym_e)/(R*T)))
-    )
-    
-    calc_chem_pot_sum_term = theano.function([sym_part_fn, sym_e, sym_u], 
-        (sym_part_fn*dna_conc/(1+TT.exp((sym_e-sym_u)/(R*T)))).sum()
-    ) 
-
-
-    # calculate the sum of log occupancies for a particular round, given a 
-    # set of energies
-    calc_rnd_lhd_num = theano.function([sym_chem_pot, sym_cons_dg, sym_ddg], -(
-        TT.log(1.0 + TT.exp(
-            (-sym_chem_pot + sym_cons_dg + sym_ddg)/(R*T))).sum())
-    )
-
-    #@profile
-    def calc_lhd_numerators(
-            seq_ddgs, chem_affinities, ref_energy):
-        # the occupancies of each rnd are a function of the chemical affinity of
-        # the round in which there were sequenced and each previous round. We 
-        # loop through each sequenced round, and calculate the numerator of the log 
-        # lhd 
-        numerators = []
-        for sequencing_rnd, seq_ddgs in enumerate(seq_ddgs):
-            chem_affinity = chem_affinities[0]
-            #numerator = np.log(logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))).sum()
-            numerator = calc_rnd_lhd_num(chem_affinity, ref_energy, seq_ddgs)
-            for rnd in xrange(1, sequencing_rnd+1):
-                #numerator += np.log(
-                #    logistic(-(-chem_affinities[rnd]+ref_energy+seq_ddgs)/(R*T))).sum()
-                numerator += calc_rnd_lhd_num(
-                    chem_affinities[rnd], ref_energy, seq_ddgs)
-            numerators.append(numerator)
-
-        return numerators
-
-    #@profile
-    def est_chem_potential(
-            partition_fn, energies, dna_conc, prot_conc ):
-        """Estimate chemical affinity for round 1.
-
-        [TF] - [TF]_0 - \sum{all seq}{ [s_i]_0[TF](1/{[TF]+exp(delta_g)}) = 0  
-        exp{u} - [TF]_0 - \sum{i}{ 1/(1+exp(G_i)exp(-)
-        """
-        #@profile
-        def f(u):
-            sum_term = calc_chem_pot_sum_term(partition_fn, energies, u)
-            #sum_terms = partition_fn*dna_conc/(1+np.exp(energies-u))
-            return prot_conc - math.exp(u) - sum_term #.sum()
-        min_u = -1000
-        max_u = 100 + math.log(prot_conc)
-        rv = brentq(f, min_u, max_u, xtol=1e-4)
-        return rv
-
-    #@profile
-    def calc_lhd_denominators_and_chem_pots(
-            ref_energy, ddg_array, seq_len, n_bind_sites):
-        # now calculate the denominator (the normalizing factor for each round)
-        # calculate the expected bin counts in each energy level for round 0
-        energies = ref_energy + calc_bg_energies(ddg_array)
-        curr_occupancies = expected_cnts*np.ones(len(energies), dtype='float32')
-        
-        denominators = []
-        chem_pots = []
-        for rnd in xrange(partitioned_and_coded_rnds_and_seqs.n_rounds):
-            chem_affinity = est_chem_potential(
-                energies, curr_occupancies/curr_occupancies.sum(),
-                dna_conc, prot_conc )
-            chem_pots.append(chem_affinity)
-            curr_occupancies *= calc_occ(chem_affinity, energies)
-            occs_sum = curr_occupancies.sum()
-            if occs_sum > 0:
-                denominators.append(np.log(occs_sum))
-            elif len(denominators) > 1:
-                denominators.append(
-                    denominators[-1] - (denominators[-1] - denominators[-2]))
-            elif len(denominators) > 0:
-                denominators.append(denominators[-1])
-            else:
-                raise ValueError, "Minimum precision exceeded"
-        return chem_pots, denominators
-
-    #@profile
-    def calc_log_lhd(ref_energy, 
-                     ddg_array, 
-                     partition_index):
-        ref_energy = np.array(ref_energy).astype('float32')
-        # score all of the sequences
-        rnds_and_seq_ddgs = []
-        for rnd, calc_energy in enumerate(calc_energy_fns[partition_index]):
-            rnds_and_seq_ddgs.append( calc_energy(ddg_array) )
-
-        # calcualte the denominators
-        chem_affinities, denominators = calc_lhd_denominators_and_chem_pots(
-            ref_energy, ddg_array,  
-            partitioned_and_coded_rnds_and_seqs.seq_length,
-            partitioned_and_coded_rnds_and_seqs.n_bind_sites)
-
-        # calculate the numerators
-        numerators = calc_lhd_numerators(
-            rnds_and_seq_ddgs, chem_affinities, ref_energy)
-
-
-        lhd = 0.0
-        for rnd_num, rnd_denom, rnd_seq_ddgs in izip(
-                numerators, denominators, rnds_and_seq_ddgs):
-            lhd += rnd_num - len(rnd_seq_ddgs)*rnd_denom
-
-        try:
-            assert np.isfinite(lhd)
-        except:
-            print numerators
-            print denominators
-            raise
-        return lhd
-    
-    return calc_log_lhd        
 
 def find_consensus_bind_site(seqs, bs_len):
     # produce and initial alignment from the last round
@@ -410,14 +240,16 @@ def find_pwm_from_starting_alignment(seqs, counts):
     return (counts/counts.sum(0)).T
 
 def find_pwm(rnds_and_seqs, bs_len):
-    consensus = find_consensus_bind_site(rnds_and_seqs[-1], bs_len)
+    consensus = find_consensus_bind_site(
+        rnds_and_seqs[max(rnds_and_seqs.keys())], bs_len)
     pyTFbindtools.log("Found consensus %imer '%s'" % (bs_len, consensus))
     counts = np.zeros((4, bs_len))
     for pos, base in enumerate(consensus): 
         counts[base_map(base), pos] += 1000
 
     # find a pwm using the initial sixmer alignment
-    pwm = find_pwm_from_starting_alignment(rnds_and_seqs[0], counts)
+    pwm = find_pwm_from_starting_alignment(
+        rnds_and_seqs[min(rnds_and_seqs.keys())], counts)
     return pwm
 
 def calc_occ(seq_ddgs, ref_energy, chem_affinity):
@@ -433,22 +265,16 @@ class PartitionedAndCodedSeqs(list):
             partitioned_seqs[i%n_partitions].append(seq)
         return partitioned_seqs
     
-    def __init__(self, rnds_and_seqs, bs_len):
-        self.seq_length = next(len(x[0]) for x in rnds_and_seqs if len(x) > 0)
-        self.bs_len = bs_len
-        if self.bs_len > self.seq_length:
-            raise ValueError, "Binding site length longer than sequence length"
-        
-        self.extend(zip(*[
-            [ code_seqs(rnd_seqs, self.bs_len, self.seq_length)
-              for rnd_seqs in self.partition_data(seqs)]
-            for seqs in rnds_and_seqs]))
+    def __init__(self, rnds_and_seqs):
+        self.seq_length = len(rnds_and_seqs.values()[0][0])
+        for rnd, seqs in rnds_and_seqs.iteritems():
+            for part_index, part_seqs in enumerate(self.partition_data(seqs)):
+                if part_index >= len(self):
+                    self.append({})
+                self[part_index][rnd] = code_seqs(part_seqs, self.seq_length)
         self.validation = self[0]
         self.test = self[1]
         self.training = self[2:]
-
-        self.n_bind_sites = self.validation[0].get_value().shape[1]
-        self.n_rounds = len(self.validation)
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
@@ -535,8 +361,6 @@ def estimate_dg_matrix_with_adadelta(
         return xs[x_hat_index]
     
     bs_len = init_ddg_array.motif_len    
-    calc_log_lhd = calc_log_lhd_factory(
-        partitioned_and_coded_rnds_and_seqs, dna_conc, prot_conc)
 
     x0 = init_ddg_array.copy().astype('float32')
     if USE_SHAPE:

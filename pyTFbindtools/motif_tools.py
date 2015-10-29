@@ -327,10 +327,10 @@ class Motif():
 
     def build_ddg_array(self):
         ref_energy = self.consensus_energy
-        energies = np.zeros(3*len(self), dtype='float32')
+        energies = np.zeros((3, len(self)), dtype='float32')
         for i, base_energies in enumerate(self.motif_data):
             for j, base_energy in enumerate(base_energies[1:]):
-                energies[3*i+j] = base_energy - base_energies[0]
+                energies[j, i] = base_energy - base_energies[0]
             ref_energy += base_energies[0]
         return ref_energy, energies.view(DeltaDeltaGArray)
 
