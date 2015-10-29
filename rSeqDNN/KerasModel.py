@@ -267,7 +267,7 @@ class KerasModel(KerasModelBase):
         return self
 
     def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs,
-             use_model_file):
+             ofname, use_model_file):
         neg_class_cnt = (y_train == -1).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
@@ -285,7 +285,7 @@ class KerasModel(KerasModelBase):
             out_filename = (self.model_def_file).split(".json")[0]
             out_filename = out_filename + ".obj"
         else:
-            out_filename = "fit_weights.obj"
+            out_filename = ofname + ".fit_weights.obj"
 
         for epoch in xrange(numEpochs):
             self.model.fit(
@@ -312,7 +312,7 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(out_filename)
         return self
 
-    def train(self, data, genome_fasta, out_filename, use_model_file,
+    def train(self, data, genome_fasta, ofname, use_model_file,
               balanced_train_epochs=3, unbalanced_train_epochs=8):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
@@ -329,7 +329,7 @@ class KerasModel(KerasModelBase):
         
         print("Fitting full training set with expected F1 loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, use_model_file)
+                  unbalanced_train_epochs, ofname, use_model_file)
         
         # build the predictor matrixes, including the ambiguous labels
         print("Setting the ambiguous labels peak threshold.")
@@ -349,7 +349,7 @@ class KerasModel(KerasModelBase):
 
         print("Re-fitting the model with the imputed data.")
         self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, use_model_file)
+                  unbalanced_train_epochs, ofname, use_model_file)
         
         return self
 
