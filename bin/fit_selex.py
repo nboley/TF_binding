@@ -1,12 +1,11 @@
 import os, sys
 import gzip
 
-from itertools import izip
+from itertools import izip, chain
 from collections import defaultdict
 
-sys.path.insert(0, "/home/nboley/src/TF_binding/")
-
 import numpy as np
+from scipy.stats import ttest_ind, combine_pvalues
 
 import pyTFbindtools
 
@@ -205,40 +204,70 @@ def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
         pwm[:,i] = occs/occs.sum()
     return pwm
 
-def calc_entropy(cnts):
-    ps = np.array(cnts, dtype=float)/cnts.sum()
-    return -(ps*np.log(ps+1e-6)).sum()
-
 def find_best_shift(coded_seqs, ddg_array):
+    seq_len = coded_seqs.shape[2]
+
     # calculate the ddg energies for all binding sites. We use this to align
     # the binding sities within the sequences
     energies = calc_binding_site_energies(coded_seqs, ddg_array)
     # find the index of the best offset
     best_offsets = np.argmin(energies, 1)
-    # find the binding sites which align to the sequence boundary. We must 
-    # remove these because the flanking sequence is not random, and so it
-    # will bias the results
-    max_offset = coded_seqs.shape[2] - ddg_array.motif_len
-    bndry_alignments = (best_offsets > 0)&(best_offsets < max_offset)
-    non_bndry_best_offsets = best_offsets[bndry_alignments]
 
-    # find the distribution of bases left of the aligned binding sites
-    left_base_cnts = coded_seqs[
-        bndry_alignments,:,non_bndry_best_offsets-1].sum(0)
-    left_base_cnts = np.insert(
-        left_base_cnts, 0, bndry_alignments.shape[0]-left_base_cnts.sum())
-    left_base_score = calc_entropy(left_base_cnts)
+    def find_flanking_base_cnts(base_offset):
+        ## find the binding sites which align to the sequence boundary. We must 
+        ## remove these because the flanking sequence is not random, and so it
+        ## will bias the results
+        # deal with left shifts
+        if base_offset > 0:
+            base_offset += (ddg_array.motif_len - 1)
+        base_indices = best_offsets + base_offset
+        # find which offsets fit inside of the random portion of the sequence
+        valid_indices = (base_indices > 0)&(base_indices < coded_seqs.shape[2])
+        base_cnts = coded_seqs[
+            valid_indices,:,base_indices[valid_indices]].sum(0)
+        # add in the A counts
+        base_cnts = np.insert(
+            base_cnts, 0, valid_indices.sum()-base_cnts.sum())
+        return base_cnts
 
-    # find the distribution of bases to the right of the aligned binding sites
-    right_base_cnts = coded_seqs[
-        bndry_alignments,:,non_bndry_best_offsets+ddg_array.motif_len].sum(0)
-    right_base_cnts = np.append(
-        right_base_cnts, bndry_alignments.shape[0]-right_base_cnts.sum())
-    right_base_score = calc_entropy(right_base_cnts)
+    def calc_entropy(cnts):
+        if len(cnts.shape) == 1: cnts = cnts[None,:]
+        ps = np.array(cnts, dtype=float)/cnts.sum(1)[:,None]
+        return -(ps*np.log(ps+1e-6)).sum(1)
     
-    if left_base_score < right_base_score:
-        return 'LEFT'
-    return 'RIGHT'
+    def estimate_entropy_significance(cnts, n_samples=100000):
+        uniform_samples = np.random.multinomial(
+            cnts.sum()+4, [0.25, 0.25, 0.25, 0.25], n_samples)
+        obs_samples = np.random.multinomial(
+            cnts.sum()+4, (1+cnts)/(cnts.sum()+4), n_samples)
+        stat, p_value = ttest_ind(
+            calc_entropy(uniform_samples), 
+            calc_entropy(obs_samples), 
+            equal_var=False)
+        return stat, p_value
+    
+    entropies_and_offsets = []
+    for i in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
+                   xrange(1,min(4, seq_len-ddg_array.motif_len))):
+        cnts = find_flanking_base_cnts(i)
+        t_stat, p_value = estimate_entropy_significance(cnts)
+        entropies_and_offsets.append((-t_stat, p_value, i))
+    entropies_and_offsets.sort()
+
+    for x in entropies_and_offsets:
+        print x
+    print
+    
+    if len(entropies_and_offsets) == 0:
+        return None
+    
+    _, pvalue = combine_pvalues([x[1] for x in entropies_and_offsets])
+    if pvalue > 0.05: 
+        return None
+    
+    if entropies_and_offsets[0][2] > 0:
+        return 'RIGHT'
+    return 'LEFT'
 
 def test_RC_equiv():
     """Make sure that the RC function works correctly.
@@ -303,10 +332,6 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
 
         pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
             prev_lhd, new_lhd, new_lhd-prev_lhd), 'VERBOSE')
-
-        if prev_lhd + 10 > lhd_hat:
-            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
-            break
         
         if ( bs_len >= 20 
              or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
@@ -317,6 +342,10 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
             partitioned_and_coded_rnds_and_seqs.validation[max(
                 partitioned_and_coded_rnds_and_seqs.validation.keys())],
             ddg_array)
+        if shift_type == None:
+            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
+            break
+            
         if shift_type == 'LEFT':
             pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
             ddg_array = np.hstack((np.zeros((3,1), dtype='float32'), ddg_array)
@@ -337,6 +366,7 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
 def main():
     motif, rnds_and_seqs, random_seq_pool_size = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
+    
     ddg_array_hat, ref_energy_hat = fit_model(
         rnds_and_seqs, ddg_array, ref_energy )
     
