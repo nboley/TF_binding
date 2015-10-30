@@ -99,7 +99,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs[rnd] = loader(fp, 178) # , 100
+            rnds_and_seqs[rnd] = loader(fp) # , 178
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):

@@ -149,9 +149,11 @@ def log_lhd_factory():
                 denominators[rnd] = np.log(occs_sum)
             elif len(denominators) > 1:
                 denominators[rnd] = (
-                    denominators[-1] - (denominators[-1] - denominators[-2]))
+                    denominators[rnd-1] - 
+                    (denominators[rnd-1] - denominators[rnd-2])
+                )
             elif len(denominators) > 0:
-                denominators[rnd] = denominators[-1]
+                denominators[rnd] = denominators[rnd-1]
             else:
                 raise ValueError, "Minimum precision exceeded"
         return chem_pots, denominators
