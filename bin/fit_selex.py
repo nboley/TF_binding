@@ -173,11 +173,11 @@ def initialize_starting_motif(
         return motif
     assert False
 
-def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
+def write_output(motif_name, ddg_array, ref_energy, ofp=sys.stdout):
     # normalize the array so that the consensus energy is zero
     consensus_energy = ddg_array.calc_min_energy(ref_energy)
     base_energies = ddg_array.calc_base_contributions()
-    print >> ofp, ">%s.ENERGY\t%.6f" % (motif.name, consensus_energy)
+    print >> ofp, ">%s.ENERGY\t%.6f" % (motif_name, consensus_energy)
     #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
     conc_energies = []
     for pos, energies in enumerate(base_energies, start=1):
@@ -187,7 +187,7 @@ def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
             "%.6f" % (x - energies.min()) 
             for x in energies )
 
-    print >> ofp, ">%s.PWM" % motif.name
+    print >> ofp, ">%s.PWM\t%s" % (motif_name, ddg_array.consensus_seq())
     #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
     for pos, energies in enumerate(conc_energies, start=1):
         pwm = 1-logistic(energies)
@@ -388,8 +388,12 @@ def fit_model(rnds_and_seqs, background_seqs,
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs)
-    
-    coded_bg_seqs = code_seqs(background_seqs, len(background_seqs[0])) 
+    partitioned_and_coded_bg_seqs = [
+        code_seqs(seqs, len(background_seqs[0])) 
+        for seqs in PartitionedAndCodedSeqs.partition_data(
+            background_seqs, partitioned_and_coded_rnds_and_seqs.n_partitions)
+    ]
+    #coded_bg_seqs = code_seqs(background_seqs, len(background_seqs[0])) 
     
     opt_path = []
     prev_lhd = None
@@ -398,7 +402,7 @@ def fit_model(rnds_and_seqs, background_seqs,
         prev_lhd = calc_log_lhd(
             ref_energy, ddg_array, 
             partitioned_and_coded_rnds_and_seqs[0],
-            coded_bg_seqs,
+            partitioned_and_coded_bg_seqs[0],
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
@@ -406,7 +410,7 @@ def fit_model(rnds_and_seqs, background_seqs,
         ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
-                coded_bg_seqs,
+                partitioned_and_coded_bg_seqs,
                 ddg_array, ref_energy,
                 dna_conc, prot_conc)
 
@@ -423,7 +427,7 @@ def fit_model(rnds_and_seqs, background_seqs,
             ref_energy, 
             ddg_array, 
             partitioned_and_coded_rnds_and_seqs[0],
-            coded_bg_seqs,
+            partitioned_and_coded_bg_seqs[0],
             dna_conc,
             prot_conc)
 
@@ -431,6 +435,9 @@ def fit_model(rnds_and_seqs, background_seqs,
 
         pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
             prev_lhd, new_lhd, new_lhd-prev_lhd), 'VERBOSE')
+
+        with open("FITMO.BSLEN%i.txt" % bs_len, "w") as ofp:
+            write_output("UNKNOWN", ddg_array, ref_energy, ofp)
         
         if ( bs_len >= 20 
              or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
@@ -441,7 +448,7 @@ def fit_model(rnds_and_seqs, background_seqs,
             partitioned_and_coded_rnds_and_seqs.validation[max(
                 partitioned_and_coded_rnds_and_seqs.validation.keys())],
             ddg_array,
-            coded_bg_seqs)
+            partitioned_and_coded_bg_seqs[0])
         if shift_type == None:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break

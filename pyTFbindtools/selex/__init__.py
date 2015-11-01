@@ -258,9 +258,7 @@ def calc_occ(seq_ddgs, ref_energy, chem_affinity):
 
 class PartitionedAndCodedSeqs(list):
     @staticmethod
-    def partition_data(seqs):
-        #assert len(seqs) == 0 or len(seqs) > 150
-        n_partitions = max(5, len(seqs)/10000)
+    def partition_data(seqs, n_partitions):
         partitioned_seqs = [[] for i in xrange(n_partitions)]
         for i, seq in enumerate(seqs):
             partitioned_seqs[i%n_partitions].append(seq)
@@ -268,10 +266,13 @@ class PartitionedAndCodedSeqs(list):
     
     def __init__(self, rnds_and_seqs):
         self.seq_length = len(rnds_and_seqs.values()[0][0])
+        self.n_partitions = max(
+            5, min(len(seqs)/10000 for seqs in rnds_and_seqs.itervalues()))
+        for i in xrange(self.n_partitions):
+            self.append({})
         for rnd, seqs in rnds_and_seqs.iteritems():
-            for part_index, part_seqs in enumerate(self.partition_data(seqs)):
-                if part_index >= len(self):
-                    self.append({})
+            for part_index, part_seqs in enumerate(
+                    self.partition_data(seqs, self.n_partitions)):
                 self[part_index][rnd] = code_seqs(part_seqs, self.seq_length)
         self.validation = self[0]
         self.test = self[1]
@@ -310,7 +311,7 @@ def estimate_dg_matrix_with_adadelta(
             ref_energy, 
             ddg_array, 
             partitioned_and_coded_rnds_and_seqs[train_index],
-            coded_bg_seqs,
+            coded_bg_seqs[train_index],
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
@@ -359,7 +360,7 @@ def estimate_dg_matrix_with_adadelta(
             train_lhds.append(train_lhd)
             test_lhds.append(test_lhd)
             xs.append(x0)
-            min_num_iter = 10
+            min_num_iter = 4*len(partitioned_and_coded_rnds_and_seqs)
             if i > 2*min_num_iter and (
                     sum(test_lhds[-2*min_num_iter:-min_num_iter])/min_num_iter
                     > sum(test_lhds[-min_num_iter:])/min_num_iter ):
@@ -381,7 +382,7 @@ def estimate_dg_matrix_with_adadelta(
         ref_energy, 
         ddg_array, 
         partitioned_and_coded_rnds_and_seqs[1], 
-        coded_bg_seqs,
+        coded_bg_seqs[1],
         dna_conc, 
         prot_conc)
 
