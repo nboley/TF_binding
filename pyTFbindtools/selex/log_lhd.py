@@ -34,12 +34,17 @@ def log_lhd_factory():
     warnings.simplefilter("ignore")
     
     ## Theano function to calculate affinities
-    seqs = TT.tensor3(name='seqs')
-    ddg = TT.matrix(name='ddg')
+    seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
+    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
     fwd_bs_affinities = theano_conv2d(seqs, ddg[::-1,::-1])[:,0,:]
     rc_ddg = (
-        TT.concatenate((ddg[(1,0),:], TT.zeros_like(ddg[(0,),:])), axis=0) 
-        - ddg[2,:])[:,::-1]
+        TT.concatenate((
+            ddg[(1,0),:], 
+            TT.zeros_like(
+                ddg[(0,),:], dtype=theano.config.floatX)
+        ), axis=0) 
+        - ddg[2,:]
+    )[:,::-1]
     rc_bs_affinities = (
         theano_conv2d(seqs, rc_ddg[::-1,::-1]) + ddg[2,:].sum()
     )[:,0,:]
@@ -48,18 +53,18 @@ def log_lhd_factory():
         (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
     seq_affinities = bs_affinities.min(1)
     calc_affinities = theano.function([seqs, ddg], seq_affinities )
-
-    sym_occ = TT.vector()
-    sym_part_fn = TT.vector()
-    sym_u = TT.scalar('u')
-    sym_cons_dg = TT.scalar('cons_dg')
-    sym_chem_pot = TT.scalar('chem_pot')
-    sym_dna_conc = TT.scalar()
-
-    sym_seqs = TT.tensor3(name='seqs')
-    sym_ddg = TT.matrix(name='ddg')
     
-    sym_e = TT.vector()
+    sym_occ = TT.vector(dtype=theano.config.floatX)
+    sym_part_fn = TT.vector(dtype=theano.config.floatX)
+    sym_u = TT.scalar('u', dtype=theano.config.floatX)
+    sym_cons_dg = TT.scalar('cons_dg', dtype=theano.config.floatX)
+    sym_chem_pot = TT.scalar('chem_pot', dtype=theano.config.floatX)
+    sym_dna_conc = TT.scalar(dtype=theano.config.floatX)
+
+    sym_seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
+    sym_ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
+    
+    sym_e = TT.vector(dtype=theano.config.floatX)
 
     calc_occ = theano.function([sym_chem_pot, sym_e], 
         1 / (1 + TT.exp((-sym_chem_pot+sym_e)/(R*T)))
