@@ -111,19 +111,19 @@ def load_sequence_data(seq_fps,
     rnds_and_seqs = load_sequences(
         (x.name for x in seq_fps), max_num_seqs_per_file)
 
-    if  args.max_num_seqs_per_file < args.min_num_background_sequences:
+    if  max_num_seqs_per_file < min_num_background_sequences:
         pyTFbindtools.log(
             "WARNING: reducing the number of background sequences to --max-num-seqs-per-file ")
-        min_num_background_sequences = args.max_num_seqs_per_file
+        min_num_background_sequences = max_num_seqs_per_file
     else:
-        min_num_background_sequences = args.min_num_background_sequences
+        min_num_background_sequences = min_num_background_sequences
     
     background_seqs = None
     if background_seq_fp is not None:
         opener = ( gzip.open 
                    if background_seq_fp.name.endswith(".gz") 
                    else open  )
-        with opener(args.background_seq_fp.name) as fp:
+        with opener(background_seq_fp.name) as fp:
             background_seqs = load_fastq(fp, max_num_seqs_per_file)
     else:
         background_seqs = sample_random_seqs(
@@ -149,6 +149,7 @@ def load_sequence_data(seq_fps,
 def initialize_starting_motif(
         pwm_fp, 
         energy_mo_fp, 
+        rnds_and_seqs,
         initial_binding_site_len, 
         factor_name):
     assert (pwm_fp is None) or (energy_mo_fp is None), \
@@ -163,7 +164,7 @@ def initialize_starting_motif(
         return load_energy_data(energy_mo_fp.name)
     else:
         pyTFbindtools.log(
-            "Initializing starting location from %imer search" % args.initial_binding_site_len, 
+            "Initializing starting location from %imer search" % initial_binding_site_len, 
             'VERBOSE')
         bs_len = initial_binding_site_len
         pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
@@ -259,6 +260,7 @@ def parse_arguments():
     motif = initialize_starting_motif(
         args.starting_pwm,
         args.starting_energy_model,
+        rnds_and_seqs,
         args.initial_binding_site_len, 
         factor_name="TEST")
     # close the starting motif files
