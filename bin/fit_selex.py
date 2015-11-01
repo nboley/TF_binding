@@ -103,6 +103,75 @@ def load_sequences(fnames, max_num_seqs_per_file=1e8):
             rnds_and_seqs[rnd] = loader(fp, max_num_seqs_per_file)
     return rnds_and_seqs
 
+def load_sequence_data(seq_fps, 
+                       background_seq_fp, 
+                       max_num_seqs_per_file, 
+                       min_num_background_sequences):
+    pyTFbindtools.log("Loading sequences", 'VERBOSE')
+    rnds_and_seqs = load_sequences(
+        (x.name for x in seq_fps), max_num_seqs_per_file)
+
+    if  args.max_num_seqs_per_file < args.min_num_background_sequences:
+        pyTFbindtools.log(
+            "WARNING: reducing the number of background sequences to --max-num-seqs-per-file ")
+        min_num_background_sequences = args.max_num_seqs_per_file
+    else:
+        min_num_background_sequences = args.min_num_background_sequences
+    
+    background_seqs = None
+    if background_seq_fp is not None:
+        opener = ( gzip.open 
+                   if background_seq_fp.name.endswith(".gz") 
+                   else open  )
+        with opener(args.background_seq_fp.name) as fp:
+            background_seqs = load_fastq(fp, max_num_seqs_per_file)
+    else:
+        background_seqs = sample_random_seqs(
+            min_num_background_sequences, 
+            len(rnds_and_seqs.values()[0][0]))
+
+    if len(background_seqs) < min_num_background_sequences:
+        pyTFbindtools.log(
+            "Too few (%i) background sequences were provided - sampling an additional %i uniform random sequences" % (
+                len(background_seqs), 
+                min_num_background_sequences-len(background_seqs)
+            ), "VERBOSE")
+        seq_len = len(rnds_and_seqs.values()[0][0])
+        assert len(background_seqs) == 0 or len(background_seqs[0]) == seq_len,\
+            "Background sequence length does not match sequence length."
+        background_seqs.extend( 
+            sample_random_seqs(
+                min_num_background_sequences-len(background_seqs), seq_len)
+        )
+
+    return rnds_and_seqs, background_seqs
+
+def initialize_starting_motif(
+        pwm_fp, 
+        energy_mo_fp, 
+        initial_binding_site_len, 
+        factor_name):
+    assert (pwm_fp is None) or (energy_mo_fp is None), \
+        "Cant initialize a motif from both a pwm and energy model"
+    if pwm_fp is not None:
+        pyTFbindtools.log("Loading PWM starting location", 'VERBOSE')
+        motifs = load_motifs(pwm_fp)
+        assert len(motifs) == 1, "Motif file contains multiple motifs"
+        return motifs.values()[0]
+    elif energy_mo_fp is not None:
+        pyTFbindtools.log("Loading energy data", 'VERBOSE')
+        return load_energy_data(energy_mo_fp.name)
+    else:
+        pyTFbindtools.log(
+            "Initializing starting location from %imer search" % args.initial_binding_site_len, 
+            'VERBOSE')
+        bs_len = initial_binding_site_len
+        pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
+        motif = Motif("aligned_%imer" % initial_binding_site_len, 
+                      factor_name, pwm)
+        return motif
+    assert False
+
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
     # normalize the array so that the consensus energy is zero
     consensus_energy = ddg_array.calc_min_energy(ref_energy)
@@ -171,63 +240,33 @@ def parse_arguments():
 
     pyTFbindtools.selex.CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     pyTFbindtools.selex.MAX_NUM_ITER = int(args.max_iter)
-    
-    min_num_background_sequences = min(
-        args.max_num_seqs_per_file, args.min_num_background_sequences,)
-    
+        
     if args.random_seed != None:
         np.random.seed(args.random_seed)
 
-    pyTFbindtools.log("Loading sequences", 'VERBOSE')
-    rnds_and_seqs = load_sequences(
-        (x.name for x in args.selex_files), args.max_num_seqs_per_file)
+    # parse the sequence data files
+    rnds_and_seqs, background_seqs = load_sequence_data(
+        args.selex_files, 
+        args.background_sequences, 
+        args.max_num_seqs_per_file, 
+        args.min_num_background_sequences)
+    # close the sequence files
+    for fp in args.selex_files: fp.close()
+    if args.background_sequences is not None: args.background_sequences.close()
 
-    if args.starting_pwm != None:
-        pyTFbindtools.log("Loading PWM starting location", 'VERBOSE')
-        motifs = load_motifs(args.starting_pwm)
-        assert len(motifs) == 1, "Motif file contains multiple motifs"
-        motif = motifs.values()[0]
+    # load a starting motif, default to a search for the most over expressed 
+    # sub-sequence if no starting model is provided
+    motif = initialize_starting_motif(
+        args.starting_pwm,
+        args.starting_energy_model,
+        args.initial_binding_site_len, 
+        factor_name="TEST")
+    # close the starting motif files
+    if args.starting_pwm is not None: 
         args.starting_pwm.close()
-    elif args.starting_energy_model != None:
-        pyTFbindtools.log("Loading energy data", 'VERBOSE')
-        motif = load_energy_data(args.starting_energy_model.name)
+    if args.starting_energy_model is not None: 
         args.starting_energy_model.close()
-    else:
-        pyTFbindtools.log(
-            "Initializing starting location from %imer search" % args.initial_binding_site_len, 
-            'VERBOSE')
-        factor_name = 'TEST'
-        bs_len = args.initial_binding_site_len
-        pwm = find_pwm(rnds_and_seqs, args.initial_binding_site_len)
-        motif = Motif("aligned_%imer" % args.initial_binding_site_len, 
-                      factor_name, pwm)
 
-    background_seqs = None
-    if args.background_sequences is not None:
-        opener = ( gzip.open 
-                   if args.background_sequences.name.endswith(".gz") 
-                   else open  )
-        with opener(args.background_sequences.name) as fp:
-            background_seqs = load_fastq(fp, args.max_num_seqs_per_file)
-    else:
-        background_seqs = sample_random_seqs(
-            min_num_background_sequences, 
-            len(rnds_and_seqs.values()[0][0]))
-
-    if len(background_seqs) < min_num_background_sequences:
-        pyTFbindtools.log(
-            "Too few (%i) background sequences were provided - sampling an additional %i uniform random sequences" % (
-                len(background_seqs), 
-                min_num_background_sequences-len(background_seqs)
-            ), "VERBOSE")
-        seq_len = len(rnds_and_seqs.values()[0][0])
-        assert len(background_seqs) == 0 or len(background_seqs[0]) == seq_len,\
-            "Background sequence length does not match sequence length."
-        background_seqs.extend( 
-            sample_random_seqs(
-                min_num_background_sequences-len(background_seqs), seq_len)
-        )
-    
     return motif, rnds_and_seqs, background_seqs
 
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
