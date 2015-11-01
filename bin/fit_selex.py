@@ -5,7 +5,7 @@ from itertools import izip, chain
 from collections import defaultdict
 
 import numpy as np
-from scipy.stats import ttest_ind, combine_pvalues
+from scipy.stats import ttest_ind
 
 import pyTFbindtools
 
@@ -131,7 +131,7 @@ def parse_arguments():
     parser.add_argument( '--selex-files', nargs='+', type=file, required=True,
                          help='Files containing SELEX reads.')
 
-    parser.add_argument( '--background-sequence', type=file, 
+    parser.add_argument( '--background-sequences', type=file, 
         help='File containing reads sequenced from round 0.')
 
     parser.add_argument( '--starting-pwm', type=file,
@@ -192,8 +192,16 @@ def parse_arguments():
         pwm = find_pwm(rnds_and_seqs, args.initial_binding_site_len)
         motif = Motif("aligned_%imer" % args.initial_binding_site_len, 
                       factor_name, pwm)
+
+    background_seqs = None
+    if args.background_sequences != None:
+        opener = ( gzip.open 
+                   if args.background_sequences.name.endswith(".gz") 
+                   else open  )
+        with opener(args.background_sequences.name) as fp:
+            background_seqs = load_fastq(fp)
     
-    return motif, rnds_and_seqs, int(args.random_seq_pool_size)
+    return motif, rnds_and_seqs, background_seqs, int(args.random_seq_pool_size)
 
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
     pwm = np.zeros((4, ddg_array.motif_len), dtype=float)
@@ -204,16 +212,18 @@ def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
         pwm[:,i] = occs/occs.sum()
     return pwm
 
-def find_best_shift(coded_seqs, ddg_array):
-    seq_len = coded_seqs.shape[2]
+def sample_random_seqs(n_sims, seq_len):
+    return ["".join(random.choice('ACGT') for j in xrange(seq_len))
+            for i in xrange(n_sims)]
 
-    # calculate the ddg energies for all binding sites. We use this to align
-    # the binding sities within the sequences
-    energies = calc_binding_site_energies(coded_seqs, ddg_array)
-    # find the index of the best offset
-    best_offsets = np.argmin(energies, 1)
+def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
+    def find_flanking_base_cnts(seqs, base_offset):
+        # calculate the ddg energies for all binding sites. We use this to align
+        # the binding sities within the sequences
+        # find the index of the best offset
+        energies = calc_binding_site_energies(seqs, ddg_array)
+        best_offsets = np.argmin(energies, 1)
 
-    def find_flanking_base_cnts(base_offset):
         ## find the binding sites which align to the sequence boundary. We must 
         ## remove these because the flanking sequence is not random, and so it
         ## will bias the results
@@ -222,8 +232,8 @@ def find_best_shift(coded_seqs, ddg_array):
             base_offset += (ddg_array.motif_len - 1)
         base_indices = best_offsets + base_offset
         # find which offsets fit inside of the random portion of the sequence
-        valid_indices = (base_indices > 0)&(base_indices < coded_seqs.shape[2])
-        base_cnts = coded_seqs[
+        valid_indices = (base_indices > 0)&(base_indices < seq_len)
+        base_cnts = seqs[
             valid_indices,:,base_indices[valid_indices]].sum(0)
         # add in the A counts
         base_cnts = np.insert(
@@ -232,26 +242,41 @@ def find_best_shift(coded_seqs, ddg_array):
 
     def calc_entropy(cnts):
         if len(cnts.shape) == 1: cnts = cnts[None,:]
-        ps = np.array(cnts, dtype=float)/cnts.sum(1)[:,None]
+        ps = np.array(cnts+1, dtype=float)/(cnts.sum(1)+4)[:,None]
         return -(ps*np.log(ps+1e-6)).sum(1)
     
-    def estimate_entropy_significance(cnts, n_samples=100000):
-        uniform_samples = np.random.multinomial(
-            cnts.sum()+4, [0.25, 0.25, 0.25, 0.25], n_samples)
+    def estimate_entropy_significance(cnts, bg_cnts, n_samples=100000):
+        bg_samples = np.random.multinomial(
+            bg_cnts.sum(), (1.0+bg_cnts)/(bg_cnts.sum()+4.0), n_samples)
         obs_samples = np.random.multinomial(
-            cnts.sum()+4, (1+cnts)/(cnts.sum()+4), n_samples)
+            cnts.sum(), (1.0+cnts)/(cnts.sum()+4.0), n_samples)
         stat, p_value = ttest_ind(
-            calc_entropy(uniform_samples), 
-            calc_entropy(obs_samples), 
-            equal_var=False)
+            calc_entropy(bg_samples),
+            calc_entropy(obs_samples)) 
         return stat, p_value
+
+    seq_len = coded_seqs.shape[2]
+    if coded_bg_seqs == None:
+        coded_bg_seqs = sample_random_coded_seqs(coded_seqs.shape[0], seq_len)
+    
+    #sample_size = min(coded_seqs.shape[0], coded_bg_seqs.shape[0])
+    #coded_seqs = coded_seqs[
+    #    np.random.choice(coded_seqs.shape[0], sample_size),:,:]
+    #coded_bg_seqs = coded_bg_seqs[
+    #    np.random.choice(coded_bg_seqs.shape[0], sample_size),:,:]
     
     entropies_and_offsets = []
-    for i in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
-                   xrange(1,min(4, seq_len-ddg_array.motif_len))):
-        cnts = find_flanking_base_cnts(i)
-        t_stat, p_value = estimate_entropy_significance(cnts)
-        entropies_and_offsets.append((-t_stat, p_value, i))
+    for offset in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
+                        xrange(1,min(4, seq_len-ddg_array.motif_len))):
+        cnts = find_flanking_base_cnts(coded_seqs, offset)
+        bg_cnts = find_flanking_base_cnts(coded_bg_seqs, offset)
+        t_stat, p_value = estimate_entropy_significance(cnts, bg_cnts)
+        entropies_and_offsets.append(
+            (-t_stat, 
+             p_value, 
+             offset, 
+             calc_entropy(cnts)[0], 
+             calc_entropy(bg_cnts)[0]))
     entropies_and_offsets.sort()
 
     for x in entropies_and_offsets:
@@ -260,9 +285,8 @@ def find_best_shift(coded_seqs, ddg_array):
     
     if len(entropies_and_offsets) == 0:
         return None
-    
-    _, pvalue = combine_pvalues([x[1] for x in entropies_and_offsets])
-    if pvalue > 0.05: 
+
+    if entropies_and_offsets[0][0] > 0 or entropies_and_offsets[0][1] > 0.05:
         return None
     
     if entropies_and_offsets[0][2] > 0:
@@ -290,11 +314,12 @@ def test_RC_equiv():
 
     pass
 
-def fit_model(rnds_and_seqs, ddg_array, ref_energy):
+def fit_model(rnds_and_seqs, ddg_array, ref_energy, background_seqs):
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs)
-
+    coded_bg_seqs = ( code_seqs(background_seqs, len(background_seqs[0])) 
+                      if background_seqs != None else None )
     opt_path = []
     prev_lhd = None
     while True:
@@ -341,7 +366,8 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
         shift_type = find_best_shift(
             partitioned_and_coded_rnds_and_seqs.validation[max(
                 partitioned_and_coded_rnds_and_seqs.validation.keys())],
-            ddg_array)
+            ddg_array,
+            coded_bg_seqs)
         if shift_type == None:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break
@@ -364,11 +390,11 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy):
     return ddg_array, ref_energy
     
 def main():
-    motif, rnds_and_seqs, random_seq_pool_size = parse_arguments()
+    ( motif, rnds_and_seqs, background_seqs, random_seq_pool_size 
+      ) = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
-    
     ddg_array_hat, ref_energy_hat = fit_model(
-        rnds_and_seqs, ddg_array, ref_energy )
+        rnds_and_seqs, ddg_array, ref_energy, background_seqs )
     
     with open(motif.name + ".SELEX.txt", "w") as ofp:
         write_output(motif, ddg_array_hat, ref_energy_hat, ofp)
