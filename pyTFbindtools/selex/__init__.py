@@ -39,13 +39,6 @@ base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
 ShapeData = namedtuple(
     'ShapeData', ['HelT', 'MGW', 'LProT', 'RProT', 'LRoll', 'RRoll'])
 
-def sample_random_seqs(n_sims, seq_len):
-    return ["".join(random.choice('ACGT') for j in xrange(seq_len))
-            for i in xrange(n_sims)]
-
-def sample_random_coded_seqs(n_sims, seq_len):
-    return code_seqs(sample_random_seqs(n_sims, seq_len), seq_len, ON_GPU=True)
-
 def load_shape_data():
     prefix = os.path.join(os.path.dirname(__file__), './shape_data/')
     fivemer_fnames = ["all_fivemers.HelT", "all_fivemers.MGW"]
@@ -286,6 +279,7 @@ class PartitionedAndCodedSeqs(list):
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
+        coded_bg_seqs,
         init_ddg_array, init_ref_energy,
         dna_conc, prot_conc,
         ftol=1e-12):    
@@ -315,7 +309,8 @@ def estimate_dg_matrix_with_adadelta(
         rv = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            partitioned_and_coded_rnds_and_seqs[train_index], 
+            partitioned_and_coded_rnds_and_seqs[train_index],
+            coded_bg_seqs,
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
@@ -386,6 +381,7 @@ def estimate_dg_matrix_with_adadelta(
         ref_energy, 
         ddg_array, 
         partitioned_and_coded_rnds_and_seqs[1], 
+        coded_bg_seqs,
         dna_conc, 
         prot_conc)
 

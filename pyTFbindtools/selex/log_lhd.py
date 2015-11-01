@@ -11,10 +11,6 @@ from scipy.signal import convolve
 from pyTFbindtools.motif_tools import R, T
 import pyTFbindtools.selex
 
-PARTITION_FN_SAMPLE_SIZE = 1000
-
-random_seqs = {}
-
 def test_calc_affinities():
     """Place holder for some test code.
 
@@ -120,6 +116,7 @@ def log_lhd_factory():
 
     #@profile
     def calc_lhd_denominators_and_chem_pots(
+            background_seqs,
             max_rnd_num,
             ref_energy, 
             ddg_array, 
@@ -128,9 +125,8 @@ def log_lhd_factory():
             prot_conc):
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
-        energies = ref_energy + calc_affinities(
-            random_seqs[seq_len], ddg_array)
-        expected_cnts = (4**seq_len)/float(len(random_seqs[seq_len]))
+        energies = ref_energy + calc_affinities(background_seqs, ddg_array)
+        expected_cnts = (4**seq_len)/float(len(background_seqs))
         curr_occupancies = expected_cnts*np.ones(
             len(energies), dtype=theano.config.floatX)
 
@@ -162,12 +158,11 @@ def log_lhd_factory():
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      coded_seqs,
+                     coded_bg_seqs,
                      dna_conc,
                      prot_conc):
         seq_len = coded_seqs.values()[0].shape[2]
-        if seq_len not in random_seqs:
-            random_seqs[seq_len] = pyTFbindtools.selex.sample_random_coded_seqs(
-                PARTITION_FN_SAMPLE_SIZE, seq_len)
+        
         ref_energy = np.array(ref_energy).astype(theano.config.floatX)
         # score all of the sequences
         rnds_and_seq_ddgs = {}
@@ -176,6 +171,7 @@ def log_lhd_factory():
 
         # calcualte the denominators
         chem_affinities, denominators = calc_lhd_denominators_and_chem_pots(
+            coded_bg_seqs,
             max(coded_seqs.keys()),
             ref_energy, 
             ddg_array,  

@@ -1,5 +1,6 @@
 import os, sys
 import gzip
+import random
 
 from itertools import izip, chain
 from collections import defaultdict
@@ -17,8 +18,7 @@ from pyTFbindtools.selex import (
     find_pwm, code_seq, code_seqs, code_RC_seqs, calc_occ,
     estimate_dg_matrix_with_adadelta,
     find_pwm_from_starting_alignment,
-    PartitionedAndCodedSeqs, base_map,
-    sample_random_coded_seqs)
+    PartitionedAndCodedSeqs)
 from pyTFbindtools.motif_tools import (
     load_energy_data, load_motifs, load_motif_from_text,
     logistic, Motif, R, T,
@@ -70,18 +70,20 @@ sample for sequencing.
 # molar protein:DNA ratio: 1:25
 # volume: 5.0e-5 L 
 n_dna_seq = 7.5e-8/(1.079734e-21*119) # molecules  - g/( g/oligo * oligo/molecule)
-dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
-prot_conc = dna_conc/25 # mol/L (should be 25)
+jolma_dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
+jolma_prot_conc = jolma_dna_conc/25 # mol/L (should be 25)
 #prot_conc *= 10
 
-def load_text_file(fp, maxnum=1e9):
+DEFAULT_MIN_NUM_BG_SEQS = 100000
+
+def load_text_file(fp, maxnum=1e8):
     seqs = []
     for i, line in enumerate(fp):
         seqs.append(line.strip().upper())
         if i > maxnum: break
     return seqs
 
-def load_fastq(fp, maxnum=1e9):
+def load_fastq(fp, maxnum=1e8):
     seqs = []
     for i, line in enumerate(fp):
         if i/4 >= maxnum: break
@@ -89,7 +91,7 @@ def load_fastq(fp, maxnum=1e9):
             seqs.append(line.strip().upper())
     return seqs
 
-def load_sequences(fnames):
+def load_sequences(fnames, max_num_seqs_per_file=1e8):
     fnames = list(fnames)
     rnds_and_seqs = {}
     rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
@@ -98,7 +100,7 @@ def load_sequences(fnames):
         opener = gzip.open if fname.endswith(".gz") else open  
         with opener(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs[rnd] = loader(fp) # , 178
+            rnds_and_seqs[rnd] = loader(fp, max_num_seqs_per_file)
     return rnds_and_seqs
 
 def write_output(motif, ddg_array, ref_energy, ofp=sys.stdout):
@@ -130,9 +132,12 @@ def parse_arguments():
 
     parser.add_argument( '--selex-files', nargs='+', type=file, required=True,
                          help='Files containing SELEX reads.')
-
     parser.add_argument( '--background-sequences', type=file, 
         help='File containing reads sequenced from round 0.')
+    parser.add_argument( '--min-num-background-sequences', 
+                         type=int, default=DEFAULT_MIN_NUM_BG_SEQS,
+        help='Minimum number of background sequences (if less than %i are provided we simulate additional background sequences)' % DEFAULT_MIN_NUM_BG_SEQS
+    )
 
     parser.add_argument( '--starting-pwm', type=file,
                          help='A PWM to start from.')
@@ -148,9 +153,9 @@ def parse_arguments():
 
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
-    parser.add_argument( '--random-seq-pool-size', type=float, default=1e6,
-        help='The random pool size for the bootstrap.')
 
+    parser.add_argument( '--max-num-seqs-per-file', type=int, default=1e8,
+                         help='Only load the first --max-num-seqs-per-file per input file (useful for debugging - overwrites --min-num-background-sequences)')
 
     parser.add_argument( '--verbose', default=False, action='store_true',
                          help='Print extra status information.')
@@ -167,11 +172,15 @@ def parse_arguments():
     pyTFbindtools.selex.CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     pyTFbindtools.selex.MAX_NUM_ITER = int(args.max_iter)
     
+    min_num_background_sequences = min(
+        args.max_num_seqs_per_file, args.min_num_background_sequences,)
+    
     if args.random_seed != None:
         np.random.seed(args.random_seed)
 
     pyTFbindtools.log("Loading sequences", 'VERBOSE')
-    rnds_and_seqs = load_sequences(x.name for x in args.selex_files)
+    rnds_and_seqs = load_sequences(
+        (x.name for x in args.selex_files), args.max_num_seqs_per_file)
 
     if args.starting_pwm != None:
         pyTFbindtools.log("Loading PWM starting location", 'VERBOSE')
@@ -194,14 +203,32 @@ def parse_arguments():
                       factor_name, pwm)
 
     background_seqs = None
-    if args.background_sequences != None:
+    if args.background_sequences is not None:
         opener = ( gzip.open 
                    if args.background_sequences.name.endswith(".gz") 
                    else open  )
         with opener(args.background_sequences.name) as fp:
-            background_seqs = load_fastq(fp)
+            background_seqs = load_fastq(fp, args.max_num_seqs_per_file)
+    else:
+        background_seqs = sample_random_seqs(
+            min_num_background_sequences, 
+            len(rnds_and_seqs.values()[0][0]))
+
+    if len(background_seqs) < min_num_background_sequences:
+        pyTFbindtools.log(
+            "Too few (%i) background sequences were provided - sampling an additional %i uniform random sequences" % (
+                len(background_seqs), 
+                min_num_background_sequences-len(background_seqs)
+            ), "VERBOSE")
+        seq_len = len(rnds_and_seqs.values()[0][0])
+        assert len(background_seqs) == 0 or len(background_seqs[0]) == seq_len,\
+            "Background sequence length does not match sequence length."
+        background_seqs.extend( 
+            sample_random_seqs(
+                min_num_background_sequences-len(background_seqs), seq_len)
+        )
     
-    return motif, rnds_and_seqs, background_seqs, int(args.random_seq_pool_size)
+    return motif, rnds_and_seqs, background_seqs
 
 def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
     pwm = np.zeros((4, ddg_array.motif_len), dtype=float)
@@ -314,19 +341,23 @@ def test_RC_equiv():
 
     pass
 
-def fit_model(rnds_and_seqs, ddg_array, ref_energy, background_seqs):
+def fit_model(rnds_and_seqs, background_seqs, 
+              ddg_array, ref_energy, 
+              dna_conc, prot_conc):
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs)
-    coded_bg_seqs = ( code_seqs(background_seqs, len(background_seqs[0])) 
-                      if background_seqs != None else None )
+    
+    coded_bg_seqs = code_seqs(background_seqs, len(background_seqs[0])) 
+    
     opt_path = []
     prev_lhd = None
     while True:
         bs_len = ddg_array.motif_len
         prev_lhd = calc_log_lhd(
             ref_energy, ddg_array, 
-            partitioned_and_coded_rnds_and_seqs[0], 
+            partitioned_and_coded_rnds_and_seqs[0],
+            coded_bg_seqs,
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
@@ -334,6 +365,7 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, background_seqs):
         ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
+                coded_bg_seqs,
                 ddg_array, ref_energy,
                 dna_conc, prot_conc)
 
@@ -350,6 +382,7 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, background_seqs):
             ref_energy, 
             ddg_array, 
             partitioned_and_coded_rnds_and_seqs[0],
+            coded_bg_seqs,
             dna_conc,
             prot_conc)
 
@@ -390,11 +423,12 @@ def fit_model(rnds_and_seqs, ddg_array, ref_energy, background_seqs):
     return ddg_array, ref_energy
     
 def main():
-    ( motif, rnds_and_seqs, background_seqs, random_seq_pool_size 
-      ) = parse_arguments()
+    motif, rnds_and_seqs, background_seqs = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
     ddg_array_hat, ref_energy_hat = fit_model(
-        rnds_and_seqs, ddg_array, ref_energy, background_seqs )
+        rnds_and_seqs, background_seqs, 
+        ddg_array, ref_energy,
+        jolma_dna_conc, jolma_prot_conc)
     
     with open(motif.name + ".SELEX.txt", "w") as ofp:
         write_output(motif, ddg_array_hat, ref_energy_hat, ofp)
