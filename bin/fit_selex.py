@@ -74,6 +74,7 @@ jolma_dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
 jolma_prot_conc = jolma_dna_conc/25 # mol/L (should be 25)
 #prot_conc *= 10
 
+USE_FULL_BG_FOR_PART_FN = True
 DEFAULT_MIN_NUM_BG_SEQS = 100000
 
 def load_text_file(fp, maxnum=1e8):
@@ -388,8 +389,10 @@ def fit_model(rnds_and_seqs, background_seqs,
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs)
     partitioned_and_coded_bg_seqs = PartitionedAndCodedSeqs(
-        {0: background_seqs}, partitioned_and_coded_rnds_and_seqs.n_partitions)
-    #coded_bg_seqs = code_seqs(background_seqs, len(background_seqs[0])) 
+        {0: background_seqs}, 
+        ( 1 if USE_FULL_BG_FOR_PART_FN else 
+          partitioned_and_coded_rnds_and_seqs.n_partitions )
+    )
     
     opt_path = []
     prev_lhd = None
@@ -408,7 +411,8 @@ def fit_model(rnds_and_seqs, background_seqs,
                 partitioned_and_coded_rnds_and_seqs,
                 partitioned_and_coded_bg_seqs,
                 ddg_array, ref_energy,
-                dna_conc, prot_conc)
+                dna_conc, prot_conc,
+                USE_FULL_BG_FOR_PART_FN)
 
         pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
         pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')

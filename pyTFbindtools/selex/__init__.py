@@ -279,15 +279,21 @@ class PartitionedAndCodedSeqs(list):
             for part_index, part_seqs in enumerate(
                     self.partition_data(seqs, self.n_partitions)):
                 self[part_index][rnd] = code_seqs(part_seqs, self.seq_length)
-        self.validation = self[0]
-        self.test = self[1]
-        self.training = self[2:]
+
+        if self.n_partitions == 1:
+            self.validation,self.test,self.training = self[0],self[0],self[0]
+        else:
+            assert self.n_partitions >= 5
+            self.validation = self[0]
+            self.test = self[1]
+            self.training = self[2:]
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
         partitioned_and_coded_bg_seqs,
         init_ddg_array, init_ref_energy,
         dna_conc, prot_conc,
+        use_full_background_for_part_fn,
         ftol=1e-12):    
     def calc_penalty(ref_energy, ddg_array):
         penalty = 0
@@ -312,11 +318,14 @@ def estimate_dg_matrix_with_adadelta(
     
     def f_dg(x, train_index):
         ref_energy, ddg_array = extract_data_from_array(x)
+        bg = ( partitioned_and_coded_bg_seqs[0][0] 
+               if use_full_background_for_part_fn
+               else partitioned_and_coded_bg_seqs[train_index][0] )
         rv = calc_log_lhd(
             ref_energy, 
             ddg_array, 
             partitioned_and_coded_rnds_and_seqs[train_index],
-            partitioned_and_coded_bg_seqs[train_index][0],
+            bg,
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
