@@ -188,12 +188,11 @@ def write_output(motif_name, ddg_array, ref_energy, ofp=sys.stdout):
             for x in energies )
 
     print >> ofp, ">%s.PWM\t%s" % (motif_name, ddg_array.consensus_seq())
+    pwm = build_pwm_from_energies(ddg_array, ref_energy, -12.0)
     #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
-    for pos, energies in enumerate(conc_energies, start=1):
-        pwm = 1-logistic(energies)
-        pwm = pwm/pwm.sum()
+    for pos, freqs in enumerate(pwm.T):
         print >> ofp, str(pos) + "\t" + "\t".join(
-            "%.4f" % x for x in pwm )
+            "%.4f" % x for x in freqs )
 
 def parse_arguments():
     import argparse
@@ -388,11 +387,8 @@ def fit_model(rnds_and_seqs, background_seqs,
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs)
-    partitioned_and_coded_bg_seqs = [
-        code_seqs(seqs, len(background_seqs[0])) 
-        for seqs in PartitionedAndCodedSeqs.partition_data(
-            background_seqs, partitioned_and_coded_rnds_and_seqs.n_partitions)
-    ]
+    partitioned_and_coded_bg_seqs = PartitionedAndCodedSeqs(
+        {0: background_seqs}, partitioned_and_coded_rnds_and_seqs.n_partitions)
     #coded_bg_seqs = code_seqs(background_seqs, len(background_seqs[0])) 
     
     opt_path = []
@@ -401,8 +397,8 @@ def fit_model(rnds_and_seqs, background_seqs,
         bs_len = ddg_array.motif_len
         prev_lhd = calc_log_lhd(
             ref_energy, ddg_array, 
-            partitioned_and_coded_rnds_and_seqs[0],
-            partitioned_and_coded_bg_seqs[0],
+            partitioned_and_coded_rnds_and_seqs.validation,
+            partitioned_and_coded_bg_seqs.validation[0],
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
@@ -426,8 +422,8 @@ def fit_model(rnds_and_seqs, background_seqs,
         new_lhd = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            partitioned_and_coded_rnds_and_seqs[0],
-            partitioned_and_coded_bg_seqs[0],
+            partitioned_and_coded_rnds_and_seqs.validation,
+            partitioned_and_coded_bg_seqs.validation[0],
             dna_conc,
             prot_conc)
 
@@ -448,7 +444,7 @@ def fit_model(rnds_and_seqs, background_seqs,
             partitioned_and_coded_rnds_and_seqs.validation[max(
                 partitioned_and_coded_rnds_and_seqs.validation.keys())],
             ddg_array,
-            partitioned_and_coded_bg_seqs[0])
+            partitioned_and_coded_bg_seqs.validation[0])
         if shift_type == None:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break

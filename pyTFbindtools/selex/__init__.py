@@ -264,12 +264,17 @@ class PartitionedAndCodedSeqs(list):
             partitioned_seqs[i%n_partitions].append(seq)
         return partitioned_seqs
     
-    def __init__(self, rnds_and_seqs):
+    def __init__(self, rnds_and_seqs, n_partitions=None):
         self.seq_length = len(rnds_and_seqs.values()[0][0])
-        self.n_partitions = max(
-            5, min(len(seqs)/10000 for seqs in rnds_and_seqs.itervalues()))
+        
+        if n_partitions is None:
+            n_partitions = max(
+                5, min(len(seqs)/10000 for seqs in rnds_and_seqs.itervalues()))
+        self.n_partitions = n_partitions
+        
         for i in xrange(self.n_partitions):
             self.append({})
+        
         for rnd, seqs in rnds_and_seqs.iteritems():
             for part_index, part_seqs in enumerate(
                     self.partition_data(seqs, self.n_partitions)):
@@ -280,7 +285,7 @@ class PartitionedAndCodedSeqs(list):
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
-        coded_bg_seqs,
+        partitioned_and_coded_bg_seqs,
         init_ddg_array, init_ref_energy,
         dna_conc, prot_conc,
         ftol=1e-12):    
@@ -311,14 +316,14 @@ def estimate_dg_matrix_with_adadelta(
             ref_energy, 
             ddg_array, 
             partitioned_and_coded_rnds_and_seqs[train_index],
-            coded_bg_seqs[train_index],
+            partitioned_and_coded_bg_seqs[train_index][0],
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
         return -rv + penalty
 
     # ada delta
-    test_lhds = []
+    validation_lhds = []
     train_lhds = []
     xs = []
     def ada_delta(x0):
@@ -340,7 +345,7 @@ def estimate_dg_matrix_with_adadelta(
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
             x0 += delta_x.clip(-2, 2) #grad #delta
             train_lhd = -f_dg(x0, train_index)
-            test_lhd = -f_dg(x0, 1)
+            validation_lhd = -f_dg(x0, 1)
             ref_energy, ddg_array = extract_data_from_array(x0)
 
             debug_output = []
@@ -353,20 +358,22 @@ def estimate_dg_matrix_with_adadelta(
             debug_output.append( 
                 str(ddg_array.calc_base_contributions().round(2)))
             debug_output.append("Train: %s (%i)" % (train_lhd, train_index))
-            debug_output.append("Test: %s" % test_lhd)
-            debug_output.append(str(math.sqrt((grad**2).sum())))
+            debug_output.append("Validation: %s" % validation_lhd)
+            debug_output.append("Grad L2 Norm: %.2f" % (
+                math.sqrt((grad**2).sum()))
+            )
             pyTFbindtools.log("\n".join(debug_output), 'DEBUG')
             
             train_lhds.append(train_lhd)
-            test_lhds.append(test_lhd)
+            validation_lhds.append(validation_lhd)
             xs.append(x0)
-            min_num_iter = 4*len(partitioned_and_coded_rnds_and_seqs)
-            if i > 2*min_num_iter and (
-                    sum(test_lhds[-2*min_num_iter:-min_num_iter])/min_num_iter
-                    > sum(test_lhds[-min_num_iter:])/min_num_iter ):
+            min_iter = 4*len(partitioned_and_coded_rnds_and_seqs)
+            if i > 2*min_iter and (
+                    sum(validation_lhds[-2*min_iter:-min_iter])/min_iter
+                    > sum(validation_lhds[-min_iter:])/min_iter ):
                 break
 
-        x_hat_index = np.argmax(np.array(test_lhds))
+        x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
     
     bs_len = init_ddg_array.motif_len    
@@ -378,12 +385,12 @@ def estimate_dg_matrix_with_adadelta(
     x = ada_delta(x0)
 
     ref_energy, ddg_array = extract_data_from_array(x)
-    test_lhd = calc_log_lhd(
+    validation_lhd = calc_log_lhd(
         ref_energy, 
         ddg_array, 
-        partitioned_and_coded_rnds_and_seqs[1], 
-        coded_bg_seqs[1],
+        partitioned_and_coded_rnds_and_seqs.validation, 
+        partitioned_and_coded_bg_seqs.validation[0],
         dna_conc, 
         prot_conc)
 
-    return ddg_array, ref_energy, test_lhds, test_lhd
+    return ddg_array, ref_energy, validation_lhds, validation_lhd
