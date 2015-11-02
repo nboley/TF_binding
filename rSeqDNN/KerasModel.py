@@ -74,7 +74,8 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels, model_def_file=None, batch_size=200):
+    def __init__(self, peaks_and_labels, model_def_file=None, model_fname=None,
+                 batch_size=200):
 
         self.batch_size = batch_size
         self.seq_len = peaks_and_labels.max_peak_width
@@ -82,6 +83,11 @@ class KerasModelBase():
             
         if (self.model_def_file is not None):
             self.parse_model_def_file() # parse and update self.model
+        elif model_fname is not None:
+            print "Loading pickled model '%s'" % model_fname
+            with open(model_fname) as fp:
+                self.model = pickle.load(fp)
+            print "Finished loading pickled model."
         else: # resort to defaults
             numConv = 30
             convStack = 1
