@@ -2,15 +2,14 @@ import cython
 from cpython.string cimport PyString_AsString
 from cython.parallel import prange
 from libc.string cimport memcpy
-from libc.stdlib cimport malloc, free
+from libc.stdlib cimport malloc, free, realloc
 
 import numpy as np
 cimport numpy as np
 
 DTYPE = np.float32
 ctypedef np.float32_t DTYPE_t
-cdef enum:
-    NUM_BASES = 4 
+DEF NUM_BASES = 4 
 
 ################################################################################
 # Build 'base_prbs' lookup table mapping DNA characters to one hot encoding prbs
@@ -124,28 +123,43 @@ cdef int one_hot_encode_c_sequences_MEMCPY(char** sequences,
             )
     return 0
 
-cdef convert_py_string_to_c_string(sequences, char** c_sequences):
+cdef object convert_py_string_to_c_string(
+        object sequences, char*** c_sequences):
+    DEF NUM_SEQ_STEP_SIZE = 15
+    
+    cdef int num_alld_seqs = NUM_SEQ_STEP_SIZE
+    c_sequences[0] = <char**> malloc(num_alld_seqs * sizeof(char*))
+    
     cdef int max_sequence_length = 0
     cdef int sequence_index = 0
     for sequence in sequences:
         if max_sequence_length < len(sequence):
             max_sequence_length = len(sequence)
-        c_sequences[sequence_index] = PyString_AsString(
+        c_sequences[0][sequence_index] = PyString_AsString(
             sequence)
         sequence_index += 1
-    
-    return max_sequence_length, sequence_index
+        # if we have run out of space and need to reallocate
+        if sequence_index == num_alld_seqs:
+            num_alld_seqs += NUM_SEQ_STEP_SIZE
+            c_sequences[0] = <char**> realloc(
+                c_sequences[0], num_alld_seqs*sizeof(char*))
+
+    # reduce the allocation size
+    num_alld_seqs = sequence_index
+    c_sequences[0] = <char**> realloc(
+        c_sequences[0], num_alld_seqs*sizeof(char*))
+    return num_alld_seqs, max_sequence_length
 
 def one_hot_encode_sequences(sequences):
-    cdef char** c_sequences = <char**> malloc(len(sequences) * sizeof(char*))
+    cdef char** c_sequences = NULL;
     cdef int seq_length, num_seqs
     cdef np.ndarray[DTYPE_t, ndim=3] encoded_sequences
     
     try:
        # convert the python strings to c_strings. 
-        seq_length, num_seqs = convert_py_string_to_c_string(
-            sequences, c_sequences)
-
+        num_seqs, seq_length = convert_py_string_to_c_string(
+            sequences, &c_sequences)
+        
         # allocate an numpy array to store the encoded sequences in
         encoded_sequences = np.empty(
             (num_seqs, seq_length, NUM_BASES), dtype=DTYPE)
