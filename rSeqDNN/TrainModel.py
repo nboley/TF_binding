@@ -134,6 +134,8 @@ def main():
             model = KerasModel(peaks_and_labels)
     elif command=='test':
         fit_model = KerasModel(peaks_and_labels, model_fname=model_fname)
+        if model_fname is None:
+            fit_model.compile()
         fit_model.model.load_weights(weights_fname)
     for fold_index, (train, valid) in enumerate(
             peaks_and_labels.iter_train_validation_subsets(validation_contigs,
@@ -161,15 +163,16 @@ def main():
             print "FULL:", res
             results.append(res)
         
-        if command=='train':
+        if not command=='test':
             training_data[fold_index] = [train.sample_ids, train.contigs]
         validation_data[fold_index] = [valid.sample_ids, valid.contigs]
         
         if only_test_one_fold: break
 
     print 'Printing validation results for each fold:'
-    for fold_index in training_data.keys():
-        print 'training data: ', training_data[fold_index]
+    for fold_index in validation_data.keys():
+        if not command=='test':
+            print 'training data: ', training_data[fold_index]
         print 'validation data: ', validation_data[fold_index]
         print 'CLEAN:', clean_results[fold_index]
         if not command=='test':
