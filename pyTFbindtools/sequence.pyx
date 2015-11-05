@@ -107,10 +107,7 @@ cdef int one_hot_encode_c_sequences_MEMCPY(char** sequences,
     cdef char* sequence
     cdef char base
     cdef int position, sequence_index
-    for sequence_index in prange(
-            num_sequences, num_threads=1, 
-            schedule='static', chunksize=10000, 
-            nogil=True):
+    for sequence_index in range(num_sequences):
         sequence = sequences[sequence_index]
         for position in range(sequence_length):
             base = sequence[position]
@@ -118,12 +115,12 @@ cdef int one_hot_encode_c_sequences_MEMCPY(char** sequences,
             # so break
             if base == 0: break
             memcpy( 
-                <char*> encoded_sequences 
-                    + sequence_index*(sequence_length*4*sizeof(DTYPE_t))
-                    + position*4*sizeof(DTYPE_t), 
-                <char*> base_prbs 
-                    + base*4*sizeof(DTYPE_t),
-                4*sizeof(DTYPE_t)
+                <DTYPE_t*> encoded_sequences 
+                    + sequence_index*sequence_length*NUM_BASES
+                    + position*NUM_BASES, 
+                <DTYPE_t*> base_prbs 
+                    + base*NUM_BASES,
+                NUM_BASES*sizeof(DTYPE_t)
             )
     return 0
 
@@ -188,5 +185,5 @@ def test_implementations(n_tests=1000):
             code_1 = one_hot_encode_sequences(seqs)
             code_2 = one_hot_encode_sequences_FORLOOP(seqs)
             assert (np.abs(code_1 - code_2)).sum() < 1e-6
-    
+    print "PASS"
     return
