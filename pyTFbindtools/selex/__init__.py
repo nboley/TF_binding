@@ -256,44 +256,76 @@ def find_pwm(rnds_and_seqs, bs_len):
 def calc_occ(seq_ddgs, ref_energy, chem_affinity):
     return logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))
 
-class PartitionedAndCodedSeqs(list):
-    @staticmethod
-    def partition_data(seqs, n_partitions):
-        partitioned_seqs = [[] for i in xrange(n_partitions)]
-        for i, seq in enumerate(seqs):
-            partitioned_seqs[i%n_partitions].append(seq)
-        return partitioned_seqs
-    
-    def __init__(self, rnds_and_seqs, n_partitions=None):
+_SelexData = namedtuple('SelexData', ['bg_seqs', 'bnd_seqs'])
+class SelexData(_SelexData):
+    @property
+    def last_rnd_index(self):
+        return max(self.bnd_seqs.iterkeys())
+
+    @property
+    def first_rnd_index(self):
+        return min(self.bnd_seqs.iterkeys())
+
+    @property    
+    def last_rnd(self):
+        return self.bnd_seqs[self.last_rnd_index]
+
+    @property    
+    def first_rnd(self):
+        return self.bnd_seqs[self.first_rnd_index]
+
+class PartitionedAndCodedSeqs(object):
+    def __init__(self, 
+                 rnds_and_seqs, 
+                 background_seqs, 
+                 use_full_background_for_part_fn=True, 
+                 n_partitions=None):
+        # set the sequence length
         self.seq_length = len(rnds_and_seqs.values()[0][0])
+        self.use_full_background_for_part_fn = use_full_background_for_part_fn
         
+        # set the number of data partitions
         if n_partitions is None:
             n_partitions = max(
                 5, min(len(seqs)/10000 for seqs in rnds_and_seqs.itervalues()))
         self.n_partitions = n_partitions
+        if self.n_partitions <= 3: 
+            raise ValueError, "Need at least 3 partitions (test, train, validation)"
         
-        for i in xrange(self.n_partitions):
-            self.append({})
-        
+        # store the full coded sequence arrays
+        self.coded_seqs = {}
         for rnd, seqs in rnds_and_seqs.iteritems():
-            for part_index, part_seqs in enumerate(
-                    self.partition_data(seqs, self.n_partitions)):
-                self[part_index][rnd] = code_seqs(part_seqs, self.seq_length)
+            self.coded_seqs[rnd] = code_seqs(seqs, self.seq_length)
+        self.coded_bg_seqs = code_seqs(background_seqs, self.seq_length)
 
-        if self.n_partitions == 1:
-            self.validation,self.test,self.training = self[0],self[0],self[0]
+        # store views to partitioned subsets of the data 
+        self._partitioned_data = [{} for i in xrange(self.n_partitions)]
+        for rnd, coded_seqs in self.coded_seqs.iteritems():
+            for partition_index, partition in enumerate(np.array_split(
+                    coded_seqs, self.n_partitions)):
+                self._partitioned_data[partition_index][rnd] = partition
+
+        # partition the background sequences.
+        if self.use_full_background_for_part_fn:
+            self._partitioned_bg_data = [
+                self.coded_bg_seqs for i in xrange(self.n_partitions)]
         else:
-            assert self.n_partitions >= 5
-            self.validation = self[0]
-            self.test = self[1]
-            self.training = self[2:]
+            self._partitioned_bg_data = np.split(
+                self.coded_bg_seqs, self.n_partitions)
+        
+        self.test = SelexData(
+            self._partitioned_bg_data[0], self._partitioned_data[0])
+        self.validation = SelexData(
+            self._partitioned_bg_data[1], self._partitioned_data[1])
+        self.train = [
+            SelexData(self._partitioned_bg_data[i], self._partitioned_data[i])
+            for i in xrange(self.n_partitions-2)
+        ]
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
-        partitioned_and_coded_bg_seqs,
         init_ddg_array, init_ref_energy,
         dna_conc, prot_conc,
-        use_full_background_for_part_fn,
         ftol=1e-12):    
     def calc_penalty(ref_energy, ddg_array):
         penalty = 0
@@ -318,14 +350,14 @@ def estimate_dg_matrix_with_adadelta(
     
     def f_dg(x, train_index):
         ref_energy, ddg_array = extract_data_from_array(x)
-        bg = ( partitioned_and_coded_bg_seqs[0][0] 
-               if use_full_background_for_part_fn
-               else partitioned_and_coded_bg_seqs[train_index][0] )
+        assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
+        (bg_seqs, bnd_seqs
+         ) = partitioned_and_coded_rnds_and_seqs.train[train_index]
         rv = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            partitioned_and_coded_rnds_and_seqs[train_index],
-            bg,
+            bnd_seqs,
+            bg_seqs,
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
@@ -345,8 +377,8 @@ def estimate_dg_matrix_with_adadelta(
         eps = 1.0
         num_small_decreases = 0
         for i in xrange(MAX_NUM_ITER):
-            train_index = random.randint(
-                2, len(partitioned_and_coded_rnds_and_seqs)-1)
+            train_index = random.randrange(
+                len(partitioned_and_coded_rnds_and_seqs.train))
             grad = approx_fprime(x0, f_dg, 1e-3, train_index)
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
@@ -376,7 +408,7 @@ def estimate_dg_matrix_with_adadelta(
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
             xs.append(x0)
-            min_iter = 4*len(partitioned_and_coded_rnds_and_seqs)
+            min_iter = 4*len(partitioned_and_coded_rnds_and_seqs.train)
             if i > 2*min_iter and (
                     sum(validation_lhds[-2*min_iter:-min_iter])/min_iter
                     > sum(validation_lhds[-min_iter:])/min_iter ):
@@ -397,8 +429,8 @@ def estimate_dg_matrix_with_adadelta(
     validation_lhd = calc_log_lhd(
         ref_energy, 
         ddg_array, 
-        partitioned_and_coded_rnds_and_seqs.validation, 
-        partitioned_and_coded_bg_seqs.validation[0],
+        partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs, 
+        partitioned_and_coded_rnds_and_seqs.validation.bg_seqs, 
         dna_conc, 
         prot_conc)
 

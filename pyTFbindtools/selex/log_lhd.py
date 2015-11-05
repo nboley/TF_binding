@@ -23,6 +23,26 @@ def test_calc_affinities():
 
     print coded_seqs.shape
     print calc_affinities(coded_seqs, ddg_array )
+
+def test_RC_equiv():
+    """Make sure that the RC function works correctly.
+    
+    """
+    seq = 'GCGAATACC'
+    coded_seq = code_seq(seq)
+    RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+    RC_seq = "".join(RC_map[x] for x in seq[::-1])
+    coded_RC_seq = code_seq(RC_seq)
+    
+    print coded_seq
+    print coded_RC_seq
+    print calc_binding_site_energies(coded_seq[None,(1,2,3),:], ddg_array)
+    print calc_binding_site_energies(coded_RC_seq[None, (1,2,3),:], ddg_array)[:,::-1]
+    energy_diff, RC_ddg_array = ddg_array.reverse_complement()
+    print energy_diff + calc_binding_site_energies(coded_seq[None, (1,2,3),:], RC_ddg_array)
+    #print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
+    return
+
     
 def log_lhd_factory():
     import theano
@@ -32,8 +52,12 @@ def log_lhd_factory():
     # ignore theano warnings
     import warnings
     warnings.simplefilter("ignore")
-    
-    ## Theano function to calculate affinities
+
+    ############################################################################
+    ##
+    ## Theano function to calculate reverse complment invariant affinities
+    ##
+    ############################################################################
     seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
     ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
     fwd_bs_affinities = theano_conv2d(seqs, ddg[::-1,::-1])[:,0,:]
@@ -54,29 +78,40 @@ def log_lhd_factory():
     seq_affinities = bs_affinities.min(1)
     calc_affinities = theano.function([seqs, ddg], seq_affinities )
     
-    sym_occ = TT.vector(dtype=theano.config.floatX)
-    sym_part_fn = TT.vector(dtype=theano.config.floatX)
-    sym_u = TT.scalar('u', dtype=theano.config.floatX)
-    sym_cons_dg = TT.scalar('cons_dg', dtype=theano.config.floatX)
-    sym_chem_pot = TT.scalar('chem_pot', dtype=theano.config.floatX)
-    sym_dna_conc = TT.scalar(dtype=theano.config.floatX)
-
-    sym_seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
-    sym_ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
-    
+    ############################################################################
+    #
+    # calculate binding occupancies for a set of energies and a single chemical
+    # affinity
+    #
+    ############################################################################
     sym_e = TT.vector(dtype=theano.config.floatX)
-
+    sym_chem_pot = TT.scalar('chem_pot', dtype=theano.config.floatX)
     calc_occ = theano.function([sym_chem_pot, sym_e], 
         1 / (1 + TT.exp((-sym_chem_pot+sym_e)/(R*T)))
     )
 
+
+    ############################################################################
+    #
+    # XXX
+    # 
+    #
+    ############################################################################
+    sym_part_fn = TT.vector(dtype=theano.config.floatX)
+    sym_u = TT.scalar('u', dtype=theano.config.floatX)
+    sym_dna_conc = TT.scalar(dtype=theano.config.floatX)
     calc_chem_pot_sum_term = theano.function(
         [sym_part_fn, sym_e, sym_u, sym_dna_conc], 
         (sym_part_fn*sym_dna_conc/(1+TT.exp((sym_e-sym_u)/(R*T)))).sum()
     ) 
 
+    ############################################################################
+    #
     # calculate the sum of log occupancies for a particular round, given a 
     # set of energies
+    #
+    ############################################################################
+    sym_cons_dg = TT.scalar('cons_dg', dtype=theano.config.floatX)
     calc_rnd_lhd_num = theano.function([sym_chem_pot, sym_cons_dg, sym_e], -(
         TT.log(1.0 + TT.exp(
             (-sym_chem_pot + sym_cons_dg + sym_e)/(R*T))).sum())

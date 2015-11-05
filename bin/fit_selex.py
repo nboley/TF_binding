@@ -20,8 +20,9 @@ from pyTFbindtools.selex import (
     find_pwm_from_starting_alignment,
     PartitionedAndCodedSeqs)
 from pyTFbindtools.motif_tools import (
+    build_pwm_from_energies,
     load_energy_data, load_motifs, load_motif_from_text,
-    logistic, Motif, R, T,
+    Motif, R, T,
     DeltaDeltaGArray)
 
 """
@@ -216,16 +217,17 @@ def parse_arguments():
     parser.add_argument( '--initial-binding-site-len', type=int, default=6,
         help='The starting length of the binding site (this will grow)')
 
-    parser.add_argument( '--lhd-convergence-eps', type=float, default=1e-8,
-                         help='Convergence tolerance for lhd change.')
-    parser.add_argument( '--max-iter', type=float, default=1e5,
-                         help='Maximum number of optimization iterations.')
-
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
-
     parser.add_argument( '--max-num-seqs-per-file', type=int, default=1e8,
                          help='Only load the first --max-num-seqs-per-file per input file (useful for debugging - overwrites --min-num-background-sequences)')
+    parser.add_argument( '--max-iter', type=float, default=1e5,
+                         help='Maximum number of optimization iterations.')
+    parser.add_argument( '--partition-background-seqs', 
+                         default=False, action='store_true',
+        help='Use a subset of bnackground sequences to calculate the partition function (not recommended).')
+    parser.add_argument( '--lhd-convergence-eps', type=float, default=1e-8,
+                         help='Convergence tolerance for lhd change.')
 
     parser.add_argument( '--verbose', default=False, action='store_true',
                          help='Print extra status information.')
@@ -269,16 +271,7 @@ def parse_arguments():
     if args.starting_energy_model is not None: 
         args.starting_energy_model.close()
 
-    return motif, rnds_and_seqs, background_seqs
-
-def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
-    pwm = np.zeros((4, ddg_array.motif_len), dtype=float)
-    mean_energy = ref_energy + chem_pot + ddg_array.mean_energy
-    for i, base_energies in enumerate(ddg_array.calc_base_contributions()):
-        base_mut_energies = mean_energy + base_energies.mean() - base_energies 
-        occs = logistic(base_mut_energies)
-        pwm[:,i] = occs/occs.sum()
-    return pwm
+    return motif, rnds_and_seqs, background_seqs, args.partition_background_seqs
 
 def sample_random_seqs(n_sims, seq_len):
     return ["".join(random.choice('ACGT') for j in xrange(seq_len))
@@ -326,7 +319,9 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
     seq_len = coded_seqs.shape[2]
     if coded_bg_seqs == None:
         coded_bg_seqs = sample_random_coded_seqs(coded_seqs.shape[0], seq_len)
-    
+
+    ### Code to downsample - I dont think that we want this but the 
+    ### entropy calculation isn't perfect so Ill leave it
     #sample_size = min(coded_seqs.shape[0], coded_bg_seqs.shape[0])
     #coded_seqs = coded_seqs[
     #    np.random.choice(coded_seqs.shape[0], sample_size),:,:]
@@ -361,38 +356,23 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
         return 'RIGHT'
     return 'LEFT'
 
-def test_RC_equiv():
-    """Make sure that the RC function works correctly.
-    
-    """
-    seq = 'GCGAATACC'
-    coded_seq = code_seq(seq)
-    RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
-    RC_seq = "".join(RC_map[x] for x in seq[::-1])
-    coded_RC_seq = code_seq(RC_seq)
-    
-    print coded_seq
-    print coded_RC_seq
-    print calc_binding_site_energies(coded_seq[None,(1,2,3),:], ddg_array)
-    print calc_binding_site_energies(coded_RC_seq[None, (1,2,3),:], ddg_array)[:,::-1]
-    energy_diff, RC_ddg_array = ddg_array.reverse_complement()
-    print energy_diff + calc_binding_site_energies(coded_seq[None, (1,2,3),:], RC_ddg_array)
-    #print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
-    return
-
-    pass
-
 def fit_model(rnds_and_seqs, background_seqs, 
               ddg_array, ref_energy, 
-              dna_conc, prot_conc):
+              dna_conc, prot_conc,
+              partition_background_seqs):
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
-        rnds_and_seqs)
-    partitioned_and_coded_bg_seqs = PartitionedAndCodedSeqs(
-        {0: background_seqs}, 
-        ( 1 if USE_FULL_BG_FOR_PART_FN else 
-          partitioned_and_coded_rnds_and_seqs.n_partitions )
+        rnds_and_seqs, 
+        background_seqs, 
+        use_full_background_for_part_fn=(not partition_background_seqs)
     )
+
+    #
+    #partitioned_and_coded_bg_seqs = PartitionedAndCodedSeqs(
+    #    {0: background_seqs}, 
+    #    ( 1 if USE_FULL_BG_FOR_PART_FN else 
+    #      partitioned_and_coded_rnds_and_seqs.n_partitions )
+    #)
     
     opt_path = []
     prev_lhd = None
@@ -400,8 +380,8 @@ def fit_model(rnds_and_seqs, background_seqs,
         bs_len = ddg_array.motif_len
         prev_lhd = calc_log_lhd(
             ref_energy, ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.validation,
-            partitioned_and_coded_bg_seqs.validation[0],
+            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
         
@@ -409,10 +389,8 @@ def fit_model(rnds_and_seqs, background_seqs,
         ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
-                partitioned_and_coded_bg_seqs,
                 ddg_array, ref_energy,
-                dna_conc, prot_conc,
-                USE_FULL_BG_FOR_PART_FN)
+                dna_conc, prot_conc)
 
         pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
         pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
@@ -426,8 +404,8 @@ def fit_model(rnds_and_seqs, background_seqs,
         new_lhd = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.validation,
-            partitioned_and_coded_bg_seqs.validation[0],
+            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
             dna_conc,
             prot_conc)
 
@@ -445,10 +423,9 @@ def fit_model(rnds_and_seqs, background_seqs,
         
         pyTFbindtools.log("Finding best shift", 'VERBOSE')
         shift_type = find_best_shift(
-            partitioned_and_coded_rnds_and_seqs.validation[max(
-                partitioned_and_coded_rnds_and_seqs.validation.keys())],
+            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
             ddg_array,
-            partitioned_and_coded_bg_seqs.validation[0])
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
         if shift_type == None:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
             break
@@ -471,12 +448,15 @@ def fit_model(rnds_and_seqs, background_seqs,
     return ddg_array, ref_energy
     
 def main():
-    motif, rnds_and_seqs, background_seqs = parse_arguments()
+    (motif, rnds_and_seqs, background_seqs, partition_background_seqs
+     ) = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
     ddg_array_hat, ref_energy_hat = fit_model(
         rnds_and_seqs, background_seqs, 
         ddg_array, ref_energy,
-        jolma_dna_conc, jolma_prot_conc)
+        jolma_dna_conc, jolma_prot_conc,
+        partition_background_seqs
+    )
     
     with open(motif.name + ".SELEX.txt", "w") as ofp:
         write_output(motif, ddg_array_hat, ref_energy_hat, ofp)

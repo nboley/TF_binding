@@ -39,6 +39,15 @@ SelexModel = namedtuple('SelexModel', [
 #    os.path.dirname(__file__), 
 #    "../data/motifs/human_and_mouse_motifs.pickle.obj")
 
+def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
+    pwm = np.zeros((4, ddg_array.motif_len), dtype=float)
+    mean_energy = ref_energy + chem_pot + ddg_array.mean_energy
+    for i, base_energies in enumerate(ddg_array.calc_base_contributions()):
+        base_mut_energies = mean_energy + base_energies.mean() - base_energies 
+        occs = logistic(base_mut_energies)
+        pwm[:,i] = occs/occs.sum()
+    return pwm
+
 def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
@@ -370,6 +379,7 @@ class Motif():
         
         self.build_occupancy_weights()
         return
+
 
 def load_motif_from_text(text):
     # load the motif data
