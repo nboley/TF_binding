@@ -1,5 +1,5 @@
 import os
-
+import numpy as np
 from pysam import FastaFile
 
 from rSeqDNN import init_prediction_script_argument_parser
@@ -21,6 +21,8 @@ def parse_args():
     parser.add_argument('--only-test-one-fold', 
                         default=False, action='store_true',
         help='Only evaluate on a single cross validation fold.')
+    parser.add_argument('--random-seed', type=int, default=1701,
+                    help='random seed. 1701 by default.')
 
     args = parser.parse_args()
     
@@ -58,7 +60,8 @@ def parse_args():
              genome_fasta, 
              args.model_prefix, 
              args.only_test_one_fold,
-             args.skip_ambiguous_peaks)
+             args.skip_ambiguous_peaks,
+             args.random_seed)
 
 import cPickle as pickle
 
@@ -67,8 +70,10 @@ def main():
       genome_fasta, 
       model_ofname_prefix, 
       only_test_one_fold,
-      skip_ambiguous_peaks
+      skip_ambiguous_peaks,
+      random_seed
     ) = parse_args()
+    np.random.seed(random_seed) # fix random seed
     model = KerasModel(peaks_and_labels)
     results = ClassificationResults()
     for fold_index, (train, valid) in enumerate(
