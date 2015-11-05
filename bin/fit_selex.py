@@ -15,9 +15,8 @@ import pyTFbindtools.selex
 from pyTFbindtools.selex.log_lhd import calc_log_lhd, calc_binding_site_energies
 
 from pyTFbindtools.selex import (
-    find_pwm, code_seq, code_seqs, code_RC_seqs, calc_occ,
+    find_pwm, 
     estimate_dg_matrix_with_adadelta,
-    find_pwm_from_starting_alignment,
     PartitionedAndCodedSeqs)
 from pyTFbindtools.motif_tools import (
     build_pwm_from_energies,
@@ -253,6 +252,7 @@ def parse_arguments():
         args.background_sequences, 
         args.max_num_seqs_per_file, 
         args.min_num_background_sequences)
+    
     # close the sequence files
     for fp in args.selex_files: fp.close()
     if args.background_sequences is not None: args.background_sequences.close()

@@ -18,7 +18,7 @@ import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
-from pyTFbindtools.sequence import code_seq
+from pyTFbindtools.sequence import one_hot_encode_sequences, code_seq
 from log_lhd import calc_log_lhd
 
 PARTITION_FN_SAMPLE_SIZE = 10000
@@ -148,43 +148,14 @@ def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
     """
     if n_seqs == None: n_seqs = len(seqs)
 
-    # leave 3 rows for each sequence base, and 6 for the shape params
-    len_per_base = 3
-    if USE_SHAPE:
-        len_per_base += 6
-
-    coded_seqs = np.zeros((n_seqs, len_per_base, seq_len), dtype='float32')
-    for i, seq in enumerate(seqs):
-        # code seq, and then toss the A and N rows
-        coded_seq = code_seq(seq)
-        # ignore the A and N rows
-        coded_seqs[i,:,:] = coded_seq[(1,2,3),:]
-    return coded_seqs
-
-def code_RC_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
-    """Load SELEX data and encode all the subsequences. 
-
-    """
-    if n_seqs == None: n_seqs = len(seqs)
-
-    # leave 3 rows for each sequence base, and 6 for the shape params
-    len_per_base = 3
-    if USE_SHAPE:
-        len_per_base += 6
-
-    coded_seqs = np.zeros((n_seqs, len_per_base, seq_len), dtype='float32')
-    for i, seq in enumerate(seqs):
-        # code seq, and then toss the A and N rows
-        coded_seq = code_seq(seq)
-        # ignore the A and N rows
-        coded_seqs[i,:,:] = np.fliplr(np.flipud(coded_seq[:4,:]))[(1,2,3),:]
-    return coded_seqs
-
-
-    #if ON_GPU:
-    #    return theano.shared(coded_seqs)
-    #else:
-    #    return coded_seqs
+    coded_seqs = one_hot_encode_sequences(seqs)
+    # remove the a's row
+    coded_seqs = coded_seqs[:,:,(1,2,3)]
+    assert coded_seqs.shape[1] == seq_len
+    # swap the axes so that the array is in sequence-base-position order
+    coded_seqs = np.swapaxes(coded_seqs, 1, 2)
+    # return a copy to make sure that we're not passing a (slow) view around 
+    return coded_seqs.copy()
 
 def find_consensus_bind_site(seqs, bs_len):
     # produce and initial alignment from the last round
