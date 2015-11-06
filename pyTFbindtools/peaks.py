@@ -23,7 +23,8 @@ def getFileHandle(filename, mode="r"):
 
 NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 
-                   'score', 'signalValue', 'pValue', 'qValue', 'idrValue'])
+                   'score', 'signalValue', 'pValue', 'qValue', 'idrValue', 'seq'])
+NarrowPeakData.__new__.__defaults__ = (None,) * len(NarrowPeakData._fields)
 
 class NarrowPeak(NarrowPeakData):
     @property
@@ -87,6 +88,16 @@ class PeaksAndLabels():
     def max_peak_width(self):
         return max(self.peak_widths)
     
+    @property
+    def can_use_seq(self):
+        '''
+        checks all peak sequences match peak width
+        '''
+        if all([pk.seq is not None for pk in self.peaks]):
+            return all([len(pk.seq)==pk.pk_width for pk in self.peaks])
+        else:
+            return False
+
     def __init__(self, peaks_and_labels):
         # split the peaks and labels into separate columns. Also
         # keep track of the distinct samples and contigs
@@ -192,10 +203,11 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
         except IndexError: qValue = -1.0
         # idr Value's dont exist in narrowPeakFiles
         idrValue = -1.0
+        seq = ''
         
         yield NarrowPeak(
             chrm, start, stop, summit, 
-            score, signalValue, pValue, qValue, idrValue)
+            score, signalValue, pValue, qValue, idrValue, seq)
 
     return
 
@@ -211,6 +223,53 @@ def load_labeled_peaks_from_beds(
             yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
     return PeaksAndLabels(iter_all_pks())
 
+def iter_fasta(fp, max_n_peaks=None):
+    '''
+    convert fasta data into NarrowPeak
+    organize into 5 contigs for cv runs
+    '''
+    if isinstance(fp, str):
+        raise ValueError, "Expecting filepointer"
+    
+    all_lines = [line for line in fp]
+    if max_n_peaks<len(all_lines):
+        num_peaks = len(all_lines)
+    else:
+        num_peaks = max_n_peaks
+    num_folds = 10
+    fold_index = 1
+    for i, line in enumerate(all_lines):
+        if line.startswith("seqName") or line.startswith("id"): continue
+        if max_n_peaks != None and i > max_n_peaks: 
+            break
+        data = line.split()
+        seq = data[1]
+        chrm = str(fold_index)
+        start = 0
+        stop = len(seq)
+        summit = int((stop-start)/2)
+        score = -1.0
+        signalValue = -1.0
+        pValue = -1.0
+        qValue = -1.0
+        idrValue = -1.0
+        if i > 1.*num_peaks/num_folds*fold_index:
+            fold_index += 1
+        yield NarrowPeak(
+            chrm, start, stop, summit, 
+            score, signalValue, pValue, qValue, idrValue, seq)
+
+def load_labeled_peaks_from_fastas(
+        pos_sequences_fp, neg_sequences_fp,
+        half_peak_width=None):
+    def iter_all_seqs():        
+        for pos_pk in iter_fasta(pos_sequences_fp):
+            assert pos_pk.pk_width==len(pos_pk.seq)
+            yield PeakAndLabel(pos_pk, 'sample', 1, pos_pk.signalValue)
+        for neg_pk in iter_fasta(neg_sequences_fp):
+            assert neg_pk.pk_width==len(neg_pk.seq)
+            yield PeakAndLabel(neg_pk, 'sample', -1, neg_pk.signalValue)
+    return PeaksAndLabels(iter_all_seqs())
 
 chipseq_peaks_tabix_file_cache = {}
 def label_and_score_peak_with_chipseq_peaks(
