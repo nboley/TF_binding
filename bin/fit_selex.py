@@ -3,26 +3,21 @@ import gzip
 import random
 
 from itertools import izip, chain
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 import numpy as np
-from scipy.stats import ttest_ind
 
 import pyTFbindtools
 
 import pyTFbindtools.selex
 
-from pyTFbindtools.selex.log_lhd import calc_log_lhd, calc_binding_site_energies
-
 from pyTFbindtools.selex import (
-    find_pwm, 
-    estimate_dg_matrix_with_adadelta,
-    PartitionedAndCodedSeqs)
+    progressively_fit_model, find_pwm, sample_random_seqs )
+
 from pyTFbindtools.motif_tools import (
     build_pwm_from_energies,
     load_energy_data, load_motifs, load_motif_from_text,
-    Motif, R, T,
-    DeltaDeltaGArray)
+    Motif)
 
 """
 SELEX and massively parallel sequencing  
@@ -77,6 +72,105 @@ jolma_prot_conc = jolma_dna_conc/25 # mol/L (should be 25)
 USE_FULL_BG_FOR_PART_FN = True
 DEFAULT_MIN_NUM_BG_SEQS = 100000
 
+def optional_gzip_open(fname):
+    return gzip.open(fname) if fname.endswith(".gz") else open(fname)  
+
+def get_experiment_to_process_from_DB_queue(host, dbname, user):
+    """XXX Untested
+
+    """
+    raise NotImplementedError, "This function is old and untested"
+    conn = psycopg2.connect(
+        "host=%s dbname=%s user=%s" % (host, dbname, user))
+    cur = conn.cursor()
+    query = """
+    LOCK TABLE pending_selex_experiment IN ACCESS EXCLUSIVE MODE;
+    SELECT * FROM pending_selex_experiment LIMIT 1;
+    """
+    cur.execute(query)
+    exp_ids = [x[0] for x in cur.fetchall()]
+    if len(exp_ids) == 0:
+        conn.commit()
+        return None
+    else:
+        exp_id = int(exp_ids[0])
+        query = "DELETE FROM pending_selex_experiment WHERE selex_exp_id = '%s'"
+        cur.execute(query, [exp_id,])
+        conn.commit()
+        return SelexDBConn(host, dbname, user, exp_id)
+
+
+class SelexDBConn(object):
+    def __init__(self, host, dbname, user, exp_id):
+        import psycopg2
+        self.conn = psycopg2.connect(
+            "host=%s dbname=%s user=%s" % (host, dbname, user))
+        self.exp_id = exp_id
+        return
+
+    def insert_model_into_db(
+            self, ref_energy, ddg_array, validation_lhd):
+        motif_len = ddg_array.motif_len
+        consensus_energy, base_contributions = ddg_array.calc_normalized_base_conts(ref_energy)
+        cur = self.conn.cursor()    
+        query = """
+        INSERT INTO new_selex_models
+          (selex_exp_id, motif_len, consensus_energy, ddg_array, validation_lhd)
+          VALUES 
+          (%s, %s, %s, %s, %s) 
+        RETURNING key
+        """
+        cur.execute(query, (
+            self.exp_id, 
+            motif_len, 
+            float(consensus_energy), 
+            base_contributions.tolist(),
+            float(validation_lhd)
+        ))
+        self.conn.commit()
+        return
+
+    def get_fnames(self):
+        cur = self.conn.cursor()
+        query = """
+        SELECT rnd, primer, fname 
+          FROM selex_round
+         WHERE selex_exp_id = '%i'
+         ORDER BY rnd;
+        """
+        cur.execute(query % self.exp_id)
+        primers = set()
+        fnames = {}
+        for rnd, primer, fname in cur.fetchall():
+            fnames[int(rnd)] = fname
+            primers.add(primer)
+        
+        assert len(primers) == 1
+        primer = list(primers)[0]
+        query = """
+        SELECT fname 
+          FROM selex_background_sequences
+         WHERE primer = '%s';
+        """
+        cur.execute(query % primer)
+        res = cur.fetchall()
+        assert len(res) == 1
+        bg_fname = res[0][0]
+        
+        return fnames, bg_fname
+
+    def get_dna_and_prot_conc(self):
+        cur = self.conn.cursor()
+        query = """
+        SELECT dna_conc, prot_conc 
+          FROM selex_round
+         WHERE selex_exp_id = '%i';
+        """
+        cur.execute(query % self.exp_id)
+        concs = set(cur.fetchall())
+        assert len(concs) == 1
+        return concs.pop()
+
 def load_text_file(fp, maxnum=1e8):
     seqs = []
     for i, line in enumerate(fp):
@@ -98,16 +192,22 @@ def load_sequences(fnames, max_num_seqs_per_file=1e8):
     rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
     rnds_and_fnames = dict(zip(rnd_nums, fnames))
     for rnd, fname in rnds_and_fnames.iteritems():
-        opener = gzip.open if fname.endswith(".gz") else open  
-        with opener(fname) as fp:
+        with optional_gzip_open(fname) as fp:
             loader = load_fastq if ".fastq" in fname else load_text_file
             rnds_and_seqs[rnd] = loader(fp, max_num_seqs_per_file)
     return rnds_and_seqs
 
-def load_sequence_data(seq_fps, 
+def load_sequence_data(selex_db_conn,
+                       seq_fps,
                        background_seq_fp, 
                        max_num_seqs_per_file, 
                        min_num_background_sequences):
+    if selex_db_conn is not None:
+        assert seq_fps is None and background_seq_fp is None
+        fnames, bg_fname = selex_db_conn.get_fnames()
+        seq_fps = [ optional_gzip_open(fname) for fname in fnames.values() ]
+        background_seq_fp = optional_gzip_open(bg_fname)
+
     pyTFbindtools.log("Loading sequences", 'VERBOSE')
     rnds_and_seqs = load_sequences(
         (x.name for x in seq_fps), max_num_seqs_per_file)
@@ -121,10 +221,7 @@ def load_sequence_data(seq_fps,
     
     background_seqs = None
     if background_seq_fp is not None:
-        opener = ( gzip.open 
-                   if background_seq_fp.name.endswith(".gz") 
-                   else open  )
-        with opener(background_seq_fp.name) as fp:
+        with optional_gzip_open(background_seq_fp.name) as fp:
             background_seqs = load_fastq(fp, max_num_seqs_per_file)
     else:
         background_seqs = sample_random_seqs(
@@ -200,33 +297,39 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='Estimate energy models from a SELEX experiment.')
 
-    parser.add_argument( '--selex-files', nargs='+', type=file, required=True,
+    parser.add_argument( '--experiment-id', type=int,
+        help='Use SELEX files associated with this experiment ID and put fit models into the DB.')
+    
+    parser.add_argument( '--selex-files', nargs='+', type=file,
                          help='Files containing SELEX reads.')
     parser.add_argument( '--background-sequences', type=file, 
         help='File containing reads sequenced from round 0.')
-    parser.add_argument( '--min-num-background-sequences', 
-                         type=int, default=DEFAULT_MIN_NUM_BG_SEQS,
-        help='Minimum number of background sequences (if less than %i are provided we simulate additional background sequences)' % DEFAULT_MIN_NUM_BG_SEQS
-    )
+    parser.add_argument( '--ofname-prefix', type=str, 
+        help='Output filename prefix (if not set do not write output to file)')
 
     parser.add_argument( '--starting-pwm', type=file,
                          help='A PWM to start from.')
     parser.add_argument( '--starting-energy-model', type=file,
-                         help='An energy model to start from.')
+                         help='An energy model to start from.')    
+    
     parser.add_argument( '--initial-binding-site-len', type=int, default=6,
         help='The starting length of the binding site (this will grow)')
 
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
+
     parser.add_argument( '--max-num-seqs-per-file', type=int, default=1e8,
                          help='Only load the first --max-num-seqs-per-file per input file (useful for debugging - overwrites --min-num-background-sequences)')
     parser.add_argument( '--max-iter', type=float, default=1e5,
                          help='Maximum number of optimization iterations.')
+
+    parser.add_argument( '--min-num-background-sequences', 
+                         type=int, default=DEFAULT_MIN_NUM_BG_SEQS,
+        help='Minimum number of background sequences (if less than %i are provided we simulate additional background sequences)' % DEFAULT_MIN_NUM_BG_SEQS
+    )
     parser.add_argument( '--partition-background-seqs', 
                          default=False, action='store_true',
-        help='Use a subset of bnackground sequences to calculate the partition function (not recommended).')
-    parser.add_argument( '--lhd-convergence-eps', type=float, default=1e-8,
-                         help='Convergence tolerance for lhd change.')
+        help='Use a subset of background sequences to calculate the partition function (not recommended).')
 
     parser.add_argument( '--verbose', default=False, action='store_true',
                          help='Print extra status information.')
@@ -234,28 +337,42 @@ def parse_arguments():
                          help='Print debug information.')
     
     args = parser.parse_args()
-    assert not (args.starting_pwm and args.starting_energy_model), \
+    assert not (args.starting_pwm is not None and args.starting_energy_model is not None), \
             "Can not set both --starting-pwm and --starting-energy_model"
+    
+    assert not (args.experiment_id is not None and args.selex_files is not None), \
+            "Can not set both --experiment-id and --selex-files"    
+    assert not (args.experiment_id is not None and args.background_sequences is not None), \
+            "Can not set both --experiment-id and --background-sequences"    
 
+    assert (args.experiment_id is not None or args.ofname_prefix is not None), \
+        "Must either set an experiment id to write results to the DB, or specify an output filename prefix"
+    
     pyTFbindtools.VERBOSE = args.verbose or args.debug_verbose
     pyTFbindtools.DEBUG = args.debug_verbose
 
-    pyTFbindtools.selex.CONVERGENCE_MAX_LHD_CHANGE = args.lhd_convergence_eps
     pyTFbindtools.selex.MAX_NUM_ITER = int(args.max_iter)
         
-    if args.random_seed != None:
+    if args.random_seed is not None:
         np.random.seed(args.random_seed)
 
+    if args.experiment_id is not None:
+        selex_db_conn = SelexDBConn(
+            'mitra', 'cisbp', 'nboley', args.experiment_id)
+    
     # parse the sequence data files
     rnds_and_seqs, background_seqs = load_sequence_data(
+        selex_db_conn,
         args.selex_files, 
         args.background_sequences, 
         args.max_num_seqs_per_file, 
         args.min_num_background_sequences)
     
     # close the sequence files
-    for fp in args.selex_files: fp.close()
-    if args.background_sequences is not None: args.background_sequences.close()
+    if args.selex_files is not None:
+        for fp in args.selex_files: fp.close()
+    if args.background_sequences is not None: 
+        args.background_sequences.close()
 
     # load a starting motif, default to a search for the most over expressed 
     # sub-sequence if no starting model is provided
@@ -264,203 +381,64 @@ def parse_arguments():
         args.starting_energy_model,
         rnds_and_seqs,
         args.initial_binding_site_len, 
-        factor_name="TEST")
+        factor_name=args.ofname_prefix)
     # close the starting motif files
     if args.starting_pwm is not None: 
         args.starting_pwm.close()
     if args.starting_energy_model is not None: 
         args.starting_energy_model.close()
 
-    return motif, rnds_and_seqs, background_seqs, args.partition_background_seqs
+    return ( motif, 
+             rnds_and_seqs, background_seqs, 
+             selex_db_conn, 
+             args.partition_background_seqs )
 
-def sample_random_seqs(n_sims, seq_len):
-    return ["".join(random.choice('ACGT') for j in xrange(seq_len))
-            for i in xrange(n_sims)]
-
-def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
-    def find_flanking_base_cnts(seqs, base_offset):
-        # calculate the ddg energies for all binding sites. We use this to align
-        # the binding sities within the sequences
-        # find the index of the best offset
-        energies = calc_binding_site_energies(seqs, ddg_array)
-        best_offsets = np.argmin(energies, 1)
-
-        ## find the binding sites which align to the sequence boundary. We must 
-        ## remove these because the flanking sequence is not random, and so it
-        ## will bias the results
-        # deal with left shifts
-        if base_offset > 0:
-            base_offset += (ddg_array.motif_len - 1)
-        base_indices = best_offsets + base_offset
-        # find which offsets fit inside of the random portion of the sequence
-        valid_indices = (base_indices > 0)&(base_indices < seq_len)
-        base_cnts = seqs[
-            valid_indices,:,base_indices[valid_indices]].sum(0)
-        # add in the A counts
-        base_cnts = np.insert(
-            base_cnts, 0, valid_indices.sum()-base_cnts.sum())
-        return base_cnts
-
-    def calc_entropy(cnts):
-        if len(cnts.shape) == 1: cnts = cnts[None,:]
-        ps = np.array(cnts+1, dtype=float)/(cnts.sum(1)+4)[:,None]
-        return -(ps*np.log(ps+1e-6)).sum(1)
-    
-    def estimate_entropy_significance(cnts, bg_cnts, n_samples=100000):
-        bg_samples = np.random.multinomial(
-            bg_cnts.sum(), (1.0+bg_cnts)/(bg_cnts.sum()+4.0), n_samples)
-        obs_samples = np.random.multinomial(
-            cnts.sum(), (1.0+cnts)/(cnts.sum()+4.0), n_samples)
-        stat, p_value = ttest_ind(
-            calc_entropy(bg_samples),
-            calc_entropy(obs_samples)) 
-        return stat, p_value
-
-    seq_len = coded_seqs.shape[2]
-    if coded_bg_seqs == None:
-        coded_bg_seqs = sample_random_coded_seqs(coded_seqs.shape[0], seq_len)
-
-    ### Code to downsample - I dont think that we want this but the 
-    ### entropy calculation isn't perfect so Ill leave it
-    #sample_size = min(coded_seqs.shape[0], coded_bg_seqs.shape[0])
-    #coded_seqs = coded_seqs[
-    #    np.random.choice(coded_seqs.shape[0], sample_size),:,:]
-    #coded_bg_seqs = coded_bg_seqs[
-    #    np.random.choice(coded_bg_seqs.shape[0], sample_size),:,:]
-    
-    entropies_and_offsets = []
-    for offset in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
-                        xrange(1,min(4, seq_len-ddg_array.motif_len))):
-        cnts = find_flanking_base_cnts(coded_seqs, offset)
-        bg_cnts = find_flanking_base_cnts(coded_bg_seqs, offset)
-        t_stat, p_value = estimate_entropy_significance(cnts, bg_cnts)
-        entropies_and_offsets.append(
-            (-t_stat, 
-             p_value, 
-             offset, 
-             calc_entropy(cnts)[0], 
-             calc_entropy(bg_cnts)[0]))
-    entropies_and_offsets.sort()
-
-    for x in entropies_and_offsets:
-        print x
-    print
-    
-    if len(entropies_and_offsets) == 0:
-        return None
-
-    if entropies_and_offsets[0][0] > 0 or entropies_and_offsets[0][1] > 0.05:
-        return None
-    
-    if entropies_and_offsets[0][2] > 0:
-        return 'RIGHT'
-    return 'LEFT'
 
 def fit_model(rnds_and_seqs, background_seqs, 
               ddg_array, ref_energy, 
               dna_conc, prot_conc,
-              partition_background_seqs):
-    pyTFbindtools.log("Coding sequences", 'VERBOSE')
-    partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
-        rnds_and_seqs, 
-        background_seqs, 
-        use_full_background_for_part_fn=(not partition_background_seqs)
-    )
-
-    #
-    #partitioned_and_coded_bg_seqs = PartitionedAndCodedSeqs(
-    #    {0: background_seqs}, 
-    #    ( 1 if USE_FULL_BG_FOR_PART_FN else 
-    #      partitioned_and_coded_rnds_and_seqs.n_partitions )
-    #)
+              partition_background_seqs,
+              selex_db_conn=None,
+              output_fname_prefix=None):
+    assert selex_db_conn is not None or output_fname_prefix is not None
     
-    opt_path = []
-    prev_lhd = None
-    while True:
-        bs_len = ddg_array.motif_len
-        prev_lhd = calc_log_lhd(
-            ref_energy, ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
-            dna_conc, prot_conc)
-        pyTFbindtools.log("Starting lhd: %.2f" % prev_lhd, 'VERBOSE')
+    for mo in progressively_fit_model(
+            rnds_and_seqs, background_seqs, 
+            ddg_array, ref_energy, 
+            dna_conc, prot_conc,
+            partition_background_seqs
+        ):
         
-        pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, lhd_path, lhd_hat 
-            ) = estimate_dg_matrix_with_adadelta(
-                partitioned_and_coded_rnds_and_seqs,
-                ddg_array, ref_energy,
-                dna_conc, prot_conc)
-
-        pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
-        pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
-        pyTFbindtools.log(
-            "Mean: %s" % (ref_energy + ddg_array.sum()/3), 'VERBOSE')
-        pyTFbindtools.log(
-            "Min: %s" % ddg_array.calc_min_energy(ref_energy), 'VERBOSE')
-        pyTFbindtools.log(
-            str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
-
-        new_lhd = calc_log_lhd(
-            ref_energy, 
-            ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
-            dna_conc,
-            prot_conc)
-
-        opt_path.append([bs_len, new_lhd, ddg_array, ref_energy])
-
-        pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
-            prev_lhd, new_lhd, new_lhd-prev_lhd), 'VERBOSE')
-
-        with open("FITMO.BSLEN%i.txt" % bs_len, "w") as ofp:
-            write_output("UNKNOWN", ddg_array, ref_energy, ofp)
+        if selex_db_conn != None:
+            selex_db_conn.insert_model_into_db(
+                mo.ref_energy, mo.ddg_array, mo.new_validation_lhd)
         
-        if ( bs_len >= 20 
-             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
-            break
-        
-        pyTFbindtools.log("Finding best shift", 'VERBOSE')
-        shift_type = find_best_shift(
-            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
-            ddg_array,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
-        if shift_type == None:
-            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
-            break
-            
-        if shift_type == 'LEFT':
-            pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-            ddg_array = np.hstack((np.zeros((3,1), dtype='float32'), ddg_array)
-                              ).view(DeltaDeltaGArray)
-        elif shift_type == 'RIGHT':
-            pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-            ddg_array = np.hstack((ddg_array, np.zeros((3,1), dtype='float32'))).view(
-                DeltaDeltaGArray)
-        else:
-            assert False, "Unrecognized shift type '%s'" % shift_type
-        ref_energy = ref_energy
-        
-    for entry in opt_path:
-        print entry
+        if output_fname_prefix != None:
+            ofname = "%s.FITMO.BSLEN%i.txt" % (
+                output_fname_prefix, mo.ddg_array.motif_len)
+            with open(ofname, "w") as ofp:
+                write_output(
+                    output_fname_prefix, mo.ddg_array, mo.ref_energy, ofp)
+
     
-    return ddg_array, ref_energy
+    return
     
 def main():
-    (motif, rnds_and_seqs, background_seqs, partition_background_seqs
+    ( motif, 
+      rnds_and_seqs, background_seqs, 
+      selex_db_conn, 
+      partition_background_seqs
      ) = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
     ddg_array_hat, ref_energy_hat = fit_model(
         rnds_and_seqs, background_seqs, 
         ddg_array, ref_energy,
         jolma_dna_conc, jolma_prot_conc,
-        partition_background_seqs
+        partition_background_seqs,
+        selex_db_conn,
+        motif.factor
     )
-    
-    with open(motif.name + ".SELEX.txt", "w") as ofp:
-        write_output(motif, ddg_array_hat, ref_energy_hat, ofp)
-    
+        
     # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32
     return
 

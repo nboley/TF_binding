@@ -1,5 +1,6 @@
 import os, sys
 import math
+import random
 
 from itertools import izip, chain
 
@@ -8,22 +9,20 @@ from collections import defaultdict, namedtuple
 import numpy as np
 np.random.seed(0)
 
-import theano
-
 from scipy.optimize import brentq, approx_fprime
+from scipy.stats import ttest_ind
 
-import random
+import theano
 
 import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
 from pyTFbindtools.sequence import one_hot_encode_sequences, code_seq
-from log_lhd import calc_log_lhd
+from log_lhd import calc_log_lhd, calc_binding_site_energies
 
 PARTITION_FN_SAMPLE_SIZE = 10000
 
-CONVERGENCE_MAX_LHD_CHANGE = None
 MAX_NUM_ITER = 10000
 
 CONSTRAIN_MEAN_ENERGY = True
@@ -406,3 +405,178 @@ def estimate_dg_matrix_with_adadelta(
         prot_conc)
 
     return ddg_array, ref_energy, validation_lhds, validation_lhd
+
+def sample_random_seqs(n_sims, seq_len):
+    return ["".join(random.choice('ACGT') for j in xrange(seq_len))
+            for i in xrange(n_sims)]
+
+def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
+    def find_flanking_base_cnts(seqs, base_offset):
+        # calculate the ddg energies for all binding sites. We use this to align
+        # the binding sities within the sequences
+        # find the index of the best offset
+        energies = calc_binding_site_energies(seqs, ddg_array)
+        best_offsets = np.argmin(energies, 1)
+
+        ## find the binding sites which align to the sequence boundary. We must 
+        ## remove these because the flanking sequence is not random, and so it
+        ## will bias the results
+        # deal with left shifts
+        if base_offset > 0:
+            base_offset += (ddg_array.motif_len - 1)
+        base_indices = best_offsets + base_offset
+        # find which offsets fit inside of the random portion of the sequence
+        valid_indices = (base_indices > 0)&(base_indices < seq_len)
+        base_cnts = seqs[
+            valid_indices,:,base_indices[valid_indices]].sum(0)
+        # add in the A counts
+        base_cnts = np.insert(
+            base_cnts, 0, valid_indices.sum()-base_cnts.sum())
+        return base_cnts
+
+    def calc_entropy(cnts):
+        if len(cnts.shape) == 1: cnts = cnts[None,:]
+        ps = np.array(cnts+1, dtype=float)/(cnts.sum(1)+4)[:,None]
+        return -(ps*np.log(ps+1e-6)).sum(1)
+    
+    def estimate_entropy_significance(cnts, bg_cnts, n_samples=100000):
+        bg_samples = np.random.multinomial(
+            bg_cnts.sum(), (1.0+bg_cnts)/(bg_cnts.sum()+4.0), n_samples)
+        obs_samples = np.random.multinomial(
+            cnts.sum(), (1.0+cnts)/(cnts.sum()+4.0), n_samples)
+        stat, p_value = ttest_ind(
+            calc_entropy(bg_samples),
+            calc_entropy(obs_samples)) 
+        return stat, p_value
+
+    seq_len = coded_seqs.shape[2]
+    if coded_bg_seqs == None:
+        coded_bg_seqs = sample_random_coded_seqs(coded_seqs.shape[0], seq_len)
+
+    ### Code to downsample - I dont think that we want this but the 
+    ### entropy calculation isn't perfect so Ill leave it
+    #sample_size = min(coded_seqs.shape[0], coded_bg_seqs.shape[0])
+    #coded_seqs = coded_seqs[
+    #    np.random.choice(coded_seqs.shape[0], sample_size),:,:]
+    #coded_bg_seqs = coded_bg_seqs[
+    #    np.random.choice(coded_bg_seqs.shape[0], sample_size),:,:]
+    
+    entropies_and_offsets = []
+    for offset in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
+                        xrange(1,min(4, seq_len-ddg_array.motif_len))):
+        cnts = find_flanking_base_cnts(coded_seqs, offset)
+        bg_cnts = find_flanking_base_cnts(coded_bg_seqs, offset)
+        t_stat, p_value = estimate_entropy_significance(cnts, bg_cnts)
+        entropies_and_offsets.append(
+            (-t_stat, 
+             p_value, 
+             offset, 
+             calc_entropy(cnts)[0], 
+             calc_entropy(bg_cnts)[0]))
+    entropies_and_offsets.sort()
+
+    pyTFbindtools.log("Shift\tentropy\tbg entropy:", 'VERBOSE')
+    for _, _, shift, bg_entropy, entropy in entropies_and_offsets:
+        pyTFbindtools.log(
+            "%i\t%.2e\t%.2e" % (shift, entropy, bg_entropy), 'VERBOSE')
+    
+    if len(entropies_and_offsets) == 0:
+        return None
+
+    if entropies_and_offsets[0][0] > 0 or entropies_and_offsets[0][1] > 0.05:
+        return None
+    
+    if entropies_and_offsets[0][2] > 0:
+        return 'RIGHT'
+    return 'LEFT'
+
+FitSelexModel = namedtuple("FitSelexModel", [
+    'ddg_array', 'ref_energy', 
+    'lhd_path', 'lhd_hat', 
+    'prev_validation_lhd', 'new_validation_lhd']
+)
+
+def progressively_fit_model(
+        rnds_and_seqs, background_seqs, 
+        ddg_array, ref_energy, 
+        dna_conc, prot_conc,
+        partition_background_seqs):
+    pyTFbindtools.log("Coding sequences", 'VERBOSE')
+    partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
+        rnds_and_seqs, 
+        background_seqs, 
+        use_full_background_for_part_fn=(not partition_background_seqs)
+    )
+    
+    while True:
+        bs_len = ddg_array.motif_len
+        prev_validation_lhd = calc_log_lhd(
+            ref_energy, ddg_array, 
+            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
+            dna_conc, prot_conc)
+        pyTFbindtools.log("Starting lhd: %.2f" % prev_validation_lhd, 'VERBOSE')
+        
+        pyTFbindtools.log("Estimating energy model", 'VERBOSE')
+        ( ddg_array, ref_energy, lhd_path, lhd_hat 
+            ) = estimate_dg_matrix_with_adadelta(
+                partitioned_and_coded_rnds_and_seqs,
+                ddg_array, ref_energy,
+                dna_conc, prot_conc)
+
+        pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
+        pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
+        pyTFbindtools.log(
+            "Mean: %s" % (ref_energy + ddg_array.sum()/3), 'VERBOSE')
+        pyTFbindtools.log(
+            "Min: %s" % ddg_array.calc_min_energy(ref_energy), 'VERBOSE')
+        pyTFbindtools.log(
+            str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
+
+        new_validation_lhd = calc_log_lhd(
+            ref_energy, 
+            ddg_array, 
+            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
+            dna_conc,
+            prot_conc)
+
+        pyTFbindtools.log("Prev: %.2f\tCurr: %.2f\tDiff: %.2f" % (
+            prev_validation_lhd, 
+            new_validation_lhd, 
+            new_validation_lhd-prev_validation_lhd
+        ), 'VERBOSE')
+
+        yield FitSelexModel( ddg_array, 
+                             ref_energy, 
+                             lhd_path, 
+                             lhd_hat, 
+                             prev_validation_lhd, 
+                             new_validation_lhd)
+        
+        if ( bs_len >= 20 
+             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+            break
+        
+        pyTFbindtools.log("Finding best shift", 'VERBOSE')
+        shift_type = find_best_shift(
+            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
+            ddg_array,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
+        if shift_type == None:
+            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
+            break
+            
+        if shift_type == 'LEFT':
+            pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
+            ddg_array = np.hstack((np.zeros((3,1), dtype='float32'), ddg_array)
+                              ).view(DeltaDeltaGArray)
+        elif shift_type == 'RIGHT':
+            pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
+            ddg_array = np.hstack((ddg_array, np.zeros((3,1), dtype='float32'))).view(
+                DeltaDeltaGArray)
+        else:
+            assert False, "Unrecognized shift type '%s'" % shift_type
+        ref_energy = ref_energy
+        
+    return
