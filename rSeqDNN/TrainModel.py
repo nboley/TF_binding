@@ -9,7 +9,8 @@ except:
     from __init__ import init_prediction_script_argument_parser
 
 from pyTFbindtools.peaks import (
-    load_labeled_peaks_from_beds, 
+    load_labeled_peaks_from_beds,
+    load_labeled_peaks_from_fastas,
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 )
 
@@ -56,10 +57,12 @@ def parse_args():
             load_genome_metadata(args.annotation_id).filename) 
     else:
         genome_fasta = args.genome_fasta
-    
+        
     if args.tf_id is not None:
         assert args.pos_regions is None and args.neg_regions is None, \
             "It doesnt make sense to set both --tf-id and either --pos-regions or --neg-regions"
+        assert args.pos_sequences is None and args.neg_sequences is None, \
+            "It doesnt make sense to set both --tf-id and either --pos-sequences or --neg-sequences"
         assert args.annotation_id is not None, \
             "--annotation-id must be set if --tf-id is set"
         assert args.genome_fasta is None, \
@@ -72,10 +75,20 @@ def parse_args():
             args.max_num_peaks_per_sample, 
             include_ambiguous_peaks=True)
     else:
-        assert args.pos_regions != None and args.neg_regions != None, \
-            "either --tf-id or both (--pos-regions and --neg-regions) must be set"
-        peaks_and_labels = load_labeled_peaks_from_beds(
+        if args.pos_regions != None:
+            assert args.neg_regions != None, \
+            "--neg-regions must be set"
+            peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
+        elif args.pos_sequences != None:
+            assert args.neg_sequences != None, \
+            "--neg-sequences must be set"
+            peaks_and_labels = load_labeled_peaks_from_fastas(
+                args.pos_sequences, args.neg_sequences, args.half_peak_width)
+        else:
+            raise ValueError('either --tf-id or (--pos-regions and --neg-regions)\
+            or (--pos-sequences and --neg-sequences) must be set')
+
     if args.command=='train':
         return ( peaks_and_labels, 
                  genome_fasta, 
@@ -145,11 +158,13 @@ def main():
                 train, 
                 genome_fasta, 
                 '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
-                use_model_file)
-
+                use_model_file,
+                train.can_use_seq)
+        
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid, 
             genome_fasta,
+            valid.can_use_seq,
             filter_ambiguous_labels=True)
         print "CLEAN:", clean_res
         clean_results.append(clean_res)
@@ -158,6 +173,7 @@ def main():
             res = fit_model.evaluate_peaks_and_labels(
                 valid, 
                 genome_fasta,
+                valid.can_use_seq,
                 filter_ambiguous_labels=False,
                 plot_fname=("ambig.fold%i.png" % fold_index))
             print "FULL:", res
