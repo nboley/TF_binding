@@ -7,7 +7,7 @@ import cPickle as pickle
 
 import numpy as np
 
-from pysam import TabixFile
+from pysam import Tabixfile
 
 from grit.lib.multiprocessing_utils import Counter
 
@@ -224,7 +224,7 @@ def label_and_score_peak_with_chipseq_peaks(
         try: 
             fp = chipseq_peaks_tabix_file_cache[(pid, fname)]
         except KeyError:
-            fp = TabixFile(fname)
+            fp = Tabixfile(fname)
             chipseq_peaks_tabix_file_cache[(pid, fname)] = fp
 
         # if the contig isn't in the contig list, then it
@@ -258,7 +258,8 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
-        include_ambiguous_peaks=False):
+        include_ambiguous_peaks=False,
+        order_by_accessibility=False):
     # put the import here to avoid errors if the database isn't available
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
@@ -292,7 +293,9 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         print "Loading peaks for sample '%s' (%i/%i)" % (
             sample_id, sample_index, len(peak_fnames))
         with getFileHandle(dnase_peaks_fname) as fp:
-            pks_iter = iter_narrow_peaks(fp)
+            pks_iter = list(iter_narrow_peaks(fp))
+            if order_by_accessibility:
+                pks_iter.sort(key=lambda x:-x.signalValue)
             if half_peak_width != None:
                 pks_iter = iter_summit_centered_peaks(pks_iter, half_peak_width)
             num_peaks = 0
@@ -327,15 +330,17 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         annotation_id,
         half_peak_width=None, 
         max_n_peaks_per_sample=None,
-        include_ambiguous_peaks=False):
+        include_ambiguous_peaks=False,
+        order_by_accessibility=False):
     """
     
     """
     # check for a pickled file int he current directory
-    pickle_fname = "peaks_and_label.%s.%s.%s.%s.obj" % (
+    pickle_fname = "peaks_and_label.%s.%s.%s.%s.%s.obj" % (
         tf_id, half_peak_width, 
         max_n_peaks_per_sample, 
-        include_ambiguous_peaks)
+        include_ambiguous_peaks,
+        order_by_accessibility)
     try:
         with open(pickle_fname) as fp:
             print "Using pickled peaks_and_labels from '%s'." % pickle_fname 
@@ -348,7 +353,8 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             annotation_id,
             half_peak_width, 
             max_n_peaks_per_sample, 
-            include_ambiguous_peaks))
+            include_ambiguous_peaks,
+            order_by_accessibility=order_by_accessibility))
     with open(pickle_fname, "w") as ofp:
         pickle.dump(peaks_and_labels, ofp)
     return peaks_and_labels

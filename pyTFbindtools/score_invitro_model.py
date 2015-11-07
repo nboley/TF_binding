@@ -1,3 +1,4 @@
+import sys
 import os
 import gzip
 import shutil
@@ -10,6 +11,7 @@ from collections import namedtuple
 import multiprocessing
 
 import numpy as np
+np.random.seed(0)
 from scipy.stats.mstats import mquantiles
 import pandas as pd
 
@@ -18,10 +20,12 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import ( 
     AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier )
 
-from pysam import FastaFile, TabixFile
+from pysam import Fastafile
 
 from grit.lib.multiprocessing_utils import (
     fork_and_wait, ThreadSafeFile, Counter )
+
+import pyTFbindtools
 
 from pyTFbindtools.peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
@@ -37,7 +41,6 @@ from pyTFbindtools.cross_validation import (
     ClassificationResults, 
     iter_train_validation_splits, 
     find_optimal_ambiguous_peak_threshold )
-
 
 NTHREADS = 1
 
@@ -181,31 +184,49 @@ class BindingModel():
         return ClassificationResult(
             labels, y_hat, y_hat_prbs)
 
+def evaluate_model_worker(args):
+    (train, 
+     validation, 
+     balance_data, 
+     validate_on_clean_labels, 
+     train_on_clean_labels) = args
+    
+    if balance_data:
+        train = train.balance_data()
+        validation = validation.balance_data()
+
+    if train_on_clean_labels:
+        train = train.remove_zero_labeled_entries()
+
+    if validate_on_clean_labels:
+        validation = validation.remove_zero_labeled_entries()
+
+    mo = BindingModel()
+    mo.train(train)
+    mo.classify_ambiguous_peaks(validation)
+    res = mo.evaluate(
+        validation.data[mo.predictors], validation.data[mo.label])
+    # can't use the logging with pool, so this is the hack 
+    if pyTFbindtools.DEBUG:
+        print >> sys.stderr, res
+    return res
+
 def estimate_cross_validated_error(
         data, 
         balance_data=False, 
         validate_on_clean_labels=False,
         train_on_clean_labels=True):
     res = ClassificationResults()
+    args = []
     for train, validation in data.iter_train_validation_data_subsets():
-        if balance_data:
-            train = train.balance_data()
-            validation = validation.balance_data()
-
-        if train_on_clean_labels:
-            train = train.remove_zero_labeled_entries()
-        
-        if validate_on_clean_labels:
-            validation = validation.remove_zero_labeled_entries()
-
-        mo = BindingModel()
-        mo.train(train)
-        mo.classify_ambiguous_peaks(validation)
-        res_summary = mo.evaluate(
-            validation.data[mo.predictors], validation.data[mo.label])
-        print res_summary
+        args.append([
+            train, validation, 
+            balance_data, validate_on_clean_labels, train_on_clean_labels
+        ])
+    from multiprocessing import Pool
+    p = Pool(NTHREADS)
+    for res_summary in p.map(evaluate_model_worker, args):
         res.append(res_summary)
-    
     return res
 
 def load_single_motif_data(fname):
@@ -257,7 +278,7 @@ class BuildPredictorsFactory(object):
 
 def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
     # reload the fasta file to make it thread safe
-    fasta = FastaFile(fasta.filename)
+    fasta = Fastafile(fasta.filename)
     while True:
         index = peak_cntr.return_and_increment()
         if index >= len(peaks): break
@@ -266,10 +287,11 @@ def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
             scores = build_predictors.build_summary_stats(
                 labeled_peak.peak, fasta)
         except Exception, inst: 
-            print "ERROR", inst
+            pyTFbindtools.log("ERROR" + str(inst))
             continue
         if index%50000 == 0:
-            print "%i/%i" % (index, len(peaks))
+            pyTFbindtools.log("Processed %i/%i peaks" % (index, len(peaks)), 
+                              'VERBOSE')
         ofp.write("%s_%s\t%s\t%.4f\t%.4f\t%s\n" % (
             labeled_peak.sample, 
             "_".join(str(x) for x in labeled_peak.peak).ljust(30), 
@@ -300,8 +322,15 @@ def parse_arguments():
     parser.add_argument( '--ofprefix', type=str, default='peakscores',
         help='Output file prefix (default peakscores)')
 
-    parser.add_argument( '--max-num-peaks-per-sample', type=int, 
-        help='the maximum number of peaks to parse for each sample (used for debugging)')
+    parser.add_argument( '--max-num-accessible-regions-per-sample', type=int, 
+        help='Choose the top --max-num-accessible-regions-per-sample accessible regions for each sample')
+    parser.add_argument( '--max-num-unordered-accessible-regions-per-sample', type=int, 
+        help='Randomly choose --max-num-peaks-per-sample peaks to classify for each sample (used for debugging)')
+
+    parser.add_argument( 
+        '--verbose', default=False, action='store_true') 
+    parser.add_argument( 
+        '--debug-verbose', default=False, action='store_true') 
 
     parser.add_argument( '--threads', '-t', default=1, type=int, 
         help='The number of threads to run.')
@@ -309,9 +338,15 @@ def parse_arguments():
     args = parser.parse_args()
     global NTHREADS
     NTHREADS = args.threads
+    pyTFbindtools.VERBOSE = (args.verbose or args.debug_verbose)
+    pyTFbindtools.DEBUG = (args.debug_verbose)
 
     annotation_id = 1
 
+    assert ( args.max_num_unordered_accessible_regions_per_sample is None 
+             or args.max_num_accessible_regions_per_sample is None), \
+        "Doesnt make sense to set both --max-num-accessible-regions-per-sample and --max-num-accessible-regions-per-sample accessible"
+    
     if args.selex_motif_id != None:
         motifs = load_selex_models_from_db(motif_ids=[args.selex_motif_id,])
     elif args.cisbp_motif_id != None:
@@ -320,45 +355,58 @@ def parse_arguments():
         assert False, "Must set either --selex-motif-id or --cisbp-motif-id"
     assert len(motifs) == 1
     motif = motifs[0]
-    print "Finished loading motifs."
+    pyTFbindtools.log("Finished loading motifs.", "VERBOSE")
 
-    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.txt.gz".format(
+    order_peaks_by_accessibility = False
+    num_peaks_per_sample = None
+    if args.max_num_unordered_accessible_regions_per_sample is not None:
+        assert args.max_num_accessible_regions_per_sample is None
+        num_peaks_per_sample = args.max_num_unordered_accessible_regions_per_sample
+        order_peaks_by_accessibility = False
+    elif args.max_num_accessible_regions_per_sample is not None:
+        assert args.max_num_unordered_accessible_regions_per_sample is None
+        num_peaks_per_sample = args.max_num_accessible_regions_per_sample
+        order_peaks_by_accessibility = True
+        
+    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{order_peaks}.txt.gz".format(
         prefix=args.ofprefix, 
         motif_id=motifs[0].motif_id,
         half_peak_width=args.half_peak_width,
-        max_peaks_per_sample=args.max_num_peaks_per_sample,
+        max_peaks_per_sample=num_peaks_per_sample,
+        order_peaks=order_peaks_by_accessibility
     )
     
     return (annotation_id, motif, ofname,
             args.half_peak_width,
             args.balance_data, 
             args.skip_ambiguous_peaks,
-            args.max_num_peaks_per_sample)
+            num_peaks_per_sample, order_peaks_by_accessibility)
 
 def open_or_create_feature_file(
         annotation_id, motif, ofname, 
         half_peak_width,  
-        max_n_peaks_per_sample=None):
+        max_n_peaks_per_sample,
+        order_by_accessibility):
     try:
         return open(ofname)
     except IOError:
-        print "Initializng peaks"
+        pyTFbindtools.log("Initializng peaks", "VERBOSE")
         
-        print "Creating feature file '%s'" % ofname
+        pyTFbindtools.log("Creating feature file '%s'" % ofname, 'VERBOSE')
         labeled_peaks = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             motif.tf_id, 
             annotation_id,
             half_peak_width=half_peak_width, 
             max_n_peaks_per_sample=max_n_peaks_per_sample,
-            include_ambiguous_peaks=True)
-        print "Finished loading peaks."
+            include_ambiguous_peaks=True,
+            order_by_accessibility=order_by_accessibility)
+        pyTFbindtools.log( "Finished loading peaks.", 'VERBOSE')
 
         from DB import load_genome_metadata
         fasta_fname = load_genome_metadata(annotation_id).filename
-        fasta = FastaFile(fasta_fname)
-        print "Finished initializing fasta."
+        fasta = Fastafile(fasta_fname)
+        pyTFbindtools.log( "Finished initializing fasta.", "VERBOSE")
 
-        
         peak_cntr = Counter()
         build_predictors = BuildPredictorsFactory([motif,])
         with ThreadSafeFile(ofname + ".TMP", 'w') as ofp:
@@ -376,14 +424,15 @@ def open_or_create_feature_file(
 def main():
     (annotation_id, motif, ofname, half_peak_width, 
      balance_data, validate_on_clean_labels,
-     max_num_peaks_per_sample
+     max_num_peaks_per_sample, order_by_accessibility
         ) = parse_arguments()
     # check to see if this file is cached. If not, create it
     feature_fp = open_or_create_feature_file(
         annotation_id, motif, ofname, 
         half_peak_width=half_peak_width,
-        max_n_peaks_per_sample=max_num_peaks_per_sample)
-    print "Loading feature file '%s'" % ofname
+        max_n_peaks_per_sample=max_num_peaks_per_sample,
+        order_by_accessibility=order_by_accessibility)
+    pyTFbindtools.log("Loading feature file '%s'" % ofname, "VERBOSE")
     data = load_single_motif_data(feature_fp.name)
     res = estimate_cross_validated_error(
         data, 
@@ -391,7 +440,7 @@ def main():
         validate_on_clean_labels=validate_on_clean_labels,
         train_on_clean_labels=True)
     
-    print res
+    pyTFbindtools.log( str(res) )
     with open(ofname + ".summary", "w") as ofp:
         print >> ofp, res.all_data
     return
