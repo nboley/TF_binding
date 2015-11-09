@@ -78,7 +78,7 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     cur = conn.cursor()    
     query = """
      SELECT tf_id,
-        format('SELEX_%%s', selex_models.key) AS motif_id,
+        format('SELEX_%%s', selex_motif_id) AS motif_id,
         tf_name,
         tf_species,
         consensus_energy,
