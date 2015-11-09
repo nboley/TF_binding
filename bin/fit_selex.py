@@ -430,7 +430,7 @@ def main():
       partition_background_seqs
      ) = parse_arguments()
     ref_energy, ddg_array = motif.build_ddg_array()
-    ddg_array_hat, ref_energy_hat = fit_model(
+    fit_model(
         rnds_and_seqs, background_seqs, 
         ddg_array, ref_energy,
         jolma_dna_conc, jolma_prot_conc,
