@@ -36,7 +36,7 @@ class NarrowPeak(NarrowPeakData):
 class Peaks(list):
     pass
 
-class PeaksAndLabelsThreadSafeIterator(object):
+class ThreadSafeIterator(object):
     def __init__(self, peaks_and_labels):
         self.peaks_and_labels = peaks_and_labels
         self.i = Counter()
@@ -52,6 +52,30 @@ class PeaksAndLabelsThreadSafeIterator(object):
         self._cur_val = i
         if i < self.n:
             return self.peaks_and_labels[i]
+        else:
+            raise StopIteration()
+
+class TrainValidationthreadSafeIterator(object):
+    def __init__(self, peaks_and_labels):
+        self.peaks_and_labels = peaks_and_labels
+        tr_valid_indices = list(iter_train_validation_splits(
+                self.sample_ids, self.contigs))
+        self.i = Counter()
+        self.n = len(tr_valid_indices)
+        self._cur_val = 0
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        i = self.i.return_and_increment()
+        print "="*1000
+        print i
+        self._cur_val = i
+        if i < self.n:
+            train_indices, valid_indices = self.tr_valid_indices[i]
+            return (self.peaks_and_labels.subset_data(*train_indices),
+                    self.peaks_and_labels.subset_data(*valid_indices))
         else:
             raise StopIteration()
 
@@ -130,10 +154,8 @@ class PeaksAndLabels():
             )
 
     def iter_train_validation_subsets(self):
-        for train_indices, valid_indices in iter_train_validation_splits(
-                self.sample_ids, self.contigs):
-            yield (self.subset_data(*train_indices),
-                   self.subset_data(*valid_indices))
+        assert False
+        return TrainValidationthreadSafeIterator(self)
 
 def iter_summit_centered_peaks(original_peaks, half_peak_width):
     for peak in original_peaks:

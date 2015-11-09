@@ -9,6 +9,7 @@ from scipy.stats.mstats import mquantiles
 from sklearn import cross_validation
 from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
+from grit.lib.multiprocessing_utils import Counter
 
 TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
@@ -26,6 +27,7 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'auROC', 'auPRC', 'F1',
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
+
 
 class ClassificationResult(object):
     _fields = ClassificationResultData._fields
@@ -181,6 +183,24 @@ class ClassificationResults(list):
         for entry in self:
             rv.append("\t".join(str(x) for x in entry))
         return "\n".join(rv)
+
+class TrainValidationSplitsThreadSafeIterator(object):
+    def __init__(self, sample_ids, contigs):
+        self.tr_valid_indices = list(iter_train_validation_splits(
+                sample_ids, contigs))
+        self.i = Counter()
+        self.n = len(self.tr_valid_indices)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        i = self.i.return_and_increment()
+        if i < self.n:
+            train_indices, valid_indices = self.tr_valid_indices[i]
+            return train_indices, valid_indices
+        else:
+            raise StopIteration()
 
 def iter_train_validation_splits(sample_ids, contigs):
     # determine the training and validation sets
