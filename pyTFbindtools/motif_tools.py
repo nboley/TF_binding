@@ -81,9 +81,9 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
         format('SELEX_%%s', selex_models.key) AS motif_id,
         tfs.tf_name,
         tfs.tf_species,
-        selex_models.consensus_energy,
-        selex_models.ddg_array
-       FROM selex_models
+        best_selex_models.consensus_energy,
+        best_selex_models.ddg_array
+       FROM best_selex_models
          JOIN selex_experiments USING (selex_exp_id)
          JOIN tfs USING (tf_id)
     """
