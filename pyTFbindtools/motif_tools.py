@@ -83,7 +83,7 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
         tf_species,
         consensus_energy,
         ddg_array
-       FROM best_selex_models;
+       FROM best_selex_models
     """
 
     #query = """
