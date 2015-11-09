@@ -160,6 +160,7 @@ class ClassificationResults(list):
         balanced_accuracies = [x.balanced_accuracy for x in self]    
         auROCs = [x.auROC for x in self]
         auRPCs = [x.auPRC for x in self]
+        f1s = [x.F1 for x in self]
         rv = []
         rv.append("Balanced Accuracies: %.3f (%.3f-%.3f)" % (
             sum(balanced_accuracies)/len(self),
@@ -168,6 +169,8 @@ class ClassificationResults(list):
             sum(auROCs)/len(self), min(auROCs), max(auROCs)))
         rv.append("auPRC:               %.3f (%.3f-%.3f)" % (
             sum(auRPCs)/len(self), min(auRPCs), max(auRPCs)))
+        rv.append("F1:                  %.3f (%.3f-%.3f)" % (
+            sum(f1s)/len(self), min(f1s), max(f1s)))
         return "\n".join(rv)
 
     @property
