@@ -258,8 +258,8 @@ class BuildPredictorsFactory(object):
     
     def __init__(self, motifs):
         self.motifs = motifs
-        self.header_base = ['mean', 'max', 'q99', 'q95', 'q90', 'q75', 'q50']
-        self.quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]
+        self.header_base = ['mean', ] #  'max'] #, 'q99', 'q95', 'q90', 'q75', 'q50']
+        self.quantile_probs = []#[0.99, 0.95, 0.90, 0.75, 0.50]
         self.flank_sizes = [800, 500, 300]
         self.max_flank_size = max(self.flank_sizes)
         
@@ -276,7 +276,7 @@ class BuildPredictorsFactory(object):
                     :(self.max_flank_size-flank_size)+2*flank_size+1]
                 summary_stats.append(
                     inner_motif_scores.mean()/len(inner_motif_scores))
-                summary_stats.append(inner_motif_scores.max())
+                #summary_stats.append(inner_motif_scores.max())
                 for quantile in mquantiles(
                         inner_motif_scores, prob=self.quantile_probs):
                     summary_stats.append(quantile)
@@ -316,6 +316,8 @@ def parse_arguments():
         help='Database SELEX motif ID')
     parser.add_argument( '--cisbp-motif-id', 
         help='Database cisbp motif ID')
+    parser.add_argument( '--tf-name', 
+        help='Database tf name')
 
     parser.add_argument( '--balance-data', default=False, action='store_true', 
         help='Predict results on balanced labels')
@@ -357,10 +359,14 @@ def parse_arguments():
         motifs = load_selex_models_from_db(motif_ids=[args.selex_motif_id,])
     elif args.cisbp_motif_id != None:
         motifs = load_pwms_from_db(motif_ids=[args.cisbp_motif_id,])
+    elif args.tf_name != None:
+        selex_motifs = load_selex_models_from_db(tf_names=[args.tf_name,])
+        pwm_motifs = load_pwms_from_db(tf_names=[args.tf_name,])
+        motifs = selex_motifs + pwm_motifs
     else:
-        assert False, "Must set either --selex-motif-id or --cisbp-motif-id"
-    assert len(motifs) == 1
-    motif = motifs[0]
+        assert False, "Must set either --selex-motif-id, --cisbp-motif-id, or --tf-name"
+    #assert len(motifs) == 1
+    #motif = motifs[0]
     pyTFbindtools.log("Finished loading motifs.", "VERBOSE")
 
     order_peaks_by_accessibility = False
@@ -373,16 +379,9 @@ def parse_arguments():
         assert args.max_num_unordered_accessible_regions_per_sample is None
         num_peaks_per_sample = args.max_num_accessible_regions_per_sample
         order_peaks_by_accessibility = True
-        
-    ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{order_peaks}.txt.gz".format(
-        prefix=args.ofprefix, 
-        motif_id=motifs[0].motif_id,
-        half_peak_width=args.half_peak_width,
-        max_peaks_per_sample=num_peaks_per_sample,
-        order_peaks=order_peaks_by_accessibility
-    )
     
-    return (annotation_id, motif, ofname,
+    return (annotation_id, motifs, 
+            args.ofprefix,
             args.half_peak_width,
             args.balance_data, 
             args.skip_ambiguous_peaks,
@@ -428,27 +427,35 @@ def open_or_create_feature_file(
         return getFileHandle(ofname)
 
 def main():
-    (annotation_id, motif, ofname, half_peak_width, 
+    (annotation_id, motifs, ofprefix, half_peak_width, 
      balance_data, validate_on_clean_labels,
      max_num_peaks_per_sample, order_by_accessibility
         ) = parse_arguments()
-    # check to see if this file is cached. If not, create it
-    feature_fp = open_or_create_feature_file(
-        annotation_id, motif, ofname, 
-        half_peak_width=half_peak_width,
-        max_n_peaks_per_sample=max_num_peaks_per_sample,
-        order_by_accessibility=order_by_accessibility)
-    pyTFbindtools.log("Loading feature file '%s'" % ofname, "VERBOSE")
-    data = load_single_motif_data(feature_fp.name)
-    res = estimate_cross_validated_error(
-        data, 
-        balance_data=balance_data, 
-        validate_on_clean_labels=validate_on_clean_labels,
-        train_on_clean_labels=True)
-    
-    pyTFbindtools.log( str(res) )
-    with open(ofname + ".summary", "w") as ofp:
-        print >> ofp, res.all_data
+    for motif in motifs:
+        ofname = "{prefix}.{motif_id}.{half_peak_width}.{max_peaks_per_sample}.{order_peaks}.txt.gz".format(
+            prefix=ofprefix, 
+            motif_id=motif.motif_id,
+            half_peak_width=half_peak_width,
+            max_peaks_per_sample=max_num_peaks_per_sample,
+            order_peaks=order_by_accessibility
+        )
+        # check to see if this file is cached. If not, create it
+        feature_fp = open_or_create_feature_file(
+            annotation_id, motif, ofname, 
+            half_peak_width=half_peak_width,
+            max_n_peaks_per_sample=max_num_peaks_per_sample,
+            order_by_accessibility=order_by_accessibility)
+        pyTFbindtools.log("Loading feature file '%s'" % ofname, "VERBOSE")
+        data = load_single_motif_data(feature_fp.name)
+        res = estimate_cross_validated_error(
+            data, 
+            balance_data=balance_data, 
+            validate_on_clean_labels=validate_on_clean_labels,
+            train_on_clean_labels=True)
+
+        pyTFbindtools.log( str(res) )
+        with open(ofname + ".summary", "w") as ofp:
+            print >> ofp, res.all_data
     return
 
 if __name__ == '__main__':
