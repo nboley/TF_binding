@@ -208,11 +208,6 @@ def estimate_unbnd_conc_in_region(
     return -log_tf_conc
 
 class DeltaDeltaGArray(np.ndarray):
-    def calc_ddg(self, coded_subseq):
-        """Calculate delta delta G for coded_subseq.
-        """
-        return self[coded_subseq].sum()
-
     def calc_base_contributions(self):
         base_contribs = np.zeros((self.motif_len, 4))
         base_contribs[:,1:4] = self.T

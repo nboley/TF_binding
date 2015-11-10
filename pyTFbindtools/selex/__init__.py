@@ -33,114 +33,6 @@ MAX_BASE_ENERGY_DIFF = 8.0
 
 USE_SHAPE = False
 
-RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
-base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
-ShapeData = namedtuple(
-    'ShapeData', ['HelT', 'MGW', 'LProT', 'RProT', 'LRoll', 'RRoll'])
-
-def load_shape_data():
-    prefix = os.path.join(os.path.dirname(__file__), './shape_data/')
-    fivemer_fnames = ["all_fivemers.HelT", "all_fivemers.MGW"]
-    fourmer_fnames = ["all_fivemers.ProT", "all_fivemers.Roll"]
-    shape_params = defaultdict(list)
-    # load shape data for all of the fivemers 
-    for fname in chain(fivemer_fnames, fourmer_fnames):
-        shape_param_name = fname.split(".")[-1]
-        with open(os.path.join(prefix, fname)) as fp:
-            for data in fp.read().strip().split(">")[1:]:
-                seq, params = data.split()
-                param = params.split(";")
-                if len(param) == 5:
-                    shape_params[seq].append(float(param[2]))
-                elif len(param) == 4:
-                    shape_params[seq].append(float(param[1]))
-                    shape_params[seq].append(float(param[2]))
-    
-    # cast into a named tuple
-    for seq, values in shape_params.iteritems():
-        shape_params[seq] = ShapeData(*values)
-    
-    return dict(shape_params)
-
-shape_data = load_shape_data()
-
-def base_map(base):
-    if base == 'N':
-        base = random.choice('ACGT')
-    return base_map_dict[base]
-
-def enumerate_binding_sites(seq, bs_len):
-    for offset in xrange(0, len(seq)-bs_len+1):
-        subseq = seq[offset:offset+bs_len].upper()
-        yield subseq
-        yield "".join(RC_map[base] for base in reversed(subseq))
-
-def iter_fivemers(seq):
-    for start in xrange(len(seq) - 5 + 1):
-        yield seq[start:start+5]
-    return
-
-def est_shape_params_for_subseq(subseq):
-    """Est shape params for a subsequence.
-
-    Assumes that the flanking sequence is included, so it returns 
-    a vector of length len(subseq) - 2 (because the encoding is done with 
-    fivemers)
-    """
-    res = np.zeros(6*(len(subseq)-4), dtype=theano.config.floatX)
-    for i, fivemer in enumerate(iter_fivemers(subseq)):
-        if 'N' in fivemer:
-            res[6*i:6*(i+1)] = 0
-        else:
-            res[6*i:6*(i+1)] = shape_data[fivemer]
-    return res
-
-def code_subseq(subseq, left_flank_dimer, right_flank_dimer, motif_len):
-    """Code a subsequence and it's reverse complement.
-    
-    """
-    if isinstance(subseq, str): subseq = subseq.upper()
-    # forward sequence
-    len_per_base = 3
-    if USE_SHAPE: 
-        len_per_base += 6 
-    values = np.zeros(motif_len*len_per_base, dtype=theano.config.floatX)
-    coded_subseq = np.array([
-        pos*3 + (base_map(base) - 1) 
-        for pos, base in enumerate(subseq)
-        if base_map(base) != 0], dtype=int)
-    values[coded_subseq] = 1
-    if USE_SHAPE:
-        values[3*len(subseq):] = est_shape_params_for_subseq(
-            left_flank_dimer + subseq + right_flank_dimer)
-    return values
-
-
-def code_sequence(seq, motif_len,
-                  left_flank_dimer="NN", right_flank_dimer="NN"):
-    # store all binding sites (subseqs and reverse complements of length 
-    # motif )
-    coded_bss = []
-    seq = left_flank_dimer + seq + right_flank_dimer
-    #coded_seq = np.array([base_map[base] for base in seq.upper()])
-    for offset in xrange(2, len(seq)-motif_len+1-2):
-        subseq = seq[offset:offset+motif_len]
-        left_flank = seq[offset-2:offset]
-        right_flank = seq[offset+motif_len:offset+motif_len+2]
-        values = code_subseq(subseq, left_flank, right_flank, motif_len)
-        coded_bss.append(values)
-
-        subseq = "".join(
-            RC_map[base] for base in reversed(seq[offset:offset+motif_len]))
-        left_flank = "".join(
-            RC_map[base] for base in reversed(seq[offset-2:offset]))
-        right_flank_flank = "".join(
-            RC_map[base] for base in reversed(seq[offset+motif_len:offset+motif_len+2]))
-        values = code_subseq(subseq, left_flank, right_flank, motif_len)
-        coded_bss.append(values)
-
-    return coded_bss
-
 def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
     """Load SELEX data and encode all the subsequences. 
 
@@ -155,6 +47,12 @@ def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
     coded_seqs = np.swapaxes(coded_seqs, 1, 2)
     # return a copy to make sure that we're not passing a (slow) view around 
     return coded_seqs.copy()
+
+def enumerate_binding_sites(seq, bs_len):
+    for offset in xrange(0, len(seq)-bs_len+1):
+        subseq = seq[offset:offset+bs_len].upper()
+        yield subseq
+        yield "".join(RC_map[base] for base in reversed(subseq))
 
 def find_consensus_bind_site(seqs, bs_len):
     # produce and initial alignment from the last round
@@ -222,9 +120,6 @@ def find_pwm(rnds_and_seqs, bs_len):
     pwm = find_pwm_from_starting_alignment(
         rnds_and_seqs[min(rnds_and_seqs.keys())], counts)
     return pwm
-
-def calc_occ(seq_ddgs, ref_energy, chem_affinity):
-    return logistic(-(-chem_affinity+ref_energy+seq_ddgs)/(R*T))
 
 _SelexData = namedtuple('SelexData', ['bg_seqs', 'bnd_seqs'])
 class SelexData(_SelexData):
