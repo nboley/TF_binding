@@ -23,26 +23,6 @@ def test_calc_affinities():
 
     print coded_seqs.shape
     print calc_affinities(coded_seqs, ddg_array )
-
-def test_RC_equiv():
-    """Make sure that the RC function works correctly.
-    
-    """
-    seq = 'GCGAATACC'
-    coded_seq = code_seq(seq)
-    RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
-    RC_seq = "".join(RC_map[x] for x in seq[::-1])
-    coded_RC_seq = code_seq(RC_seq)
-    
-    print coded_seq
-    print coded_RC_seq
-    print calc_binding_site_energies(coded_seq[None,(1,2,3),:], ddg_array)
-    print calc_binding_site_energies(coded_RC_seq[None, (1,2,3),:], ddg_array)[:,::-1]
-    energy_diff, RC_ddg_array = ddg_array.reverse_complement()
-    print energy_diff + calc_binding_site_energies(coded_seq[None, (1,2,3),:], RC_ddg_array)
-    #print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
-    return
-
     
 def log_lhd_factory():
     import theano
@@ -94,7 +74,6 @@ def log_lhd_factory():
     ############################################################################
     #
     # XXX
-    # 
     #
     ############################################################################
     sym_part_fn = TT.vector(dtype=theano.config.floatX)
@@ -248,5 +227,66 @@ def calc_binding_site_energies(coded_seqs, ddg_array):
         rv[i,:] = convolve(coded_seq, np.fliplr(np.flipud(ddg_array)), mode='valid')
     return rv
 
+def test_RC_equiv():
+    """Make sure that the RC function works correctly.
+    
+    """
+    import theano
+    import theano.tensor as TT
+    from theano.tensor.signal.conv import conv2d as theano_conv2d
+
+    from ..sequence import one_hot_encode_sequences
+    from ..motif_tools import DeltaDeltaGArray
+    def code_seq(seq):
+        return np.swapaxes(one_hot_encode_sequences((seq,))[:,:,(1,2,3)], 1, 2)
+    
+    seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
+    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
+    fwd_bs_affinities = theano_conv2d(seqs, ddg[::-1,::-1])[:,0,:]
+    #rc_bs_affinities = theano_conv2d(seqs, ddg)[:,0,:]
+    #bs_affinities = TT.stack(
+    #    (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
+    
+    rc_ddg = (
+        TT.concatenate((
+            ddg[(1,0),:], 
+            TT.zeros_like(
+                ddg[(0,),:], dtype=theano.config.floatX)
+        ), axis=0) 
+        - ddg[2,:]
+    )[:,::-1]
+    rc_bs_affinities = (
+        theano_conv2d(seqs, rc_ddg[::-1,::-1]) + ddg[2,:].sum()
+    )[:,0,:]
+
+    bs_affinities = TT.stack(
+        (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
+    calc_bs_affinities = theano.function([seqs, ddg], bs_affinities )
+    
+    seq_affinities = bs_affinities.min(1)
+    calc_affinities = theano.function([seqs, ddg], seq_affinities )
+    
+    seq = 'GCGAATACC'
+    coded_seq = code_seq(seq)
+    RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+    RC_seq = "".join(RC_map[x] for x in seq[::-1])
+    coded_RC_seq = code_seq(RC_seq)
+    ddg_array = (
+        np.array([[1,0.1,0.34], [0,0.34,0.1], [0,1,0], [0,0,1]], dtype='float32').T
+    ).view(DeltaDeltaGArray)
+    print calc_binding_site_energies(coded_seq, ddg_array)
+    print calc_bs_affinities(coded_seq, ddg_array)
+    print
+    print calc_binding_site_energies(coded_RC_seq, ddg_array)[:,::-1]
+    print calc_bs_affinities(coded_RC_seq, ddg_array)[:,::-1]
+    print 
+    energy_diff, RC_ddg_array = ddg_array.reverse_complement()
+    print energy_diff + calc_binding_site_energies(coded_seq, RC_ddg_array)
+    print energy_diff + calc_binding_site_energies(coded_RC_seq, RC_ddg_array)[:,::-1]
+
+    #print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
+    return
+
+test_RC_equiv()
 #calc_log_lhd = None
-calc_log_lhd = log_lhd_factory()
+#calc_log_lhd = log_lhd_factory()
