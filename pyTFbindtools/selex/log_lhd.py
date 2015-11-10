@@ -98,28 +98,55 @@ def log_lhd_factory():
     ## Theano function to calculate reverse complment invariant affinities
     ##
     ############################################################################
-    seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
-    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
-    fwd_bs_affinities = theano_conv2d(seqs, ddg[::-1,::-1])[:,0,:]
-    rc_ddg = (
+    one_hot_seqs = TT.tensor3(name='one_hot_seqs', dtype=theano.config.floatX)
+    ddg_base_cont = TT.matrix(name='ddg_base_cont', dtype=theano.config.floatX)
+    fwd_bs_base_affinities = theano_conv2d(
+        one_hot_seqs, ddg_base_cont[::-1,::-1])[:,0,:]
+    rc_ddg_base_cont = (
         TT.concatenate((
-            ddg[(1,0),:], 
+            ddg_base_cont[(1,0),:], 
             TT.zeros_like(
-                ddg[(0,),:], dtype=theano.config.floatX)
+                ddg_base_cont[(0,),:], dtype=theano.config.floatX)
         ), axis=0) 
-        - ddg[2,:]
+        - ddg_base_cont[2,:]
     )[:,::-1]
-    rc_bs_affinities = (
-        theano_conv2d(seqs, rc_ddg[::-1,::-1]) + ddg[2,:].sum()
+    rc_bs_base_affinities = (
+        theano_conv2d(one_hot_seqs, 
+                      rc_ddg_base_cont[::-1,::-1]) + ddg_base_cont[2,:].sum()
     )[:,0,:]
 
+    ddg_shape_cont = TT.matrix(name='ddg_shape_cont', dtype=theano.config.floatX)
+    fwd_shape_seqs = TT.tensor3(
+        name='fwd_shape_seqs', dtype=theano.config.floatX)
+    fwd_bs_shape_affinities = theano_conv2d(
+        fwd_shape_seqs, ddg_shape_cont[::-1,::-1])[:,0,:]
+
+    rc_shape_seqs = TT.tensor3(
+        name='rc_shape_seqs', dtype=theano.config.floatX)
+    rc_bs_shape_affinities = theano_conv2d(
+        rc_shape_seqs, ddg_shape_cont)[:,0,:]
+    
+
+    fwd_bs_affinities = fwd_bs_base_affinities + fwd_bs_shape_affinities
+    rc_bs_affinities = rc_bs_base_affinities + rc_bs_shape_affinities
+    
+    #fwd_bs_affinities = fwd_bs_shape_affinities
+    #rc_bs_affinities = rc_bs_shape_affinities
+    
     bs_affinities = TT.stack(
         (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
     seq_affinities = bs_affinities.min(1)
-    theano_calc_affinities = theano.function([seqs, ddg], seq_affinities )
+    theano_calc_affinities = theano.function(
+        [one_hot_seqs, fwd_shape_seqs, rc_shape_seqs, 
+         ddg_base_cont, ddg_shape_cont], 
+        seq_affinities )
     def calc_affinities(seqs, ddg_array):
         return theano_calc_affinities(
-            seqs.one_hot_coded_seqs, ddg_array.base_portion)
+            seqs.one_hot_coded_seqs, 
+            seqs.shape_coded_fwd_seqs, 
+            seqs.shape_coded_RC_seqs,             
+            ddg_array.base_portion,
+            ddg_array.shape_portion)
 
     ############################################################################
     #

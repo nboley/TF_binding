@@ -241,8 +241,8 @@ class DeltaDeltaGArray(np.ndarray):
     
     @property
     def shape_portion(self):
-        assert self.shape[1] == 9
-        return self[:3,3]
+        assert self.shape[0] == 9
+        return self[3:,:]
 
     @property
     def mean_energy(self):
@@ -255,6 +255,24 @@ class DeltaDeltaGArray(np.ndarray):
     def consensus_seq(self):
         base_contribs = self.calc_base_contributions()
         return "".join( 'ACGT'[x] for x in np.argmin(base_contribs, axis=1) )
+
+    def summary_str(self, ref_energy):
+        rv = []
+        rv.append(str(self.consensus_seq()))
+        rv.append("Ref: %s" % ref_energy)
+        rv.append(
+            "Mean: %s" % (ref_energy + self.mean_energy))
+        rv.append(
+            "Min: %s" % self.calc_min_energy(ref_energy))
+        rv.append("".join("{:>10}".format(x) for x in [
+            'A', 'C', 'G', 'T', 'HelT', 'MGW', 'LProT', 'RProT', 'LRoll', 'RRoll']))
+        for base_contribs in self.T.tolist():
+            rv.append( 
+                "".join(["      0.00",] + [
+                    "{:10.2f}".format(x) for x in base_contribs]) 
+            )
+        return "\n".join(rv)
+        pass
 
 class Motif():
     def __len__(self):

@@ -409,7 +409,6 @@ def fit_model(rnds_and_seqs, background_seqs,
         background_seqs, 
         use_full_background_for_part_fn=(not partition_background_seqs)
     )
-
     for mo in progressively_fit_model(
             partitioned_and_coded_rnds_and_seqs, 
             ddg_array, ref_energy, 

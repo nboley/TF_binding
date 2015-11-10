@@ -297,22 +297,16 @@ def estimate_dg_matrix_with_adadelta(
             train_lhd = -f_dg(x0, train_index)
             validation_lhd = -f_dg(x0, 1)
             ref_energy, ddg_array = extract_data_from_array(x0)
+            print delta_x[1:].clip(-2, 2).reshape((9, len(delta_x[1:])/9)).round(3).T
+            
+            summary = ddg_array.summary_str(ref_energy)
+            summary += "\n" + "\n".join((
+                "Train: %s (%i)" % (train_lhd, train_index),
+                "Validation: %s" % validation_lhd,
+                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
+                ))
 
-            debug_output = []
-            debug_output.append(str(ddg_array.consensus_seq()))
-            debug_output.append("Ref: %s" % ref_energy)
-            debug_output.append(
-                "Mean: %s" % (ref_energy + ddg_array.mean_energy))
-            debug_output.append(
-                "Min: %s" % ddg_array.calc_min_energy(ref_energy))
-            debug_output.append( 
-                str(ddg_array.calc_base_contributions().round(2)))
-            debug_output.append("Train: %s (%i)" % (train_lhd, train_index))
-            debug_output.append("Validation: %s" % validation_lhd)
-            debug_output.append("Grad L2 Norm: %.2f" % (
-                math.sqrt((grad**2).sum()))
-            )
-            pyTFbindtools.log("\n".join(debug_output), 'DEBUG')
+            pyTFbindtools.log(summary, 'DEBUG')
             
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
@@ -329,8 +323,6 @@ def estimate_dg_matrix_with_adadelta(
     bs_len = init_ddg_array.motif_len    
 
     x0 = init_ddg_array.copy().astype('float32')
-    if USE_SHAPE:
-        x0 = np.append(x0, np.zeros(6*(len(x0)/3)))
     x0 = np.insert(x0, 0, init_ref_energy)
     x = ada_delta(x0)
 
@@ -454,14 +446,13 @@ def progressively_fit_model(
                 ddg_array, ref_energy,
                 dna_conc, prot_conc)
 
-        pyTFbindtools.log(ddg_array.consensus_seq(), 'VERBOSE')
-        pyTFbindtools.log("Ref: %s" % ref_energy, 'VERBOSE')
-        pyTFbindtools.log(
-            "Mean: %s" % (ref_energy + ddg_array.sum()/3), 'VERBOSE')
-        pyTFbindtools.log(
-            "Min: %s" % ddg_array.calc_min_energy(ref_energy), 'VERBOSE')
-        pyTFbindtools.log(
-            str(ddg_array.calc_base_contributions().round(2)), 'VERBOSE')
+        summary = ddg_array.summary_str(ref_energy)
+        #summary += "\n" + "\n".join((
+        #    "Train: %s (%i)" % (train_lhd, train_index),
+        #    "Validation: %s" % validation_lhd,
+        #    "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
+        #    ))
+        pyTFbindtools.log(summary, 'VERBOSE')
 
         new_validation_lhd = calc_log_lhd(
             ref_energy, 
