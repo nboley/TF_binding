@@ -240,17 +240,18 @@ def log_lhd_factory():
                      coded_bg_seqs,
                      dna_conc,
                      prot_conc):
-        seq_len = coded_seqs.values()[0].shape[2]
-        
+        seq_len = coded_seqs.values()[0].seq_length
+
         ref_energy = np.array(ref_energy).astype(theano.config.floatX)
         # score all of the sequences
         rnds_and_seq_ddgs = {}
         for rnd, rnd_coded_seqs in coded_seqs.iteritems():
-            rnds_and_seq_ddgs[rnd] = calc_affinities(rnd_coded_seqs, ddg_array)
+            rnds_and_seq_ddgs[rnd] = calc_affinities(
+                rnd_coded_seqs.one_hot_coded_seqs, ddg_array)
 
         # calcualte the denominators
         chem_affinities, denominators = calc_lhd_denominators_and_chem_pots(
-            coded_bg_seqs,
+            coded_bg_seqs.one_hot_coded_seqs,
             max(coded_seqs.keys()),
             ref_energy, 
             ddg_array,  
@@ -280,11 +281,11 @@ def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
 
 def calc_binding_site_energies(coded_seqs, ddg_array):
-    n_seqs = coded_seqs.shape[0]
-    n_bind_sites = coded_seqs.shape[2]-ddg_array.shape[1]+1
-    rv = np.zeros((n_seqs, n_bind_sites), dtype='float32')
-    for i, coded_seq in enumerate(coded_seqs):
-        rv[i,:] = convolve(coded_seq, np.fliplr(np.flipud(ddg_array)), mode='valid')
+    n_bind_sites = coded_seqs.seq_length-ddg_array.shape[1]+1
+    rv = np.zeros((coded_seqs.n_seqs, n_bind_sites), dtype='float32')
+    for i, coded_seq in enumerate(coded_seqs.one_hot_coded_seqs):
+        rv[i,:] = convolve(
+            coded_seq, np.fliplr(np.flipud(ddg_array)), mode='valid')
     return rv
 
 #calc_log_lhd = None

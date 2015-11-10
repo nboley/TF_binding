@@ -18,8 +18,10 @@ import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
     load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
-from pyTFbindtools.sequence import one_hot_encode_sequences, code_seq
+import pyTFbindtools.sequence
+from pyTFbindtools.shape import code_seqs_shape_features
 from log_lhd import calc_log_lhd, calc_binding_site_energies
+
 
 PARTITION_FN_SAMPLE_SIZE = 10000
 
@@ -33,20 +35,60 @@ MAX_BASE_ENERGY_DIFF = 8.0
 
 USE_SHAPE = False
 
-def code_seqs(seqs, seq_len, n_seqs=None, ON_GPU=True):
+RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
+
+def base_map(base):
+    if base == 'N':
+        base = random.choice('ACGT')
+    return base_map_dict[base]
+
+def one_hot_encode_sequences(seqs, n_seqs=None, ON_GPU=True):
     """Load SELEX data and encode all the subsequences. 
 
     """
     if n_seqs == None: n_seqs = len(seqs)
 
-    coded_seqs = one_hot_encode_sequences(seqs)
+    coded_seqs = pyTFbindtools.sequence.one_hot_encode_sequences(seqs)
     # remove the a's row
     coded_seqs = coded_seqs[:,:,(1,2,3)]
-    assert coded_seqs.shape[1] == seq_len
     # swap the axes so that the array is in sequence-base-position order
-    coded_seqs = np.swapaxes(coded_seqs, 1, 2)
     # return a copy to make sure that we're not passing a (slow) view around 
+    coded_seqs = np.swapaxes(coded_seqs, 1, 2).copy()
     return coded_seqs.copy()
+
+class CodedSeqs(object):
+    def __init__(self, 
+                 one_hot_coded_seqs, 
+                 shape_coded_fwd_seqs=None, 
+                 shape_coded_RC_seqs=None):
+        self.n_seqs = one_hot_coded_seqs.shape[0]
+        self.seq_length = one_hot_coded_seqs.shape[2]
+
+        self.one_hot_coded_seqs = one_hot_coded_seqs
+        self.shape_coded_fwd_seqs = shape_coded_fwd_seqs
+        self.shape_coded_RC_seqs = shape_coded_RC_seqs
+
+    def iter_coded_seq_splits(self, n_partitions):
+        for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
+            ) in izip(np.split(self.one_hot_coded_seqs, n_partitions),
+                      np.split(self.shape_coded_fwd_seqs, n_partitions),
+                      np.split(self.shape_coded_RC_seqs, n_partitions)
+                ):
+            yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
+        
+
+def code_seqs(seqs):
+    # materialize for now, until we fix the following to work with generator
+    seqs = list(seqs)
+
+    one_hot_coded_seqs = one_hot_encode_sequences(seqs)
+    n_seqs = one_hot_coded_seqs.shape[0]
+    seq_length = one_hot_coded_seqs.shape[2]
+    ( shape_coded_fwd_seqs, shape_coded_RC_seqs 
+      ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
+    return CodedSeqs(
+        one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
 
 def enumerate_binding_sites(seq, bs_len):
     for offset in xrange(0, len(seq)-bs_len+1):
@@ -160,14 +202,16 @@ class PartitionedAndCodedSeqs(object):
         # store the full coded sequence arrays
         self.coded_seqs = {}
         for rnd, seqs in rnds_and_seqs.iteritems():
-            self.coded_seqs[rnd] = code_seqs(seqs, self.seq_length)
-        self.coded_bg_seqs = code_seqs(background_seqs, self.seq_length)
+            self.coded_seqs[rnd] = code_seqs(seqs)
+            assert self.seq_length == self.coded_seqs[rnd].seq_length
+        self.coded_bg_seqs = code_seqs(background_seqs)
+        assert self.seq_length == self.coded_bg_seqs.seq_length
 
         # store views to partitioned subsets of the data 
         self._partitioned_data = [{} for i in xrange(self.n_partitions)]
         for rnd, coded_seqs in self.coded_seqs.iteritems():
-            for partition_index, partition in enumerate(np.array_split(
-                    coded_seqs, self.n_partitions)):
+            for partition_index, partition in enumerate(
+                    coded_seqs.iter_coded_seq_splits(self.n_partitions)):
                 self._partitioned_data[partition_index][rnd] = partition
 
         # partition the background sequences.
@@ -175,8 +219,8 @@ class PartitionedAndCodedSeqs(object):
             self._partitioned_bg_data = [
                 self.coded_bg_seqs for i in xrange(self.n_partitions)]
         else:
-            self._partitioned_bg_data = np.split(
-                self.coded_bg_seqs, self.n_partitions)
+            self._partitioned_bg_data = list(
+                self.coded_bg_seqs.iter_coded_seq_splits(self.n_partitions))
         
         self.test = SelexData(
             self._partitioned_bg_data[0], self._partitioned_data[0])
@@ -322,7 +366,7 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
         base_indices = best_offsets + base_offset
         # find which offsets fit inside of the random portion of the sequence
         valid_indices = (base_indices > 0)&(base_indices < seq_len)
-        base_cnts = seqs[
+        base_cnts = seqs.one_hot_coded_seqs[
             valid_indices,:,base_indices[valid_indices]].sum(0)
         # add in the A counts
         base_cnts = np.insert(
@@ -344,9 +388,10 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
             calc_entropy(obs_samples)) 
         return stat, p_value
 
-    seq_len = coded_seqs.shape[2]
+    seq_len = coded_seqs.seq_length
     if coded_bg_seqs == None:
-        coded_bg_seqs = sample_random_coded_seqs(coded_seqs.shape[0], seq_len)
+        coded_bg_seqs = sample_random_coded_seqs(
+            coded_seqs.shape[0], seq_len)
 
     ### Code to downsample - I dont think that we want this but the 
     ### entropy calculation isn't perfect so Ill leave it
@@ -371,7 +416,7 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
     entropies_and_offsets.sort()
 
     pyTFbindtools.log("Shift\tentropy\tbg entropy:", 'VERBOSE')
-    for _, _, shift, bg_entropy, entropy in entropies_and_offsets:
+    for _, _, shift, entropy, bg_entropy in entropies_and_offsets:
         pyTFbindtools.log(
             "%i\t%.2e\t%.2e" % (shift, entropy, bg_entropy), 'VERBOSE')
     

@@ -367,7 +367,7 @@ def parse_arguments():
         args.background_sequences, 
         args.max_num_seqs_per_file, 
         args.min_num_background_sequences)
-    
+
     # close the sequence files
     if args.selex_files is not None:
         for fp in args.selex_files: fp.close()
