@@ -35,6 +35,8 @@ MAX_BASE_ENERGY_DIFF = 8.0
 
 USE_SHAPE = False
 
+MAX_BS_LEN = 18
+
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
 
@@ -163,23 +165,23 @@ def find_pwm(rnds_and_seqs, bs_len):
         rnds_and_seqs[min(rnds_and_seqs.keys())], counts)
     return pwm
 
-_SelexData = namedtuple('SelexData', ['bg_seqs', 'bnd_seqs'])
+_SelexData = namedtuple('SelexData', ['bg_seqs', 'rnd_seqs'])
 class SelexData(_SelexData):
     @property
     def last_rnd_index(self):
-        return max(self.bnd_seqs.iterkeys())
+        return max(self.rnd_seqs.iterkeys())
 
     @property
     def first_rnd_index(self):
-        return min(self.bnd_seqs.iterkeys())
+        return min(self.rnd_seqs.iterkeys())
 
     @property    
     def last_rnd(self):
-        return self.bnd_seqs[self.last_rnd_index]
+        return self.rnd_seqs[self.last_rnd_index]
 
     @property    
     def first_rnd(self):
-        return self.bnd_seqs[self.first_rnd_index]
+        return self.rnd_seqs[self.first_rnd_index]
 
 class PartitionedAndCodedSeqs(object):
     def __init__(self, 
@@ -254,19 +256,17 @@ def estimate_dg_matrix_with_adadelta(
 
     def extract_data_from_array(x):
         ref_energy = x[0]
-        ddg_array = x[1:].reshape(3,(len(x)-1)/3).astype('float32').view(DeltaDeltaGArray)
+        ddg_array = x[1:].reshape(init_ddg_array.shape).astype('float32').view(
+            DeltaDeltaGArray)
         return ref_energy, ddg_array
     
     def f_dg(x, train_index):
         ref_energy, ddg_array = extract_data_from_array(x)
         assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-        (bg_seqs, bnd_seqs
-         ) = partitioned_and_coded_rnds_and_seqs.train[train_index]
         rv = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            bnd_seqs,
-            bg_seqs,
+            partitioned_and_coded_rnds_and_seqs.train[train_index],
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
@@ -338,8 +338,7 @@ def estimate_dg_matrix_with_adadelta(
     validation_lhd = calc_log_lhd(
         ref_energy, 
         ddg_array, 
-        partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs, 
-        partitioned_and_coded_rnds_and_seqs.validation.bg_seqs, 
+        partitioned_and_coded_rnds_and_seqs.validation,
         dna_conc, 
         prot_conc)
 
@@ -437,23 +436,14 @@ FitSelexModel = namedtuple("FitSelexModel", [
 )
 
 def progressively_fit_model(
-        rnds_and_seqs, background_seqs, 
+        partitioned_and_coded_rnds_and_seqs,
         ddg_array, ref_energy, 
-        dna_conc, prot_conc,
-        partition_background_seqs):
-    pyTFbindtools.log("Coding sequences", 'VERBOSE')
-    partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
-        rnds_and_seqs, 
-        background_seqs, 
-        use_full_background_for_part_fn=(not partition_background_seqs)
-    )
-    
+        dna_conc, prot_conc):    
     while True:
         bs_len = ddg_array.motif_len
         prev_validation_lhd = calc_log_lhd(
             ref_energy, ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
+            partitioned_and_coded_rnds_and_seqs.validation,
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_validation_lhd, 'VERBOSE')
         
@@ -476,8 +466,7 @@ def progressively_fit_model(
         new_validation_lhd = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.validation.bnd_seqs,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs,
+            partitioned_and_coded_rnds_and_seqs.validation,
             dna_conc,
             prot_conc)
 
@@ -494,7 +483,7 @@ def progressively_fit_model(
                              prev_validation_lhd, 
                              new_validation_lhd)
         
-        if ( bs_len >= 20 
+        if ( bs_len >= MAX_BS_LEN
              or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
             break
         
@@ -509,12 +498,16 @@ def progressively_fit_model(
             
         if shift_type == 'LEFT':
             pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-            ddg_array = np.hstack((np.zeros((3,1), dtype='float32'), ddg_array)
-                              ).view(DeltaDeltaGArray)
+            ddg_array = np.hstack(
+                (np.zeros((ddg_array.shape[0], 1), dtype='float32'), 
+                 ddg_array)
+            ).view(DeltaDeltaGArray)
         elif shift_type == 'RIGHT':
             pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-            ddg_array = np.hstack((ddg_array, np.zeros((3,1), dtype='float32'))).view(
-                DeltaDeltaGArray)
+            ddg_array = np.hstack(
+                (ddg_array, 
+                 np.zeros((ddg_array.shape[0], 1), dtype='float32'))
+            ).view(DeltaDeltaGArray)
         else:
             assert False, "Unrecognized shift type '%s'" % shift_type
         ref_energy = ref_energy

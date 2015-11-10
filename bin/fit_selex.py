@@ -12,6 +12,7 @@ import pyTFbindtools
 import pyTFbindtools.selex
 
 from pyTFbindtools.selex import (
+    PartitionedAndCodedSeqs,
     progressively_fit_model, find_pwm, sample_random_seqs )
 
 from pyTFbindtools.motif_tools import (
@@ -402,11 +403,17 @@ def fit_model(rnds_and_seqs, background_seqs,
               output_fname_prefix=None):
     assert selex_db_conn is not None or output_fname_prefix is not None
     
+    pyTFbindtools.log("Coding sequences", 'VERBOSE')
+    partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
+        rnds_and_seqs, 
+        background_seqs, 
+        use_full_background_for_part_fn=(not partition_background_seqs)
+    )
+
     for mo in progressively_fit_model(
-            rnds_and_seqs, background_seqs, 
+            partitioned_and_coded_rnds_and_seqs, 
             ddg_array, ref_energy, 
-            dna_conc, prot_conc,
-            partition_background_seqs
+            dna_conc, prot_conc
         ):
         
         if selex_db_conn != None:
@@ -429,7 +436,7 @@ def main():
       selex_db_conn, 
       partition_background_seqs
      ) = parse_arguments()
-    ref_energy, ddg_array = motif.build_ddg_array()
+    ref_energy, ddg_array = motif.build_ddg_array(include_shape=True)
     fit_model(
         rnds_and_seqs, background_seqs, 
         ddg_array, ref_energy,

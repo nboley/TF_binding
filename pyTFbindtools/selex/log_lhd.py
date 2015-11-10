@@ -116,8 +116,11 @@ def log_lhd_factory():
     bs_affinities = TT.stack(
         (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
     seq_affinities = bs_affinities.min(1)
-    calc_affinities = theano.function([seqs, ddg], seq_affinities )
-    
+    theano_calc_affinities = theano.function([seqs, ddg], seq_affinities )
+    def calc_affinities(seqs, ddg_array):
+        return theano_calc_affinities(
+            seqs.one_hot_coded_seqs, ddg_array.base_portion)
+
     ############################################################################
     #
     # calculate binding occupancies for a set of energies and a single chemical
@@ -205,7 +208,7 @@ def log_lhd_factory():
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
         energies = ref_energy + calc_affinities(background_seqs, ddg_array)
-        expected_cnts = (4**seq_len)/float(len(background_seqs))
+        expected_cnts = (4**seq_len)/float(background_seqs.n_seqs)
         curr_occupancies = expected_cnts*np.ones(
             len(energies), dtype=theano.config.floatX)
 
@@ -237,25 +240,22 @@ def log_lhd_factory():
     def calc_log_lhd(ref_energy, 
                      ddg_array, 
                      coded_seqs,
-                     coded_bg_seqs,
                      dna_conc,
                      prot_conc):
-        seq_len = coded_seqs.values()[0].seq_length
-
         ref_energy = np.array(ref_energy).astype(theano.config.floatX)
         # score all of the sequences
         rnds_and_seq_ddgs = {}
-        for rnd, rnd_coded_seqs in coded_seqs.iteritems():
+        for rnd, rnd_coded_seqs in coded_seqs.rnd_seqs.iteritems():
             rnds_and_seq_ddgs[rnd] = calc_affinities(
-                rnd_coded_seqs.one_hot_coded_seqs, ddg_array)
+                rnd_coded_seqs, ddg_array)
 
         # calcualte the denominators
         chem_affinities, denominators = calc_lhd_denominators_and_chem_pots(
-            coded_bg_seqs.one_hot_coded_seqs,
-            max(coded_seqs.keys()),
+            coded_seqs.bg_seqs,
+            coded_seqs.last_rnd_index,
             ref_energy, 
-            ddg_array,  
-            seq_len,
+            ddg_array,
+            coded_seqs.bg_seqs.seq_length,
             dna_conc,
             prot_conc)
 
@@ -285,7 +285,8 @@ def calc_binding_site_energies(coded_seqs, ddg_array):
     rv = np.zeros((coded_seqs.n_seqs, n_bind_sites), dtype='float32')
     for i, coded_seq in enumerate(coded_seqs.one_hot_coded_seqs):
         rv[i,:] = convolve(
-            coded_seq, np.fliplr(np.flipud(ddg_array)), mode='valid')
+            coded_seq, np.fliplr(np.flipud(ddg_array.base_portion)), 
+            mode='valid')
     return rv
 
 #calc_log_lhd = None

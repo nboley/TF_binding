@@ -210,7 +210,7 @@ def estimate_unbnd_conc_in_region(
 class DeltaDeltaGArray(np.ndarray):
     def calc_base_contributions(self):
         base_contribs = np.zeros((self.motif_len, 4))
-        base_contribs[:,1:4] = self.T
+        base_contribs[:,1:4] = self.base_portion.T
         return base_contribs
 
     def calc_normalized_base_conts(self, ref_energy):
@@ -232,12 +232,21 @@ class DeltaDeltaGArray(np.ndarray):
         rc_array = np.zeros(self.shape, dtype=self.dtype)
         ts_cont = float(self[2,:].sum())
         rc_array[(0,1),:] = self[(1,0),:]
-        rc_array[:,:] -= self[2,:]
+        rc_array[:,:3] -= self[2,:3]
         return ts_cont, rc_array.view(DeltaDeltaGArray)[:,::-1]
+
+    @property
+    def base_portion(self):
+        return self[:3,:]
     
     @property
+    def shape_portion(self):
+        assert self.shape[1] == 9
+        return self[:3,3]
+
+    @property
     def mean_energy(self):
-        return self.sum()/3
+        return self.sum()/self.shape[0]
     
     @property
     def motif_len(self):
@@ -336,9 +345,11 @@ class Motif():
     def max_energy(self):
         return self.consensus_energy + self.motif_data.max(1).sum()
 
-    def build_ddg_array(self):
+    def build_ddg_array(self, include_shape=False):
         ref_energy = self.consensus_energy
-        energies = np.zeros((3, len(self)), dtype='float32')
+        energies = np.zeros(
+            (3 + (6 if include_shape else 0), len(self)),
+            dtype='float32')
         for i, base_energies in enumerate(self.motif_data):
             for j, base_energy in enumerate(base_energies[1:]):
                 energies[j, i] = base_energy - base_energies[0]
