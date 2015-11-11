@@ -73,9 +73,9 @@ class CodedSeqs(object):
 
     def iter_coded_seq_splits(self, n_partitions):
         for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
-            ) in izip(np.split(self.one_hot_coded_seqs, n_partitions),
-                      np.split(self.shape_coded_fwd_seqs, n_partitions),
-                      np.split(self.shape_coded_RC_seqs, n_partitions)
+            ) in izip(np.array_split(self.one_hot_coded_seqs, n_partitions),
+                      np.array_split(self.shape_coded_fwd_seqs, n_partitions),
+                      np.array_split(self.shape_coded_RC_seqs, n_partitions)
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
         
