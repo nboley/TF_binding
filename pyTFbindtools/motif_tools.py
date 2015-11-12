@@ -5,11 +5,11 @@ import math
 import numpy as np
 
 from scipy.optimize import brute, bisect
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, convolve
 
 from collections import defaultdict, namedtuple
 
-from sequence import code_seq
+from sequence import code_seq, one_hot_encode_sequences
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
@@ -132,6 +132,27 @@ def score_region(region, genome, motifs):
         scores = np.vstack((FWD_scores, RC_scores)).max(0)
         motifs_scores.append(scores)
     return motifs_scores
+
+def calc_occ(chem_pot, energies):
+    return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
+
+def calc_binding_site_energies(coded_seqs, ddg_array):
+    n_seqs = coded_seqs.shape[0]
+    seq_len = coded_seqs.shape[1]
+    n_bind_sites = seq_len-ddg_array.shape[0]+1
+    rv = np.zeros((n_seqs, n_bind_sites), dtype='float32')
+    for i, coded_seq in enumerate(coded_seqs):
+        rv[i,:] = fftconvolve(
+            coded_seq, np.fliplr(np.flipud(ddg_array)),
+            mode='valid')[0]
+    return rv
+
+def score_regions(regions, genome, motifs):
+    seqs = [genome.fetch(region[0], region[1], region[2]) for region in regions]
+    coded_seqs = one_hot_encode_sequences(seqs)
+    for motif in motifs:
+        yield calc_binding_site_energies(coded_seqs, motif.ddg_array)
+    return
 
 def load_energy_data(fname):
     def load_energy(mo_text):
