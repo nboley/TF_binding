@@ -265,7 +265,7 @@ class DeltaDeltaGArray(np.ndarray):
         rv.append(
             "Min: %s" % self.calc_min_energy(ref_energy))
         rv.append("".join("{:>10}".format(x) for x in [
-            'A', 'C', 'G', 'T', 'HelT', 'MGW', 'LProT', 'RProT', 'LRoll', 'RRoll']))
+            'A', 'C', 'G', 'T', 'ProT', 'MGW', 'LHelT', 'RHelT', 'LRoll', 'RRoll']))
         for base_contribs in self.T.tolist():
             rv.append( 
                 "".join(["      0.00",] + [

@@ -196,7 +196,7 @@ class PartitionedAndCodedSeqs(object):
         # set the number of data partitions
         if n_partitions is None:
             n_partitions = max(
-                5, min(len(seqs)/10000 for seqs in rnds_and_seqs.itervalues()))
+                5, sum(len(seqs) for seqs in rnds_and_seqs.itervalues())/10000)
         self.n_partitions = n_partitions
         if self.n_partitions <= 3: 
             raise ValueError, "Need at least 3 partitions (test, train, validation)"
@@ -230,7 +230,7 @@ class PartitionedAndCodedSeqs(object):
             self._partitioned_bg_data[1], self._partitioned_data[1])
         self.train = [
             SelexData(self._partitioned_bg_data[i], self._partitioned_data[i])
-            for i in xrange(self.n_partitions-2)
+            for i in xrange(2, self.n_partitions)
         ]
 
 def estimate_dg_matrix_with_adadelta(
@@ -260,13 +260,12 @@ def estimate_dg_matrix_with_adadelta(
             DeltaDeltaGArray)
         return ref_energy, ddg_array
     
-    def f_dg(x, train_index):
+    def f_dg(x, data):
         ref_energy, ddg_array = extract_data_from_array(x)
-        assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
         rv = calc_log_lhd(
             ref_energy, 
             ddg_array, 
-            partitioned_and_coded_rnds_and_seqs.train[train_index],
+            data,
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
@@ -286,16 +285,21 @@ def estimate_dg_matrix_with_adadelta(
         eps = 1.0
         num_small_decreases = 0
         for i in xrange(MAX_NUM_ITER):
-            train_index = random.randrange(
-                len(partitioned_and_coded_rnds_and_seqs.train))
-            grad = approx_fprime(x0, f_dg, 1e-3, train_index)
+            train_index = i%len(partitioned_and_coded_rnds_and_seqs.train)
+            assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
+            grad = approx_fprime(
+                x0, f_dg, 1e-3, 
+                partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
                 grad_sq + e)*grad
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
             x0 += delta_x.clip(-2, 2) #grad #delta
-            train_lhd = -f_dg(x0, train_index)
-            validation_lhd = -f_dg(x0, 1)
+            train_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            validation_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.validation)
+
             ref_energy, ddg_array = extract_data_from_array(x0)
             print delta_x[1:].clip(-2, 2).reshape((9, len(delta_x[1:])/9)).round(3).T
             
