@@ -151,7 +151,11 @@ def score_regions(regions, genome, motifs):
     seqs = [genome.fetch(region[0], region[1], region[2]) for region in regions]
     coded_seqs = one_hot_encode_sequences(seqs)
     for motif in motifs:
-        yield calc_binding_site_energies(coded_seqs, motif.ddg_array)
+        if isinstance(motif, PwmModel):
+            score_array = motif.pwm
+        elif isinstance(motif, SelexModel):
+            score_array = motif.ddg_array
+        yield calc_binding_site_energies(coded_seqs, score_array)
     return
 
 def load_energy_data(fname):
