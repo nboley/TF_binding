@@ -27,7 +27,7 @@ from grit.lib.multiprocessing_utils import fork_and_wait
 hg19_genome='/mnt/data/annotations/by_organism/human/hg19.GRCh37/hg19.genome.fa'
 genome = pysam.FastaFile(hg19_genome)
 
-# Get regions in named tuples
+# Get regions in dictionary
 num_feat=100
 
 # region_bed = "/mnt/lab_data/kundaje/users/pgreens/projects/hematopoiesis/data/atac_seq/merged_matrices/Leuk_35M_counts_per_peak_merged_macsqval5_pseudoreps.txt"
