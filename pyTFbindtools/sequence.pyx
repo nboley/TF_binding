@@ -126,7 +126,7 @@ def one_hot_encode_sequence(sequence):
     return one_hot_encode_sequences((sequence,))
 
 def profile( seq_len, n_seq, n_test_iterations ):
-    """Compare the speed of the two one-hot-encoding implementations.
+    """Test the speed of the one-hot-encoding implementation.
 
     To use this from the command line run:
     python -c "import pyximport; pyximport.install(); import test; test.profile(200000, 1000, 1)"
@@ -135,25 +135,7 @@ def profile( seq_len, n_seq, n_test_iterations ):
     sequence = 'A'*seq_len
     sequences = [sequence for x in xrange(n_seq)]
 
-    t_FORLOOP = timeit.Timer(
-        lambda: one_hot_encode_sequences_FORLOOP(sequences) )
     t_MEMCPY = timeit.Timer(
         lambda: one_hot_encode_sequences(sequences) )
-    print "ForLoop:", t_FORLOOP.timeit(number=n_test_iterations)
-    print "MemCpy :", t_MEMCPY.timeit(number=n_test_iterations)
+    print "Time :", t_MEMCPY.timeit(number=n_test_iterations)
     return 
-
-def test_implementations(n_tests=1000):
-    import random
-    def sample_random_seqs(n_sims, seq_len):
-        return ["".join(random.choice('ACGT') for j in xrange(seq_len))
-                for i in xrange(n_sims)]
-
-    for i in xrange(n_tests):
-        for seq_len in (10, 100, 1000, 10000):
-            seqs = sample_random_seqs(10, seq_len)
-            code_1 = one_hot_encode_sequences(seqs)
-            code_2 = one_hot_encode_sequences_FORLOOP(seqs)
-            assert (np.abs(code_1 - code_2)).sum() < 1e-6
-    print "PASS"
-    return

@@ -2,14 +2,18 @@ import sys
 
 import math
 
+from collections import defaultdict, namedtuple
+
 import numpy as np
 
 from scipy.optimize import brute, bisect
 from scipy.signal import fftconvolve, convolve
 
-from collections import defaultdict, namedtuple
+from pysam import FastaFile
 
-from sequence import code_seq, one_hot_encode_sequences
+from sequence import one_hot_encode_sequences
+
+from DB import load_genome_metadata
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
@@ -107,6 +111,15 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
+def load_binding_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
+    selex_motifs = load_selex_models_from_db(tf_names, tf_ids, motif_ids)
+    cisb_motifs = load_pwms_from_db(tf_names, tf_ids, motif_ids)
+    # Get one motif for each and prefer SELEX
+    selex_tf_ids = set(m.tf_id for m in selex_motifs)
+    return selex_motifs+[
+        el for el in cisb_motifs if el.tf_id not in selex_tf_ids]
+
+
 def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
 
@@ -123,9 +136,9 @@ def _score_coded_seqs_binding_sites(coded_seqs, score_array):
     for i, coded_seq in enumerate(coded_seqs):
         fwd_scores = convolve_fn(
             coded_seq, np.fliplr(np.flipud(score_array)),
-            mode='valid')[0]
-        rc_scores = convolve_fn(coded_seq, score_array, mode='valid')[0]
-        rv[i,:] = np.vstack((FWD_scores, RC_scores)).max(0)
+            mode='valid')
+        rc_scores = convolve_fn(coded_seq, score_array, mode='valid')
+        rv[i,:] = np.hstack((fwd_scores, rc_scores)).max(1)
     
     return rv
 
@@ -139,6 +152,30 @@ def score_regions(regions, genome, motifs):
             score_array = motif.ddg_array
         yield _score_coded_seqs_binding_sites(coded_seqs, score_array)
     return
+
+import h5py
+
+def build_model_scores_h5_file(annotation_id, tf_id):    
+    genome_fname = load_genome_metadata(annotation_id).filename
+    genome_fname = 'hg19.genome.fa'
+    genome = FastaFile(genome_fname)
+    models = load_binding_models_from_db(tf_ids=[tf_id,])
+    assert len(models) == 1
+    model = models[0]
+    
+    # open a file to write the scores to
+    with h5py.File("binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
+        annotation_id, model.motif_id), "w") as ofp:
+        for i, (contig, contig_len) in enumerate(
+                zip(genome.references, genome.lengths)):
+            print >> sys.stderr, "Processing %i/%i" % (
+                i+1, len(genome.references))
+            #if contig_len > 100000: continue
+            scores = next(score_regions(
+                [(contig, 0, contig_len),], genome, [model,]))
+            dset = ofp.create_dataset(contig, scores.shape, dtype='f')
+            dset[:] = scores
+
 
 def load_energy_data(fname):
     def load_energy(mo_text):
