@@ -13,9 +13,6 @@ from sequence import code_seq, one_hot_encode_sequences
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
-#R = 8.314e-3 # in kJ
-
-REG_LEN = 100000
 
 base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 RC_base_map = {'A': 3, 'C': 2, 'G': 1, 'T': 0}
@@ -27,17 +24,12 @@ def logistic(x):
     try: e_x = math.exp(-x)
     except: e_x = np.exp(-x)
     return 1/(1+e_x)
-    #return e_x/(1+e_x)
 
 PwmModel = namedtuple('PwmModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
 SelexModel = namedtuple('SelexModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 
     'consensus_energy', 'ddg_array']) 
-
-#pickled_motifs_fname = os.path.join(
-#    os.path.dirname(__file__), 
-#    "../data/motifs/human_and_mouse_motifs.pickle.obj")
 
 def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
@@ -115,36 +107,26 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
-def score_region(region, genome, motifs):
-    seq = genome.fetch(region[0], region[1], region[2])
-    motifs_scores = []
-    for motif in motifs:
-        if isinstance(motif, PwmModel):
-            N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
-            extended_mat = np.hstack((motif.pwm, N_row))
-        elif isinstance(motif, SelexModel):
-            N_row = np.zeros((len(motif.ddg_array), 1))
-            extended_mat = np.hstack((motif.ddg_array, N_row))
-        coded_seq = code_seq(bytes(seq))
-        FWD_scores = -fftconvolve(coded_seq, extended_mat.T, mode='valid')
-        RC_scores = -fftconvolve(
-            coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
-        scores = np.vstack((FWD_scores, RC_scores)).max(0)
-        motifs_scores.append(scores)
-    return motifs_scores
-
 def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
 
-def calc_binding_site_energies(coded_seqs, ddg_array):
+def _score_coded_seqs_binding_sites(coded_seqs, score_array):
     n_seqs = coded_seqs.shape[0]
     seq_len = coded_seqs.shape[1]
-    n_bind_sites = seq_len-ddg_array.shape[0]+1
+    n_bind_sites = seq_len-score_array.shape[0]+1
+
+    # fft convolve is faster, but uses a lot more memory, so we 
+    # dont use it for large regions
+    convolve_fn = fftconvolve if seq_len < 1000000 else convolve
+    
     rv = np.zeros((n_seqs, n_bind_sites), dtype='float32')
     for i, coded_seq in enumerate(coded_seqs):
-        rv[i,:] = fftconvolve(
-            coded_seq, np.fliplr(np.flipud(ddg_array)),
+        fwd_scores = convolve_fn(
+            coded_seq, np.fliplr(np.flipud(score_array)),
             mode='valid')[0]
+        rc_scores = convolve_fn(coded_seq, score_array, mode='valid')[0]
+        rv[i,:] = np.vstack((FWD_scores, RC_scores)).max(0)
+    
     return rv
 
 def score_regions(regions, genome, motifs):
@@ -155,7 +137,7 @@ def score_regions(regions, genome, motifs):
             score_array = motif.pwm
         elif isinstance(motif, SelexModel):
             score_array = motif.ddg_array
-        yield calc_binding_site_energies(coded_seqs, score_array)
+        yield _score_coded_seqs_binding_sites(coded_seqs, score_array)
     return
 
 def load_energy_data(fname):
