@@ -89,7 +89,9 @@ def set_ambiguous_labels(labels, scores, threshold):
 
 class KerasModelBase():
     def __init__(self, peaks_and_labels, model_def_file=None, model_fname=None,
-                 batch_size=200):
+                 batch_size=200, num_conv=30, conv_height=4, conv_width=45,
+                 maxpool_size=20, maxpool_stride=20, gru_size=35, tdd_size=45,
+                 model_type='cnn'):
 
         self.batch_size = batch_size
         self.seq_len = peaks_and_labels.max_peak_width
@@ -105,41 +107,37 @@ class KerasModelBase():
             print "Finished loading pickled model."
         else: # resort to defaults
             print 'building default rSeqDNN architecture...'
-            numConv = 30
-            convStack = 1
-            convWidth = 4
-            convHeight = 45
-            maxPoolSize = 20
-            maxPoolStride = 20
-            numConvOutputs = ((self.seq_len - convHeight) + 1)
-            numMaxPoolOutputs = int(((numConvOutputs-maxPoolSize)/maxPoolStride)+1)
-            gruHiddenVecSize = 35
-            numFCNodes = 45
-            numOutputNodes = 1
+            num_conv_outputs = ((self.seq_len - conv_width) + 1)
+            num_maxpool_outputs = int(((num_conv_outputs-maxpool_size)/maxpool_stride)+1)
             
             # this fixes an implementation bug in Keras. If this is not true,
             # then the code runs much more slowly
-            assert maxPoolSize%maxPoolStride == 0
+            assert maxpool_size%maxpool_stride == 0
             
             # Define architecture     
             self.model = Sequential()
             self.model.add(Convolution2D(
-                numConv, 
-                convWidth, convHeight, 
-                activation="relu", init="he_normal", 
+                num_conv,
+                conv_height, conv_width,
+                activation="relu", init="he_normal",
                 input_shape=(1, 4, self.seq_len)
             ))
             self.model.add(MaxPooling2D(
-                pool_size=(1,maxPoolSize), 
-                stride=(1,maxPoolStride)
+                pool_size=(1,maxpool_size),
+                stride=(1,maxpool_stride)
             ))
-            self.model.add(Reshape((numConv,numMaxPoolOutputs)))
-            self.model.add(Permute((2,1)))
-            # make the number of max pooling outputs the time dimension
-            self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
-            self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
-            self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
-            self.model.add(Dense(numOutputNodes,activation='sigmoid'))
+            if model_type=='cnn':
+                self.model.add(Reshape((num_conv*num_maxpool_outputs,)))
+            elif model_type=='cnn-rnn-tdd':
+                self.model.add(Reshape((num_conv,num_maxpool_outputs)))
+                self.model.add(Permute((2,1)))
+                # make the number of max pooling outputs the time dimension
+                self.model.add(GRU(output_dim=gru_size,return_sequences=True))
+                self.model.add(TimeDistributedDense(tdd_size,activation="relu"))
+                self.model.add(Reshape((tdd_size*num_maxpool_outputs,)))
+            else:
+                raise ValueError('invalid model type! supported choices are cnn,cnn-rnn-tdd') 
+            self.model.add(Dense(1,activation='sigmoid'))
 
     @property
     def curr_model_config_hash(self):
@@ -290,7 +288,7 @@ class KerasModel(KerasModelBase):
         print 'num training negatives: ', sum(b_y_train==0)
         
         print("Compiling model with binary cross entropy loss.")
-        self.compile('binary_crossentropy', Adam(), use_model_file)
+        self.compile('binary_crossentropy', SGD(momentum=0.9), use_model_file)
         early_stopping = EarlyStopping(monitor='val_loss', patience=3)
         self.model.fit(
                 b_X_train, b_y_train,
