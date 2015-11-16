@@ -50,12 +50,12 @@ class ClassificationResult(object):
         self.num_true_positives = (predicted_labels[positives] == 1).sum()
         self.num_positives = positives.sum()
         
-        negatives = np.array(labels == -1)        
-        self.num_true_negatives = (predicted_labels[negatives] == -1).sum()
+        negatives = np.array(labels == 0)        
+        self.num_true_negatives = (predicted_labels[negatives] == 0).sum()
         self.num_negatives = negatives.sum()
 
         if positives.sum() + negatives.sum() < len(labels):
-            raise ValueError, "All labels must be either -1 or +1"
+            raise ValueError, "All labels must be either 0 or +1"
         
         self.auROC = roc_auc_score(positives, predicted_prbs)
         precision, recall, _ = precision_recall_curve(positives, predicted_prbs)
@@ -121,7 +121,7 @@ def find_optimal_ambiguous_peak_threshold(
         print "Testing thresh %i/%i" % (i+1, len(ambiguous_thresholds))
         ambig_peaks_below_threshold = (
             ambiguous_peaks&(peak_scores <= thresh))
-        labels[ambig_peaks_below_threshold] = -1
+        labels[ambig_peaks_below_threshold] = 0
         res = mo.evaluate(predictors, labels)
         if res.F1 > best_f1:
             best_f1 = res.F1

@@ -29,11 +29,11 @@ import theano.tensor as T
 
 def recall_at_fdr(y_true, y_score, fdr_cutoff=0.05):
     precision, recall, thresholds = precision_recall_curve(y_true, y_score)
-    fdr_cutoff_diff = list(abs(1 - precision - fdr_cutoff))
-    cutoff_index = fdr_cutoff_diff.index(min(fdr_cutoff_diff))
+    fdr = 1- precision
+    cutoff_index = next(i for i, x in enumerate(fdr) if x < fdr_cutoff)
     
-    return recall[cutoff_index]
-
+    return recall[cutoff_index], fdr[cutoff_index]
+    
 def expected_F1_loss(y_true, y_pred, beta=0.1):
     min_label = T.min(y_true)
     max_label = T.max(y_true)
@@ -52,14 +52,14 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
 
 def balance_matrices(X, labels):
     pos_full = X[(labels == 1)]
-    neg_full = X[(labels < 1)]
+    neg_full = X[(labels == 0)]
     sample_size = min(pos_full.shape[0], neg_full.shape[0])
     pos = pos_full[
         np.random.choice(pos_full.shape[0], sample_size, replace=False)]
     neg = neg_full[
         np.random.choice(neg_full.shape[0], sample_size, replace=False)]
     return np.vstack((pos, neg)), np.array(
-        [1]*sample_size + [-1]*sample_size, dtype='float32')
+        [1]*sample_size + [0]*sample_size, dtype='float32')
 
 def encode_peaks_sequence_into_binary_array(peaks, fasta, use_seq=False):
     # find the peak width
@@ -82,8 +82,8 @@ def load_model(fname):
     pass
 
 def set_ambiguous_labels(labels, scores, threshold):
-    ambig_labels = (labels == 0)
-    labels[ambig_labels] = -1
+    ambig_labels = (labels == -1)
+    labels[ambig_labels] = 0
     labels[ambig_labels&(scores > threshold)] = 1
     return labels
 
@@ -181,11 +181,10 @@ class KerasModelBase():
             self.model.add(GRU(output_dim=gru_hidden_vec_size,return_sequences=True))
             self.model.add(TimeDistributedDense(num_fc_nodes,activation="relu"))
             self.model.add(Reshape((num_fc_nodes*num_max_pool_out,)))
-            self.model.add(Dense(1,activation='sigmoid'))
         else:
             self.model.add(Reshape((num_conv*num_max_pool_out,)))
-            self.model.add(Dense(1,activation='sigmoid'))
-    
+        self.model.add(Dense(1,activation='sigmoid',init='he_normal'))
+       
     def compile(self, loss='binary_crossentropy', optimizer=Adam(),
                 use_model_file=False, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
@@ -215,8 +214,8 @@ class KerasModelBase():
 
     def predict(self, X_validation, verbose=False):
         preds = self.model.predict_classes(X_validation, verbose=int(verbose))
-        # move the predicted labels into -1, 1 space
-        preds[preds == 0] = -1
+        # move the predicted labels into 0, 1 space
+        preds[preds == 0] = 0
         return preds
 
     def predict_proba(self, predictors, verbose=False):
@@ -274,8 +273,8 @@ class KerasModelBase():
                     data.peaks, genome_fasta, use_seq=use_seq))
         y = np.array(data.labels, dtype='float32')
         if filter_ambiguous_labels:
-            X = X[y != 0,:,:,:]
-            y = y[y != 0]
+            X = X[y != -1,:,:,:]
+            y = y[y != -1]
 
         return X, y
 
@@ -284,15 +283,15 @@ class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
             self, X_train, y_train, X_validation, y_validation, numEpochs,
             use_model_file):
-        print 'num positives: ', sum(y_train==1)
-        print 'num negatives: ', sum(y_train<1)
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)        
+        print 'num training positives: ', sum(b_y_train==1)
+        print 'num training negatives: ', sum(b_y_train==0)
         
         print("Compiling model with binary cross entropy loss.")
         self.compile('binary_crossentropy', Adam(), use_model_file)
-        early_stopping = EarlyStopping(monitor='val_loss', patience=1)
+        early_stopping = EarlyStopping(monitor='val_loss', patience=3)
         self.model.fit(
                 b_X_train, b_y_train,
                 validation_data=(b_X_validation, b_y_validation),
@@ -300,12 +299,15 @@ class KerasModel(KerasModelBase):
                 class_weight={1.0, 1.0},
                 batch_size=self.batch_size,
                 callbacks=[early_stopping])
+        print 'Performance on balanced early stopping data:'
         print self.evaluate(b_X_validation, b_y_validation)
+        print 'Performance on full unbalanced early stopping data:'
+        print self.evaluate(X_validation, y_validation)
         return self
 
     def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs,
              ofname, use_model_file):
-        neg_class_cnt = (y_train == -1).sum()
+        neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
         class_prbs = {float(neg_class_cnt)/len(y_train), 
@@ -329,7 +331,7 @@ class KerasModel(KerasModelBase):
                 X_train, y_train,
                 validation_data=(X_validation, y_validation),
                 show_accuracy=True,
-                class_weight={1.0, 1.0},
+                class_weight=class_prbs,
                 batch_size=self.batch_size,
                 nb_epoch=1)
             res = self.evaluate(X_validation, y_validation)
