@@ -38,8 +38,6 @@ def parse_args():
     train_parser.add_argument('--use-model-file',
                         default=False, action='store_true',
         help='pickle model during training to avoid recompiling.')
-    train_parser.add_argument('--model-definition-file', type=str, default=None,
-                    help='JSON file containing model architecture.')
     test_parser.add_argument('--model-file', default=None, type=str,
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
@@ -95,7 +93,6 @@ def parse_args():
                  args.model_prefix, 
                  args.only_test_one_fold,
                  args.use_model_file,
-                 args.model_definition_file,
                  args.random_seed,
                  args.single_celltype,
                  args.validation_contigs), args.command
@@ -119,7 +116,6 @@ def main():
           model_ofname_prefix, 
           only_test_one_fold,
           use_model_file,
-          model_definition_file,
           random_seed,
           single_celltype,
           validation_contigs
@@ -140,11 +136,7 @@ def main():
     training_data = OrderedDict()
     validation_data = OrderedDict()
     if command=='train':
-        if (model_definition_file is not None):
-            model = KerasModel(peaks_and_labels,
-                               model_def_file=model_definition_file)
-        else:
-            model = KerasModel(peaks_and_labels)
+        model = KerasModel(peaks_and_labels)
     elif command=='test':
         fit_model = KerasModel(peaks_and_labels, model_fname=model_fname)
         if model_fname is None:
