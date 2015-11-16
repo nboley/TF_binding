@@ -84,7 +84,7 @@ def parse_args():
             assert args.neg_sequences != None, \
             "--neg-sequences must be set"
             peaks_and_labels = load_labeled_peaks_from_fastas(
-                args.pos_sequences, args.neg_sequences, args.half_peak_width)
+                args.pos_sequences, args.neg_sequences, args.max_num_peaks_per_sample)
         else:
             raise ValueError('either --tf-id or (--pos-regions and --neg-regions)\
             or (--pos-sequences and --neg-sequences) must be set')
