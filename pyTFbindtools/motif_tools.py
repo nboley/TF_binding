@@ -156,7 +156,7 @@ def score_regions(regions, genome, motifs):
         yield _score_coded_seqs_binding_sites(coded_seqs, score_array)
     return
 
-def build_model_scores_h5_file(annotation_id, tf_id):
+def build_model_scores_hdf5_file(annotation_id, tf_id):
     genome_fname = load_genome_metadata(annotation_id).filename
     genome = FastaFile(genome_fname)
     models = load_binding_models_from_db(tf_ids=[tf_id,])
@@ -164,7 +164,7 @@ def build_model_scores_h5_file(annotation_id, tf_id):
     model = models[0]
     
     # open a file to write the scores to
-    fname = "binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
+    fname = "/srv/scratch/nboley/projects/hd5_scoring/binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
         annotation_id, model.motif_id)
     
     # check to see if the file exists and, if it does, raise an error
