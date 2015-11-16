@@ -1,13 +1,13 @@
 import sys
-
 import math
-
 from collections import defaultdict, namedtuple
 
 import numpy as np
-
 from scipy.optimize import brute, bisect
 from scipy.signal import fftconvolve, convolve
+from scipy.stats.mstats import mquantiles
+
+import h5py
 
 from pysam import FastaFile
 
@@ -31,9 +31,12 @@ def logistic(x):
 
 PwmModel = namedtuple('PwmModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
-SelexModel = namedtuple('SelexModel', [
+SelexModelData = namedtuple('SelexModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 
     'consensus_energy', 'ddg_array']) 
+class SelexModel(SelexModelData):
+    def __len__(self):
+        return self.ddg_array.shape[0]
 
 def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
@@ -87,7 +90,7 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     #  FROM best_selex_models
     #"""
     if tf_names == None and tf_ids == None and motif_ids == None:
-        cur.execute(query)
+        cur.execute(query, [])
     elif tf_names != None and tf_ids == None and motif_ids == None:
         query += " WHERE tf_name in %s"
         cur.execute(query, [tuple(tf_names),])
@@ -153,29 +156,56 @@ def score_regions(regions, genome, motifs):
         yield _score_coded_seqs_binding_sites(coded_seqs, score_array)
     return
 
-import h5py
-
-def build_model_scores_h5_file(annotation_id, tf_id):    
+def build_model_scores_h5_file(annotation_id, tf_id):
     genome_fname = load_genome_metadata(annotation_id).filename
-    genome_fname = 'hg19.genome.fa'
     genome = FastaFile(genome_fname)
     models = load_binding_models_from_db(tf_ids=[tf_id,])
     assert len(models) == 1
     model = models[0]
     
     # open a file to write the scores to
-    with h5py.File("binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
-        annotation_id, model.motif_id), "w") as ofp:
+    fname = "binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
+        annotation_id, model.motif_id)
+    
+    # check to see if the file exists and, if it does, raise an error
+    try: 
+        with open(fname): pass
+    except IOError: 
+        pass
+    else: 
+        raise IOError, "File '%s' already exists" % fname
+    
+    with h5py.File(fname, "w") as ofp:
         for i, (contig, contig_len) in enumerate(
                 zip(genome.references, genome.lengths)):
             print >> sys.stderr, "Processing %i/%i" % (
                 i+1, len(genome.references))
-            #if contig_len > 100000: continue
             scores = next(score_regions(
                 [(contig, 0, contig_len),], genome, [model,]))
             dset = ofp.create_dataset(contig, scores.shape, dtype='f')
             dset[:] = scores
 
+def score_regions_from_hdf5(regions, annotation_id, model):
+    fname = "/srv/scratch/nboley/projects/hd5_scoring/binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (annotation_id, model.motif_id)
+
+    # if there are a lot of regins, it will be faster to cache the hdf5 file in memory
+    if len(regions) > 20000:
+        print "Pre-cacheing hdf5 file '%s'" % fname
+        driver = 'core'
+    else:
+        driver = None
+
+    with h5py.File(fname, 'r', driver=driver) as fp:
+        for contig, start, stop in regions:
+            yield ( (contig, start, stop), 
+                    fp[contig][0, start:stop-len(model)+1] )
+    return
+
+def aggregate_region_scores(
+        scores, quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]):
+    rv = [scores.mean()/len(scores), scores.max()]
+    rv.extend(mquantiles(scores, prob=quantile_probs))
+    return rv
 
 def load_energy_data(fname):
     def load_energy(mo_text):
@@ -396,6 +426,7 @@ class Motif():
         self.lines = None
         self.meta_data_line = None
 
+        print "hjere", pwm
         self.length = len(pwm)
 
         self.consensus_energy = 0.0
