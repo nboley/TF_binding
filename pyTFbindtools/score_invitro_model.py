@@ -240,7 +240,6 @@ def load_single_motif_data(fname):
     data = pd.read_csv(
         fname, sep="\s+", index_col=0, compression='infer')
     return SingleMotifBindingData(data)
-
     
 class BuildPredictorsFactory(object):
     def build_header(self):
@@ -274,12 +273,9 @@ class BuildPredictorsFactory(object):
                 inner_motif_scores = motif_scores[
                     self.max_flank_size-flank_size
                     :(self.max_flank_size-flank_size)+2*flank_size+1]
-                summary_stats.append(
-                    inner_motif_scores.mean()/len(inner_motif_scores))
-                #summary_stats.append(inner_motif_scores.max())
-                for quantile in mquantiles(
-                        inner_motif_scores, prob=self.quantile_probs):
-                    summary_stats.append(quantile)
+                summary_stats.extend(
+                    aggregate_region_scores(inner_motif_scores, self.quantile_probs))
+
         return summary_stats
 
 def extract_data_worker(ofp, peak_cntr, peaks, build_predictors, fasta):
