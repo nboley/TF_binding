@@ -8,7 +8,8 @@ from collections import defaultdict, namedtuple
 import numpy as np
 
 from pyDNAbinding.binding_model import (
-    EnergeticDNABindingModel, PWMBindingModel, load_binding_model )
+    EnergeticDNABindingModel, PWMBindingModel, load_binding_model, 
+    DNABindingModels )
 
 import pyTFbindtools
 
@@ -247,8 +248,7 @@ def initialize_starting_motif(
         pwm_fp, 
         energy_mo_fp, 
         rnds_and_seqs,
-        initial_binding_site_len, 
-        factor_name):
+        initial_binding_site_len):
     assert (pwm_fp is None) or (energy_mo_fp is None), \
         "Cant initialize a motif from both a pwm and energy model"
     if pwm_fp is not None:
@@ -262,7 +262,7 @@ def initialize_starting_motif(
             'VERBOSE')
         bs_len = initial_binding_site_len
         pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
-        pwm_model = PWMBindingModel(pwm, tf_name=factor_name)
+        pwm_model = PWMBindingModel(pwm)
         return pwm_model.build_energetic_model(include_shape=True)
     assert False
 
@@ -375,8 +375,7 @@ def parse_arguments():
         args.starting_pwm,
         args.starting_energy_model,
         rnds_and_seqs,
-        args.initial_binding_site_len, 
-        factor_name=args.ofname_prefix)
+        args.initial_binding_site_len)
     # close the starting motif files
     if args.starting_pwm is not None: 
         args.starting_pwm.close()
@@ -386,7 +385,8 @@ def parse_arguments():
     return ( motif, 
              rnds_and_seqs, background_seqs, 
              selex_db_conn, 
-             args.partition_background_seqs )
+             args.partition_background_seqs,
+             args.ofname_prefix)
 
 def fit_model(rnds_and_seqs, background_seqs, 
               initial_model, 
@@ -406,6 +406,8 @@ def fit_model(rnds_and_seqs, background_seqs,
         background_seqs, 
         use_full_background_for_part_fn=(not partition_background_seqs)
     )
+    model_meta_data = dict(initial_model.meta_data.iteritems())
+    fit_models = []
     for mo in progressively_fit_model(
             partitioned_and_coded_rnds_and_seqs, 
             ddg_array, ref_energy, 
@@ -415,25 +417,38 @@ def fit_model(rnds_and_seqs, background_seqs,
         if selex_db_conn != None:
             selex_db_conn.insert_model_into_db(
                 mo.ref_energy, mo.ddg_array, mo.new_validation_lhd)
+        model_meta_data['dna_conc'] = dna_conc
+        model_meta_data['prot_conc'] = prot_conc
+        
+        #model_meta_data['lhd_path'] = mo.lhd_path.tolist()
+        model_meta_data['lhd_hat'] = float(mo.lhd_hat)
+        model_meta_data['prev_validation_lhd'] = float(mo.prev_validation_lhd)
+        model_meta_data['new_validation_lhd'] = float(mo.new_validation_lhd)
 
-        model = EnergeticDNABindingModel(
+        fit_model = EnergeticDNABindingModel(
             mo.ref_energy,
             np.vstack((np.zeros(mo.ddg_array.motif_len), mo.ddg_array)).T, 
-            **dict(initial_model.iter_meta_data())
+            **model_meta_data
         )
+        fit_models.append(fit_model)
         if output_fname_prefix != None:
             ofname = "%s.FITMO.BSLEN%i.yaml" % (
                 output_fname_prefix, mo.ddg_array.motif_len)
             with open(ofname, "w") as ofp:
-                model.save(ofp)
-        break
+                fit_model.save(ofp)
+
+    if output_fname_prefix is not None:
+        fit_models = DNABindingModels(fit_models)
+        with open("%s.yaml" % output_fname_prefix, "w") as fp:
+            fit_models.save(fp)
     return
     
 def main():
     ( initial_model, 
       rnds_and_seqs, background_seqs, 
       selex_db_conn, 
-      partition_background_seqs
+      partition_background_seqs,
+      ofname_prefix
      ) = parse_arguments()
     
     fit_model(
@@ -442,7 +457,7 @@ def main():
         jolma_dna_conc, jolma_prot_conc,
         partition_background_seqs,
         selex_db_conn,
-        initial_model.tf_name
+        ofname_prefix
     )
         
     # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32
