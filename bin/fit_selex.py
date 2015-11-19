@@ -7,18 +7,15 @@ from collections import defaultdict, namedtuple
 
 import numpy as np
 
+from pyDNAbinding.binding_model import EnergeticDNABindingModel, PWMBindingModel
+
 import pyTFbindtools
 
 import pyTFbindtools.selex
 
 from pyTFbindtools.selex import (
-    PartitionedAndCodedSeqs,
+    PartitionedAndCodedSeqs, ReducedDeltaDeltaGArray,
     progressively_fit_model, find_pwm, sample_random_seqs )
-
-from pyTFbindtools.motif_tools import (
-    build_pwm_from_energies,
-    load_energy_data, load_motifs, load_motif_from_text,
-    Motif)
 
 """
 SELEX and massively parallel sequencing  
@@ -254,11 +251,13 @@ def initialize_starting_motif(
     assert (pwm_fp is None) or (energy_mo_fp is None), \
         "Cant initialize a motif from both a pwm and energy model"
     if pwm_fp is not None:
+        assert False, "NOT IMPLEMENTED"
         pyTFbindtools.log("Loading PWM starting location", 'VERBOSE')
         motifs = load_motifs(pwm_fp)
         assert len(motifs) == 1, "Motif file contains multiple motifs"
         return motifs.values()[0]
     elif energy_mo_fp is not None:
+        assert False, "NOT IMPLEMENTED"
         pyTFbindtools.log("Loading energy data", 'VERBOSE')
         return load_energy_data(energy_mo_fp.name)
     else:
@@ -267,9 +266,8 @@ def initialize_starting_motif(
             'VERBOSE')
         bs_len = initial_binding_site_len
         pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
-        motif = Motif("aligned_%imer" % initial_binding_site_len, 
-                      factor_name, pwm)
-        return motif
+        pwm_model = PWMBindingModel(pwm, tf_name=factor_name)
+        return pwm_model.build_energetic_model(include_shape=True)
     assert False
 
 def write_output(motif_name, ddg_array, ref_energy, ofp=sys.stdout):
@@ -287,7 +285,7 @@ def write_output(motif_name, ddg_array, ref_energy, ofp=sys.stdout):
             for x in energies )
 
     print >> ofp, ">%s.PWM\t%s" % (motif_name, ddg_array.consensus_seq())
-    pwm = build_pwm_from_energies(ddg_array, ref_energy, -12.0)
+    pwm = build_pwm(ddg_array, ref_energy, -12.0)
     #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
     for pos, freqs in enumerate(pwm.T):
         print >> ofp, str(pos) + "\t" + "\t".join(
@@ -394,14 +392,17 @@ def parse_arguments():
              selex_db_conn, 
              args.partition_background_seqs )
 
-
 def fit_model(rnds_and_seqs, background_seqs, 
-              ddg_array, ref_energy, 
+              initial_model, 
               dna_conc, prot_conc,
               partition_background_seqs,
               selex_db_conn=None,
               output_fname_prefix=None):
     assert selex_db_conn is not None or output_fname_prefix is not None
+
+    ref_energy, ddg_array = initial_model.ref_energy, initial_model.ddg_array
+    assert (ddg_array[:,0].round(6) == 0).all()
+    ddg_array = ddg_array[:,1:].T.view(ReducedDeltaDeltaGArray)
     
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
@@ -425,24 +426,22 @@ def fit_model(rnds_and_seqs, background_seqs,
             with open(ofname, "w") as ofp:
                 write_output(
                     output_fname_prefix, mo.ddg_array, mo.ref_energy, ofp)
-
-    
+        break
     return
     
 def main():
-    ( motif, 
+    ( initial_model, 
       rnds_and_seqs, background_seqs, 
       selex_db_conn, 
       partition_background_seqs
      ) = parse_arguments()
-    ref_energy, ddg_array = motif.build_ddg_array(include_shape=True)
     fit_model(
         rnds_and_seqs, background_seqs, 
-        ddg_array, ref_energy,
+        initial_model,
         jolma_dna_conc, jolma_prot_conc,
         partition_background_seqs,
         selex_db_conn,
-        motif.factor
+        initial_model.tf_name
     )
         
     # THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32

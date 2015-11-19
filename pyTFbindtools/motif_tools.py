@@ -38,15 +38,6 @@ class SelexModel(SelexModelData):
     def __len__(self):
         return self.ddg_array.shape[0]
 
-def build_pwm_from_energies(ddg_array, ref_energy, chem_pot):
-    pwm = np.zeros((4, ddg_array.motif_len), dtype=float)
-    mean_energy = ref_energy + chem_pot + ddg_array.mean_energy
-    for i, base_energies in enumerate(ddg_array.calc_base_contributions()):
-        base_mut_energies = mean_energy + base_energies.mean() - base_energies 
-        occs = logistic(base_mut_energies)
-        pwm[:,i] = occs/occs.sum()
-    return pwm
-
 def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
@@ -279,7 +270,7 @@ def estimate_unbnd_conc_in_region(
                       
     return -log_tf_conc
 
-class DeltaDeltaGArray(np.ndarray):
+class ReducedDeltaDeltaGArray(np.ndarray):
     def calc_base_contributions(self):
         base_contribs = np.zeros((self.motif_len, 4))
         base_contribs[:,1:4] = self.base_portion.T

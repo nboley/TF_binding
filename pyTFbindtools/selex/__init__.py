@@ -17,7 +17,8 @@ import theano
 import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
-    load_motifs, logistic, R, T, DeltaDeltaGArray, Motif, load_motif_from_text)
+    load_motifs, logistic, R, T, ReducedDeltaDeltaGArray, 
+    Motif, load_motif_from_text)
 import pyTFbindtools.sequence
 from pyTFbindtools.shape import code_seqs_shape_features
 from log_lhd import calc_log_lhd, calc_binding_site_energies
@@ -257,7 +258,7 @@ def estimate_dg_matrix_with_adadelta(
     def extract_data_from_array(x):
         ref_energy = x[0]
         ddg_array = x[1:].reshape(init_ddg_array.shape).astype('float32').view(
-            DeltaDeltaGArray)
+            ReducedDeltaDeltaGArray)
         return ref_energy, ddg_array
     
     def f_dg(x, data):
@@ -496,13 +497,13 @@ def progressively_fit_model(
             ddg_array = np.hstack(
                 (np.zeros((ddg_array.shape[0], 1), dtype='float32'), 
                  ddg_array)
-            ).view(DeltaDeltaGArray)
+            ).view(ReducedDeltaDeltaGArray)
         elif shift_type == 'RIGHT':
             pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
             ddg_array = np.hstack(
                 (ddg_array, 
                  np.zeros((ddg_array.shape[0], 1), dtype='float32'))
-            ).view(DeltaDeltaGArray)
+            ).view(ReducedDeltaDeltaGArray)
         else:
             assert False, "Unrecognized shift type '%s'" % shift_type
         ref_energy = ref_energy
