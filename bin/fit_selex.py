@@ -7,7 +7,8 @@ from collections import defaultdict, namedtuple
 
 import numpy as np
 
-from pyDNAbinding.binding_model import EnergeticDNABindingModel, PWMBindingModel
+from pyDNAbinding.binding_model import (
+    EnergeticDNABindingModel, PWMBindingModel, load_binding_model )
 
 import pyTFbindtools
 
@@ -419,13 +420,17 @@ def fit_model(rnds_and_seqs, background_seqs,
         if selex_db_conn != None:
             selex_db_conn.insert_model_into_db(
                 mo.ref_energy, mo.ddg_array, mo.new_validation_lhd)
-        
+
+        model = EnergeticDNABindingModel(
+            mo.ref_energy,
+            np.vstack((np.zeros(mo.ddg_array.motif_len), mo.ddg_array)).T, 
+            **dict(initial_model.iter_meta_data())
+        )
         if output_fname_prefix != None:
-            ofname = "%s.FITMO.BSLEN%i.txt" % (
+            ofname = "%s.FITMO.BSLEN%i.yaml" % (
                 output_fname_prefix, mo.ddg_array.motif_len)
             with open(ofname, "w") as ofp:
-                write_output(
-                    output_fname_prefix, mo.ddg_array, mo.ref_energy, ofp)
+                model.save(ofp)
         break
     return
     
@@ -435,6 +440,7 @@ def main():
       selex_db_conn, 
       partition_background_seqs
      ) = parse_arguments()
+    
     fit_model(
         rnds_and_seqs, background_seqs, 
         initial_model,
