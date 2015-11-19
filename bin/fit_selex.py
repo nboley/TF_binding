@@ -252,15 +252,10 @@ def initialize_starting_motif(
     assert (pwm_fp is None) or (energy_mo_fp is None), \
         "Cant initialize a motif from both a pwm and energy model"
     if pwm_fp is not None:
-        assert False, "NOT IMPLEMENTED"
-        pyTFbindtools.log("Loading PWM starting location", 'VERBOSE')
-        motifs = load_motifs(pwm_fp)
-        assert len(motifs) == 1, "Motif file contains multiple motifs"
-        return motifs.values()[0]
+        return load_binding_model(pwm_fp.name).build_energetic_model(
+            include_shape=True)
     elif energy_mo_fp is not None:
-        assert False, "NOT IMPLEMENTED"
-        pyTFbindtools.log("Loading energy data", 'VERBOSE')
-        return load_energy_data(energy_mo_fp.name)
+        return load_binding_model(energy_mo_fp.name)
     else:
         pyTFbindtools.log(
             "Initializing starting location from %imer search" % initial_binding_site_len, 
