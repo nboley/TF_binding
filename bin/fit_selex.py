@@ -19,7 +19,7 @@ from pyTFbindtools.selex import (
     PartitionedAndCodedSeqs, ReducedDeltaDeltaGArray,
     progressively_fit_model, find_pwm, sample_random_seqs )
 
-INCLUDE_SHAPE = False
+INCLUDE_SHAPE = True
 
 """
 SELEX and massively parallel sequencing  

@@ -285,8 +285,15 @@ def estimate_dg_matrix_with_adadelta(
         
         eps = 1.0
         num_small_decreases = 0
+        valid_train_indices = range(
+            len(partitioned_and_coded_rnds_and_seqs.train))
+        random.shuffle(valid_train_indices)
         for i in xrange(MAX_NUM_ITER):
-            train_index = i%len(partitioned_and_coded_rnds_and_seqs.train)
+            if len(valid_train_indices) == 0:
+                valid_train_indices = range(
+                    len(partitioned_and_coded_rnds_and_seqs.train))
+                random.shuffle(valid_train_indices)
+            train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
             grad = approx_fprime(
                 x0, f_dg, 1e-3, 
@@ -295,7 +302,7 @@ def estimate_dg_matrix_with_adadelta(
             delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
                 grad_sq + e)*grad
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            x0 += delta_x.clip(-2, 2) #grad #delta
+            x0 += delta_x.clip(-0.1, 0.1) #grad #delta
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             validation_lhd = -f_dg(
