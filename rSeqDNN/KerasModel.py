@@ -89,8 +89,8 @@ def set_ambiguous_labels(labels, scores, threshold):
 
 class KerasModelBase():
     def __init__(self, peaks_and_labels, model_fname=None,
-                 batch_size=200, num_conv=30, conv_height=4, conv_width=45,
-                 maxpool_size=20, maxpool_stride=20, gru_size=35, tdd_size=45,
+                 batch_size=200, num_conv=15, conv_height=4, conv_width=15,
+                 maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
 
         self.batch_size = batch_size

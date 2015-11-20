@@ -142,9 +142,12 @@ def main():
         if model_fname is None:
             fit_model.compile()
         fit_model.model.load_weights(weights_fname)
-    for fold_index, (train, valid) in enumerate(
-            peaks_and_labels.iter_train_validation_subsets(validation_contigs,
-                                                               single_celltype)):
+    if peaks_and_labels.__name__()=='FastaPeaksAndLabels':
+        train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
+    else:
+        train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
+            validation_contigs, single_celltype))
+    for fold_index, (train, valid) in enumerate(train_validation_subsets):
         if command=='train':
             fit_model = model.train(
                 train, 

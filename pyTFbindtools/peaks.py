@@ -6,6 +6,7 @@ import random
 import cPickle as pickle
 
 import numpy as np
+from sklearn.cross_validation import StratifiedKFold
 
 from pysam import TabixFile
 
@@ -157,6 +158,21 @@ class PeaksAndLabels():
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
 
+class FastaPeaksAndLabels(PeaksAndLabels):
+    @staticmethod
+    def __name__():
+        return 'FastaPeaksAndLabels'
+
+    def subset_data(self, subset_indices):
+        return FastaPeaksAndLabels(
+            self[index] for index in subset_indices)
+
+    def iter_train_validation_subsets(self):
+        skf = StratifiedKFold(self.labels, n_folds=5)
+        for train_indices, valid_indices in skf:
+            yield (self.subset_data(train_indices),
+                   self.subset_data(valid_indices))
+
 def iter_summit_centered_peaks(original_peaks, half_peak_width):
     for peak in original_peaks:
         centered_peak = NarrowPeak(
@@ -275,7 +291,7 @@ def load_labeled_peaks_from_fastas(
                                  max_num_peaks_per_sample):
             assert neg_pk.pk_width==len(neg_pk.seq)
             yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
-    peaks_and_labels = PeaksAndLabels(iter_all_seqs())
+    peaks_and_labels = FastaPeaksAndLabels(iter_all_seqs())
     return peaks_and_labels
 
 chipseq_peaks_tabix_file_cache = {}
