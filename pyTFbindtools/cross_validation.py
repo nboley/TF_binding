@@ -14,6 +14,13 @@ TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
 SINGLE_FOLD_TRAIN_CHRS = range(5, 23)
 
+def recall_at_fdr(y_true, y_score, fdr_cutoff=0.05):
+    precision, recall, thresholds = precision_recall_curve(y_true, y_score)
+    fdr = 1- precision
+    cutoff_index = next(i for i, x in enumerate(fdr) if x < fdr_cutoff)
+
+    return recall[cutoff_index]
+
 ClassificationResultData = namedtuple('ClassificationResult', [
     'is_cross_celltype',
     'sample_type', # should be validation or test
@@ -23,7 +30,7 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'validation_chromosomes',
     'validation_samples', 
 
-    'auROC', 'auPRC', 'F1',
+    'auROC', 'auPRC', 'F1', 'recall_at_05_fdr', 'recall_at_01_fdr',
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
 
@@ -62,6 +69,8 @@ class ClassificationResult(object):
         prc = np.array([recall,precision])
         self.auPRC = auc(recall, precision)
         self.F1 = f1_score(positives, predicted_labels)
+        self.recall_at_05_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.05)
+        self.recall_at_01_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.01)
 
         return
 
@@ -85,6 +94,8 @@ class ClassificationResult(object):
         rv.append("auROC: %.3f" % self.auROC)
         rv.append("auPRC: %.3f" % self.auPRC)
         rv.append("F1: %.3f" % self.F1)
+        rv.append("Recall @ 0.05 FDR: %.3f" % self.recall_at_05_fdr)
+        rv.append("Recall @ 0.01 FDR: %.3f" % self.recall_at_01_fdr)
         rv.append("Positive Accuracy: %.3f (%i/%i)" % (
             self.positive_accuracy, self.num_true_positives,self.num_positives))
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (
