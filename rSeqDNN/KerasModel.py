@@ -26,13 +26,6 @@ from keras.callbacks import EarlyStopping
 from sklearn.metrics import precision_recall_curve
 
 import theano.tensor as T
-
-def recall_at_fdr(y_true, y_score, fdr_cutoff=0.05):
-    precision, recall, thresholds = precision_recall_curve(y_true, y_score)
-    fdr = 1- precision
-    cutoff_index = next(i for i, x in enumerate(fdr) if x < fdr_cutoff)
-    
-    return recall[cutoff_index], fdr[cutoff_index]
     
 def expected_F1_loss(y_true, y_pred, beta=0.1):
     min_label = T.min(y_true)
@@ -183,10 +176,6 @@ class KerasModelBase():
     def evaluate(self, X_validation, y_validation):
         preds = self.predict(X_validation)
         pred_probs = self.predict_proba(X_validation)
-        print 'recall at fdr=0.05:'
-        print recall_at_fdr(y_validation, pred_probs, fdr_cutoff=0.05)
-        print 'recall at fdr=0.01:'
-        print recall_at_fdr(y_validation, pred_probs, fdr_cutoff=0.01)
         return ClassificationResult(y_validation, preds, pred_probs)
     
     def evaluate_peaks_and_labels(
