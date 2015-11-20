@@ -32,7 +32,7 @@ CONSTRAIN_MEAN_ENERGY = True
 EXPECTED_MEAN_ENERGY = -3.0
 
 CONSTRAIN_BASE_ENERGY_DIFF = True
-MAX_BASE_ENERGY_DIFF = 8.0
+MAX_BASE_ENERGY_DIFF = 6.0
 
 USE_SHAPE = False
 
@@ -196,7 +196,7 @@ class PartitionedAndCodedSeqs(object):
         
         # set the number of data partitions
         if n_partitions is None:
-            n_partitions = min(12, max(
+            n_partitions = min(17, max(
                 5, sum(len(seqs) for seqs in rnds_and_seqs.itervalues())/10000))
         self.n_partitions = n_partitions
         if self.n_partitions <= 3: 
@@ -251,7 +251,8 @@ def estimate_dg_matrix_with_adadelta(
         if CONSTRAIN_BASE_ENERGY_DIFF:
             base_conts = ddg_array.calc_base_contributions()
             energy_diff = base_conts.max(1) - base_conts.min(1)
-            penalty += (energy_diff[(energy_diff > 6)]**2).sum()
+            penalty += (energy_diff[
+                (energy_diff > MAX_BASE_ENERGY_DIFF)]**2).sum()
         #return 0
         return penalty
 
