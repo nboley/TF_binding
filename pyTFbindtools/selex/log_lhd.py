@@ -114,6 +114,8 @@ def log_lhd_factory():
         theano_conv2d(one_hot_seqs, 
                       rc_ddg_base_cont[::-1,::-1]) + ddg_base_cont[2,:].sum()
     )[:,0,:]
+    bs_affinities_without_shape = TT.stack(
+        (fwd_bs_base_affinities, rc_bs_base_affinities), axis=1).min(1)
 
     ddg_shape_cont = TT.matrix(name='ddg_shape_cont', dtype=theano.config.floatX)
     fwd_shape_seqs = TT.tensor3(
@@ -129,24 +131,32 @@ def log_lhd_factory():
 
     fwd_bs_affinities = fwd_bs_base_affinities + fwd_bs_shape_affinities
     rc_bs_affinities = rc_bs_base_affinities + rc_bs_shape_affinities
+    bs_affinities_with_shape = TT.stack(
+        (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
     
     #fwd_bs_affinities = fwd_bs_shape_affinities
     #rc_bs_affinities = rc_bs_shape_affinities
     
-    bs_affinities = TT.stack(
-        (fwd_bs_affinities, rc_bs_affinities), axis=1).min(1)
-    seq_affinities = bs_affinities.min(1)
-    theano_calc_affinities = theano.function(
+    theano_calc_affinities_with_shape = theano.function(
         [one_hot_seqs, fwd_shape_seqs, rc_shape_seqs, 
          ddg_base_cont, ddg_shape_cont], 
-        seq_affinities )
+        bs_affinities_with_shape.min(1) )
+    theano_calc_affinities_without_shape = theano.function(
+        [one_hot_seqs, ddg_base_cont], 
+        bs_affinities_without_shape.min(1) )
+
     def calc_affinities(seqs, ddg_array):
-        return theano_calc_affinities(
-            seqs.one_hot_coded_seqs, 
-            seqs.shape_coded_fwd_seqs, 
-            seqs.shape_coded_RC_seqs,             
-            ddg_array.base_portion,
-            ddg_array.shape_portion)
+        if ddg_array.shape[0] == 9:
+            return theano_calc_affinities_with_shape(
+                seqs.one_hot_coded_seqs, 
+                seqs.shape_coded_fwd_seqs, 
+                seqs.shape_coded_RC_seqs,             
+                ddg_array.base_portion,
+                ddg_array.shape_portion)
+        else:
+            return theano_calc_affinities_without_shape(
+                seqs.one_hot_coded_seqs, 
+                ddg_array.base_portion)
 
     ############################################################################
     #
@@ -289,7 +299,6 @@ def log_lhd_factory():
         # calculate the numerators
         numerators = calc_lhd_numerators(
             rnds_and_seq_ddgs, chem_affinities, ref_energy)
-
         lhd = 0.0
         for rnd in rnds_and_seq_ddgs.keys():
             lhd += numerators[rnd] - len(rnds_and_seq_ddgs[rnd])*denominators[rnd]

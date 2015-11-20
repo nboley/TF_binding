@@ -196,8 +196,8 @@ class PartitionedAndCodedSeqs(object):
         
         # set the number of data partitions
         if n_partitions is None:
-            n_partitions = max(
-                5, sum(len(seqs) for seqs in rnds_and_seqs.itervalues())/10000)
+            n_partitions = min(12, max(
+                5, sum(len(seqs) for seqs in rnds_and_seqs.itervalues())/10000))
         self.n_partitions = n_partitions
         if self.n_partitions <= 3: 
             raise ValueError, "Need at least 3 partitions (test, train, validation)"
@@ -302,7 +302,8 @@ def estimate_dg_matrix_with_adadelta(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
 
             ref_energy, ddg_array = extract_data_from_array(x0)
-            print delta_x[1:].clip(-2, 2).reshape((9, len(delta_x[1:])/9)).round(3).T
+            print delta_x[1:].clip(-2, 2).reshape(
+                (ddg_array.shape[1], len(delta_x[1:])/ddg_array.shape[1])).round(3).T
             
             summary = ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
@@ -317,10 +318,12 @@ def estimate_dg_matrix_with_adadelta(
             validation_lhds.append(validation_lhd)
             xs.append(x0)
             min_iter = 4*len(partitioned_and_coded_rnds_and_seqs.train)
-            if i > 2*min_iter and (
-                    sum(validation_lhds[-2*min_iter:-min_iter])/min_iter
-                    > sum(validation_lhds[-min_iter:])/min_iter ):
-                break
+            if i > 2*min_iter:
+                old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
+                new_max = max(validation_lhds[-min_iter:])
+                print "Stop Crit:", old_median, new_max, new_max-old_median
+                if old_median > new_max:
+                    break
 
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]

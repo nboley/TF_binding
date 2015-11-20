@@ -19,6 +19,8 @@ from pyTFbindtools.selex import (
     PartitionedAndCodedSeqs, ReducedDeltaDeltaGArray,
     progressively_fit_model, find_pwm, sample_random_seqs )
 
+INCLUDE_SHAPE = False
+
 """
 SELEX and massively parallel sequencing  
 Sequence of the DNA ligand is described in Supplemental Table S3. The ligands 
@@ -253,7 +255,7 @@ def initialize_starting_motif(
         "Cant initialize a motif from both a pwm and energy model"
     if pwm_fp is not None:
         return load_binding_model(pwm_fp.name).build_energetic_model(
-            include_shape=True)
+            include_shape=INCLUDE_SHAPE)
     elif energy_mo_fp is not None:
         return load_binding_model(energy_mo_fp.name)
     else:
@@ -263,7 +265,8 @@ def initialize_starting_motif(
         bs_len = initial_binding_site_len
         pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
         pwm_model = PWMBindingModel(pwm)
-        return pwm_model.build_energetic_model(include_shape=True)
+        rv = pwm_model.build_energetic_model(include_shape=INCLUDE_SHAPE)
+        return rv
     assert False
 
 def write_output(motif_name, ddg_array, ref_energy, ofp=sys.stdout):
