@@ -9,6 +9,7 @@ except:
     from __init__ import init_prediction_script_argument_parser
 
 from pyTFbindtools.peaks import (
+    FastaPeaksAndLabels,
     load_labeled_peaks_from_beds,
     load_labeled_peaks_from_fastas,
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
@@ -142,7 +143,7 @@ def main():
         if model_fname is None:
             fit_model.compile()
         fit_model.model.load_weights(weights_fname)
-    if peaks_and_labels.__name__()=='FastaPeaksAndLabels':
+    if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(

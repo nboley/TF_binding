@@ -22,6 +22,7 @@ from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_yaml
 from keras.callbacks import EarlyStopping
+from keras.regularizers import l1
 
 from sklearn.metrics import precision_recall_curve
 
@@ -70,6 +71,9 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta, use_seq=False):
         coded_seq = code_seq(seq)
         data[i] = coded_seq[0:4,:]
     return data
+
+def add_reverse_complements(X, y):
+    return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
 
 def load_model(fname):
     pass
@@ -222,25 +226,25 @@ class KerasModelBase():
 
         return X, y
 
-
 class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
             self, X_train, y_train, X_validation, y_validation, numEpochs,
             use_model_file):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
-        b_X_train, b_y_train = balance_matrices(X_train, y_train)        
+        b_X_train, b_y_train = balance_matrices(X_train, y_train)
+        b_X_train, b_y_train = add_reverse_complements(b_X_train, b_y_train)
         print 'num training positives: ', sum(b_y_train==1)
         print 'num training negatives: ', sum(b_y_train==0)
         
         print("Compiling model with binary cross entropy loss.")
         self.compile('binary_crossentropy', SGD(momentum=0.9), use_model_file)
-        early_stopping = EarlyStopping(monitor='val_loss', patience=3)
+        early_stopping = EarlyStopping(monitor='val_loss', patience=6)
         self.model.fit(
                 b_X_train, b_y_train,
                 validation_data=(b_X_validation, b_y_validation),
                 show_accuracy=True,
-                class_weight={1.0, 1.0},
+                class_weight={0:1.0, 1:1.0},
                 batch_size=self.batch_size,
                 callbacks=[early_stopping])
         print 'Performance on balanced early stopping data:'
@@ -251,18 +255,17 @@ class KerasModel(KerasModelBase):
 
     def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs,
              ofname, use_model_file):
+        X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
-        class_prbs = {float(neg_class_cnt)/len(y_train), 
-                      float(pos_class_cnt)/len(y_train)}
-
-        print("Switiching to F1 loss function.")
-        print("Compiling model with expected F1 loss.")
-        self.compile(expected_F1_loss, Adam(), use_model_file)
-        best_auPRC = 0
-        best_F1 = 0
-        best_average = 0
+        class_prbs = dict(zip([0, 1],
+                              [len(y_train)/float(neg_class_cnt),
+                               len(y_train)/float(pos_class_cnt)]))
+        print("Switiching to cross entropy loss function.")
+        print("Compiling model with cross entropy loss.")
+        self.compile('binary_crossentropy', SGD(momentum=0.9), use_model_file)
+        best_recall_at_05_fdr = 0
         out_filename = ofname + ".fit_weights.obj"
 
         for epoch in xrange(numEpochs):
@@ -276,14 +279,10 @@ class KerasModel(KerasModelBase):
             res = self.evaluate(X_validation, y_validation)
             print res
 
-            if (res.F1 + res.auPRC > best_average):
-                print("highest auPRC + F1 score so far. Saving weights.")
+            if (res.recall_at_05_fdr > best_recall_at_05_fdr):
+                print("highest recall at 0.05 FDR so far. Saving weights.")
                 self.model.save_weights(out_filename, overwrite=True)
-                best_average = res.F1 + res.auPRC
-            if (res.auPRC > best_auPRC):
-                best_auPRC = res.auPRC
-            if (res.F1 > best_F1):
-                best_F1 = res.F1                
+                best_recall_at_05_fdr = res.recall_at_05_fdr
 
         # load and return the best model
         print "Loading best model"
@@ -291,7 +290,7 @@ class KerasModel(KerasModelBase):
         return self
 
     def train(self, data, genome_fasta, ofname, use_model_file, use_seq,
-              balanced_train_epochs=3, unbalanced_train_epochs=8):
+              balanced_train_epochs=3, unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
         X_validation, y_validation = self.build_predictor_and_label_matrices(
@@ -307,7 +306,7 @@ class KerasModel(KerasModelBase):
             X_train, y_train, X_validation, y_validation,
             balanced_train_epochs, use_model_file)
         
-        print("Fitting full training set with expected F1 loss.")
+        print("Fitting full training set with cross entropy loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
                   unbalanced_train_epochs, ofname, use_model_file)
         
@@ -332,6 +331,6 @@ class KerasModel(KerasModelBase):
         print("Re-fitting the model with the imputed data.")
         self._fit(X_train, y_train, X_validation, y_validation,
                   unbalanced_train_epochs, ofname, use_model_file)
-        
+
         return self
 
