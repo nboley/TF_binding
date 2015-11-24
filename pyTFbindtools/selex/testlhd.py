@@ -88,7 +88,7 @@ def theano_build_lhd_and_grad_fns(n_seqs):
     # calculate the lhd denominator
     theano_calc_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [bg_seqs, ddg, ref_energy, chem_affinities],
-        rnds_seq_affinities )
+        lhd )
     
     theano_calc_grad = theano.function(
         [seqs for seqs in rnd_seqs] + [bg_seqs, ddg, ref_energy, chem_affinities],
@@ -139,11 +139,12 @@ def main():
     ddg_array = np.array(
         [[1,1,1], [1,1,1], [1,1,1], [1,1,1]], dtype='float32')
     
-    print "new lhd", calc_lhd(ddg_array, ref_energy, chem_affinities)
-    ddg_grad, chem_affinity_grad = calc_grad(
-        ddg_array, ref_energy, chem_affinities)
-    print ddg_grad
-    print chem_affinity_grad
+    for i in xrange(20):
+        print i, chem_affinities, calc_lhd(ddg_array, ref_energy, chem_affinities)
+        ddg_grad, chem_affinity_grad = calc_grad(
+            ddg_array, ref_energy, chem_affinities)
+        chem_affinities += chem_affinity_grad
+        print chem_affinity_grad
     
     old_ddg_array = np.array(
         [[1,1,1], [1,1,1], [1,1,1], [1,1,1]], dtype='float32').T.view(
