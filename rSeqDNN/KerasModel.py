@@ -85,63 +85,55 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels, model_fname=None,
-                 batch_size=200, num_conv=15, conv_height=4, conv_width=15,
-                 maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
-                 model_type='cnn'):
-
+    def __init__(self, peaks_and_labels, batch_size=200):
         self.batch_size = batch_size
+
         self.seq_len = peaks_and_labels.max_peak_width
-        self.model_fname = model_fname
-        
-        if self.model_fname is not None:
-            print "Loading pickled model '%s'" % model_fname
-            with open(self.model_fname) as fp:
-                self.model = pickle.load(fp)
-            print "Finished loading pickled model."
-        else: # resort to defaults
-            print 'building default rSeqDNN architecture...'
-            num_conv_outputs = ((self.seq_len - conv_width) + 1)
-            num_maxpool_outputs = int(((num_conv_outputs-maxpool_size)/maxpool_stride)+1)
-            
-            # this fixes an implementation bug in Keras. If this is not true,
-            # then the code runs much more slowly
-            assert maxpool_size%maxpool_stride == 0
-            
-            # Define architecture     
-            self.model = Sequential()
-            self.model.add(Convolution2D(
-                num_conv,
-                conv_height, conv_width,
-                activation="relu", init="he_normal",
-                input_shape=(1, 4, self.seq_len)
-            ))
-            self.model.add(MaxPooling2D(
-                pool_size=(1,maxpool_size),
-                stride=(1,maxpool_stride)
-            ))
-            if model_type=='cnn':
-                self.model.add(Reshape((num_conv*num_maxpool_outputs,)))
-            elif model_type=='cnn-rnn-tdd':
-                self.model.add(Reshape((num_conv,num_maxpool_outputs)))
-                self.model.add(Permute((2,1)))
-                # make the number of max pooling outputs the time dimension
-                self.model.add(GRU(output_dim=gru_size,return_sequences=True))
-                self.model.add(TimeDistributedDense(tdd_size,activation="relu"))
-                self.model.add(Reshape((tdd_size*num_maxpool_outputs,)))
-            else:
-                raise ValueError('invalid model type! supported choices are cnn,cnn-rnn-tdd') 
-            self.model.add(Dense(1,activation='sigmoid'))
+        numConv = 30
+        convStack = 1
+        convWidth = 4
+        convHeight = 45
+        maxPoolSize = 20
+        maxPoolStride = 20
+        numConvOutputs = ((self.seq_len - convHeight) + 1)
+        numMaxPoolOutputs = int(((numConvOutputs-maxPoolSize)/maxPoolStride)+1)
+        gruHiddenVecSize = 35
+        numFCNodes = 45
+        numOutputNodes = 1
+
+        # this fixes an implementation bug in Keras. If this is not true,
+        # then the code runs much more slowly
+        assert maxPoolSize%maxPoolStride == 0
+
+        # Define architecture
+        self.model = Sequential()
+        self.model.add(Convolution2D(
+            numConv,
+            convWidth, convHeight,
+            activation="relu", init="he_normal",
+            input_shape=(1, 4, self.seq_len)
+        ))
+        self.model.add(MaxPooling2D(
+            pool_size=(1,maxPoolSize),
+            stride=(1,maxPoolStride)
+        ))
+        self.model.add(Reshape((numConv,numMaxPoolOutputs)))
+        self.model.add(Permute((2,1)))
+        # make the number of max pooling outputs the time dimension
+        self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
+        self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
+        self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
+        self.model.add(Dense(numOutputNodes,activation='sigmoid'))
 
     @property
     def curr_model_config_hash(self):
         return abs(hash(str(self.model.get_config())))
 
     def compile(self, loss='binary_crossentropy', optimizer=Adam(),
-                use_model_file=False, class_mode="binary"):
+                use_cached_model=False, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
         fname = "MODEL.%s.%s.obj" % (self.curr_model_config_hash, loss_name)
-        if use_model_file:
+        if use_cached_model:
             if os.path.exists("./"+fname):
                 try:
                     print "Loading pickled model '%s'" % fname 
@@ -229,7 +221,7 @@ class KerasModelBase():
 class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
             self, X_train, y_train, X_validation, y_validation, numEpochs,
-            use_model_file):
+            use_cached_model):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)
@@ -238,7 +230,7 @@ class KerasModel(KerasModelBase):
         print 'num training negatives: ', sum(b_y_train==0)
         
         print("Compiling model with binary cross entropy loss.")
-        self.compile('binary_crossentropy', SGD(momentum=0.9), use_model_file)
+        self.compile('binary_crossentropy', Adam(), use_cached_model)
         early_stopping = EarlyStopping(monitor='val_loss', patience=6)
         self.model.fit(
                 b_X_train, b_y_train,
@@ -254,7 +246,7 @@ class KerasModel(KerasModelBase):
         return self
 
     def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs,
-             ofname, use_model_file):
+             ofname, use_cached_model):
         X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
@@ -264,7 +256,7 @@ class KerasModel(KerasModelBase):
                                len(y_train)/float(pos_class_cnt)]))
         print("Switiching to cross entropy loss function.")
         print("Compiling model with cross entropy loss.")
-        self.compile('binary_crossentropy', SGD(momentum=0.9), use_model_file)
+        self.compile('binary_crossentropy', Adam(), use_cached_model)
         best_recall_at_05_fdr = 0
         out_filename = ofname + ".fit_weights.obj"
 
@@ -289,7 +281,7 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(out_filename)
         return self
 
-    def train(self, data, genome_fasta, ofname, use_model_file, use_seq,
+    def train(self, data, genome_fasta, ofname, use_cached_model, use_seq,
               balanced_train_epochs=3, unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
@@ -304,11 +296,11 @@ class KerasModel(KerasModelBase):
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
             X_train, y_train, X_validation, y_validation,
-            balanced_train_epochs, use_model_file)
+            balanced_train_epochs, use_cached_model)
         
         print("Fitting full training set with cross entropy loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, ofname, use_model_file)
+                  unbalanced_train_epochs, ofname, use_cached_model)
         
         # build the predictor matrixes, including the ambiguous labels
         print("Setting the ambiguous labels peak threshold.")
@@ -330,7 +322,7 @@ class KerasModel(KerasModelBase):
 
         print("Re-fitting the model with the imputed data.")
         self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, ofname, use_model_file)
+                  unbalanced_train_epochs, ofname, use_cached_model)
 
         return self
 

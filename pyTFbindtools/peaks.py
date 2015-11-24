@@ -219,7 +219,7 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
         except IndexError: qValue = -1.0
         # idr Value's dont exist in narrowPeakFiles
         idrValue = -1.0
-        seq = ''
+        seq = None
         
         yield NarrowPeak(
             chrm, start, stop, summit, 
@@ -272,8 +272,7 @@ def iter_fasta(fp, max_n_peaks=None):
             name, seq_list = line, []
         else:
             seq_list.append(line)
-    if name:
-        if not (max_n_peaks != None and i > max_n_peaks):
+    if name is not None and (max_n_peaks == None or i > max_n_peaks):
             seq, stop, summit = parse_seq_list(seq_list)
             yield NarrowPeak(
                 name, start, stop, summit,

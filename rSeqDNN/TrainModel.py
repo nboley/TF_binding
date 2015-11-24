@@ -36,7 +36,7 @@ def parse_args():
     test_parser = subparsers.add_parser('test', help='testing help')
     train_parser.add_argument('--model-prefix', default='trainedmodel',
         help='Trained models will be written to (model_prefix).foldnum.h5"')
-    train_parser.add_argument('--use-model-file',
+    train_parser.add_argument('--use-cached-model',
                         default=False, action='store_true',
         help='pickle model during training to avoid recompiling.')
     test_parser.add_argument('--model-file', default=None, type=str,
@@ -93,7 +93,7 @@ def parse_args():
                  genome_fasta, 
                  args.model_prefix, 
                  args.only_test_one_fold,
-                 args.use_model_file,
+                 args.use_cached_model,
                  args.random_seed,
                  args.single_celltype,
                  args.validation_contigs), args.command
@@ -107,8 +107,6 @@ def parse_args():
                  args.single_celltype,
                  args.validation_contigs), args.command
 
-import cPickle as pickle
-
 def main():
     args, command = parse_args()
     if command=='train':
@@ -116,7 +114,7 @@ def main():
           genome_fasta, 
           model_ofname_prefix, 
           only_test_one_fold,
-          use_model_file,
+          use_cached_model,
           random_seed,
           single_celltype,
           validation_contigs
@@ -154,7 +152,7 @@ def main():
                 train, 
                 genome_fasta, 
                 '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
-                use_model_file,
+                use_cached_model,
                 train.can_use_seq)
         
         clean_res = fit_model.evaluate_peaks_and_labels(
