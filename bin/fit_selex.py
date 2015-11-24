@@ -19,7 +19,7 @@ from pyTFbindtools.selex import (
     PartitionedAndCodedSeqs, ReducedDeltaDeltaGArray,
     progressively_fit_model, find_pwm, sample_random_seqs )
 
-INCLUDE_SHAPE = True
+INCLUDE_SHAPE = False
 
 """
 SELEX and massively parallel sequencing  
@@ -453,6 +453,25 @@ def main():
       partition_background_seqs,
       ofname_prefix
      ) = parse_arguments()
+
+    x0 = initial_model.ddg_array
+    x0[0,:] += initial_model.ref_energy
+    
+    partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
+        rnds_and_seqs, 
+        background_seqs, 
+        use_full_background_for_part_fn=True,
+        n_partitions = 4
+    )
+
+    print x0
+    data = partitioned_and_coded_rnds_and_seqs.validation
+    from pyTFbindtools.selex.log_lhd import calc_lhd_factory
+    calc_lhd, calc_grad = calc_lhd_factory(data)
+    chem_affinities = np.array(
+        [-28.1]*2, dtype='float32')
+    print calc_lhd(x0.T, chem_affinities)
+    return
     
     fit_model(
         rnds_and_seqs, background_seqs, 

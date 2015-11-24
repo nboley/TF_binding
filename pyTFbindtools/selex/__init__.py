@@ -209,7 +209,7 @@ class PartitionedAndCodedSeqs(object):
             assert self.seq_length == self.coded_seqs[rnd].seq_length
         self.coded_bg_seqs = code_seqs(background_seqs)
         assert self.seq_length == self.coded_bg_seqs.seq_length
-
+        
         # store views to partitioned subsets of the data 
         self._partitioned_data = [{} for i in xrange(self.n_partitions)]
         for rnd, coded_seqs in self.coded_seqs.iteritems():
