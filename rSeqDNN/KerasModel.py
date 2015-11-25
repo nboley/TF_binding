@@ -237,7 +237,7 @@ class KerasModel(KerasModelBase):
         print self.evaluate(X_validation, y_validation)
         return self
 
-    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, ofname):
+    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, weights_ofname):
         X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
@@ -248,8 +248,9 @@ class KerasModel(KerasModelBase):
         print("Switiching to cross entropy loss function.")
         print("Compiling model with cross entropy loss.")
         self.compile('binary_crossentropy', Adam())
-        best_recall_at_05_fdr = 0
-        out_filename = ofname + ".fit_weights.obj"
+        res = self.evaluate(X_validation, y_validation)
+        best_recall_at_05_fdr = res.recall_at_05_fdr
+        self.model.save_weights(weights_ofname, overwrite=True)
 
         for epoch in xrange(numEpochs):
             self.model.fit(
@@ -264,12 +265,12 @@ class KerasModel(KerasModelBase):
 
             if (res.recall_at_05_fdr > best_recall_at_05_fdr):
                 print("highest recall at 0.05 FDR so far. Saving weights.")
-                self.model.save_weights(out_filename, overwrite=True)
+                self.model.save_weights(weights_ofname, overwrite=True)
                 best_recall_at_05_fdr = res.recall_at_05_fdr
 
         # load and return the best model
         print "Loading best model"
-        self.model.load_weights(out_filename)
+        self.model.load_weights(weights_ofname)
         return self
 
     def train(self, data, genome_fasta, ofname,

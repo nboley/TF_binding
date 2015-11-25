@@ -130,8 +130,7 @@ def main_train(main_args, train_args):
         fit_model = model.train(
             train,
             genome_fasta,
-            '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
-            use_cached_model)
+            '%s.%i.hd5.fit_weights.obj' % (model_ofname_prefix, fold_index+1))
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid,
             genome_fasta,
