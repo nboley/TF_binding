@@ -74,9 +74,6 @@ jolma_prot_conc = jolma_dna_conc/25 # mol/L (should be 25)
 USE_FULL_BG_FOR_PART_FN = True
 DEFAULT_MIN_NUM_BG_SEQS = 100000
 
-def optional_gzip_open(fname):
-    return gzip.open(fname) if fname.endswith(".gz") else open(fname)  
-
 def get_experiment_to_process_from_DB_queue(host, dbname, user):
     """XXX Untested
 
@@ -187,17 +184,6 @@ def load_fastq(fp, maxnum=1e8):
         if i%4 == 1:
             seqs.append(line.strip().upper())
     return seqs
-
-def load_sequences(fnames, max_num_seqs_per_file=1e8):
-    fnames = list(fnames)
-    rnds_and_seqs = {}
-    rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
-    rnds_and_fnames = dict(zip(rnd_nums, fnames))
-    for rnd, fname in rnds_and_fnames.iteritems():
-        with optional_gzip_open(fname) as fp:
-            loader = load_fastq if ".fastq" in fname else load_text_file
-            rnds_and_seqs[rnd] = loader(fp, max_num_seqs_per_file)
-    return rnds_and_seqs
 
 def load_sequence_data(selex_db_conn,
                        seq_fps,
