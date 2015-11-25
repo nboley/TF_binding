@@ -88,16 +88,6 @@ class PeaksAndLabels():
     @property
     def max_peak_width(self):
         return max(self.peak_widths)
-    
-    @property
-    def can_use_seq(self):
-        '''
-        checks all peak sequences match peak width
-        '''
-        if all([pk.seq is not None for pk in self.peaks]):
-            return all([len(pk.seq)==pk.pk_width for pk in self.peaks])
-        else:
-            return False
 
     def __init__(self, peaks_and_labels):
         # split the peaks and labels into separate columns. Also
@@ -219,7 +209,7 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
         except IndexError: qValue = -1.0
         # idr Value's dont exist in narrowPeakFiles
         idrValue = -1.0
-        seq = ''
+        seq = None
         
         yield NarrowPeak(
             chrm, start, stop, summit, 
@@ -272,8 +262,7 @@ def iter_fasta(fp, max_n_peaks=None):
             name, seq_list = line, []
         else:
             seq_list.append(line)
-    if name:
-        if not (max_n_peaks != None and i > max_n_peaks):
+    if name is not None and (max_n_peaks == None or i > max_n_peaks):
             seq, stop, summit = parse_seq_list(seq_list)
             yield NarrowPeak(
                 name, start, stop, summit,

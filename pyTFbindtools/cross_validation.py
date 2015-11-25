@@ -88,8 +88,14 @@ class ClassificationResult(object):
     
     def __str__(self):
         rv = []
-        #rv.append(str(self.validation_samples).ljust(25))
-        #rv.append(str(self.train_samples).ljust(15))
+        if self.train_samples is not None:
+            rv.append("Train Samples: %s\n" % self.train_samples)
+        if self.train_chromosomes is not None:
+            rv.append("Train Chromosomes: %s\n" % self.train_chromosomes)
+        if self.validation_samples is not None:
+            rv.append("Validation Samples: %s\n" % self.validation_samples)
+        if self.validation_chromosomes is not None:
+            rv.append("Validation Chromosomes: %s\n" % self.validation_chromosomes)
         rv.append("Balanced Accuracy: %.3f" % self.balanced_accuracy )
         rv.append("auROC: %.3f" % self.auROC)
         rv.append("auPRC: %.3f" % self.auPRC)
@@ -112,7 +118,7 @@ def find_optimal_ambiguous_peak_threshold(
     original_labels = labels
     labels = labels.copy()
     # find the peaks with ambiguous labels and their scores
-    ambiguous_peaks = np.array(original_labels == -1)        
+    ambiguous_peaks = np.array(original_labels == -1)
     ambiguous_peak_scores = peak_scores[ambiguous_peaks]
 
     # predict the label proabilities for every peak (ambiguous included)
@@ -168,6 +174,8 @@ def plot_ambiguous_peaks(scores, pred_prbs, ofname):
 
 class ClassificationResults(list):
     def __str__(self):
+        if len(self)==0:
+            return ''
         balanced_accuracies = [x.balanced_accuracy for x in self]    
         auROCs = [x.auROC for x in self]
         auRPCs = [x.auPRC for x in self]
