@@ -17,7 +17,11 @@ from pyTFbindtools.peaks import (
 
 from pyTFbindtools.cross_validation import ClassificationResults
 
-from KerasModel import KerasModel, encode_peaks_sequence_into_binary_array
+from KerasModel import (
+    KerasModel,
+    encode_peaks_sequence_into_binary_array,
+    load_model
+)
 
 def parse_args():
     parser = init_prediction_script_argument_parser(
@@ -43,7 +47,7 @@ def parse_args():
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
         help='model weights file')
-    
+
     args = parser.parse_args()
     if args.validation_contigs is not None:
         args.validation_contigs = set(args.validation_contigs.split(','))
@@ -56,7 +60,7 @@ def parse_args():
             load_genome_metadata(args.annotation_id).filename) 
     else:
         genome_fasta = args.genome_fasta
-        
+
     if args.tf_id is not None:
         assert args.pos_regions is None and args.neg_regions is None, \
             "It doesnt make sense to set both --tf-id and either --pos-regions or --neg-regions"
@@ -88,110 +92,117 @@ def parse_args():
             raise ValueError('either --tf-id or (--pos-regions and --neg-regions)\
             or (--pos-sequences and --neg-sequences) must be set')
 
+    main_args = ( peaks_and_labels,
+                  genome_fasta,
+                  args.only_test_one_fold,
+                  args.random_seed,
+                  args.single_celltype,
+                  args.validation_contigs)
     if args.command=='train':
-        return ( peaks_and_labels, 
-                 genome_fasta, 
-                 args.model_prefix, 
-                 args.only_test_one_fold,
-                 args.use_cached_model,
-                 args.random_seed,
-                 args.single_celltype,
-                 args.validation_contigs), args.command
+        command_args = ( args.model_prefix,
+                         args.use_cached_model)
     elif args.command=='test':
-        return ( peaks_and_labels,
-                 genome_fasta,
-                 args.only_test_one_fold,
-                 args.model_file,
-                 args.weights_file,
-                 args.random_seed,
-                 args.single_celltype,
-                 args.validation_contigs), args.command
+        command_args = ( args.model_file,
+                         args.weights_file)
+    return  main_args, command_args, args.command
 
-def main():
-    args, command = parse_args()
-    if command=='train':
-        ( peaks_and_labels, 
-          genome_fasta, 
-          model_ofname_prefix, 
-          only_test_one_fold,
-          use_cached_model,
-          random_seed,
-          single_celltype,
-          validation_contigs
-      ) = args
-    elif command=='test':
-        ( peaks_and_labels,
-          genome_fasta,
-          only_test_one_fold,
-          model_fname,
-          weights_fname,
-          random_seed,
-          single_celltype,
-          validation_contigs
-      ) = args
+def main_train(main_args, train_args):
+    ( peaks_and_labels,
+      genome_fasta,
+      only_test_one_fold,
+      random_seed,
+      single_celltype,
+      validation_contigs ) = main_args
+    model_ofname_prefix, use_cached_model = train_args
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
     training_data = OrderedDict()
     validation_data = OrderedDict()
-    if command=='train':
-        model = KerasModel(peaks_and_labels, use_cached_model=use_cached_model)
-    elif command=='test':
-        fit_model = KerasModel(peaks_and_labels, model_fname=model_fname)
-        if model_fname is None:
-            fit_model.compile()
-        fit_model.model.load_weights(weights_fname)
+    model = KerasModel(peaks_and_labels,
+                       use_cached_model=use_cached_model)
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
             validation_contigs, single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
-        if command=='train':
-            fit_model = model.train(
-                train, 
-                genome_fasta, 
-                '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
-                use_cached_model)
-        
+        fit_model = model.train(
+            train,
+            genome_fasta,
+            '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
+            use_cached_model)
         clean_res = fit_model.evaluate_peaks_and_labels(
-            valid, 
+            valid,
             genome_fasta,
             filter_ambiguous_labels=True)
-        print "CLEAN:", clean_res
+        if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
+            clean_res.train_samples = train.sample_ids
+            clean_res.train_chromosomes = train.contigs
+            clean_res.validation_samples = valid.sample_ids
+            clean_res.validation_chromosomes = valid.contigs
         clean_results.append(clean_res)
-
-        if not command=='test': ## TODO: load/provide threshold
+        if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             res = fit_model.evaluate_peaks_and_labels(
-                valid, 
+                valid,
                 genome_fasta,
                 filter_ambiguous_labels=False,
                 plot_fname=("ambig.fold%i.png" % fold_index))
-            print "FULL:", res
+            res.train_samples = train.sample_ids
+            res.train_chromosomes = train.contigs
+            res.validation_samples = valid.sample_ids
+            res.validation_chromosomes = valid.contigs
             results.append(res)
-        
-        if not command=='test':
-            training_data[fold_index] = [train.sample_ids, train.contigs]
-        validation_data[fold_index] = [valid.sample_ids, valid.contigs]
-        
         if only_test_one_fold: break
-
-    print 'Printing validation results for each fold:'
-    for fold_index in validation_data.keys():
-        if not command=='test':
-            print 'training data: ', training_data[fold_index]
-        print 'validation data: ', validation_data[fold_index]
-        print 'CLEAN:', clean_results[fold_index]
-        if not command=='test':
-            print 'FULL:', results[fold_index]
-    print 'Printing validation results over all folds:'
-    print 'CLEAN:'
+    print 'CLEAN VALIDATION RESULTS'
+    for res in clean_results:
+        print res
     print clean_results
-    if not command=='test':
-        print 'FULL:'
-        print results
-        
+    print 'FULL VALIDATION RESULTS'
+    for res in results:
+        print res
+    print results
+
+def main_test(main_args, test_args):
+    ( peaks_and_labels,
+      genome_fasta,
+      only_test_one_fold,
+      random_seed,
+      single_celltype,
+      validation_contigs ) = main_args
+    model_fname, weights_fname = test_args
+    np.random.seed(random_seed) # fix random seed
+    clean_results = ClassificationResults()
+    validation_data = OrderedDict()
+    fit_model = KerasModel(peaks_and_labels)
+    if model_fname is not None:
+        fit_model.model = load_model(model_fname)
+    else:
+        fit_model.compile()
+    fit_model.model.load_weights(weights_fname)
+    if isinstance(peaks_and_labels, FastaPeaksAndLabels):
+        train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
+    else:
+        train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
+            validation_contigs, single_celltype))
+    for fold_index, (train, valid) in enumerate(train_validation_subsets):
+        clean_res = fit_model.evaluate_peaks_and_labels(
+            valid,
+            genome_fasta,
+            filter_ambiguous_labels=True)
+        if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
+            clean_res.validation_samples = valid.sample_ids
+            clean_res.validation_chromosomes = valid.contigs
+        clean_results.append(clean_res)
+        if only_test_one_fold: break
+    print 'CLEAN VALIDATION RESULTS'
+    for res in clean_results:
+        print res
+    print clean_results
 
 if __name__ == '__main__':
-    main()
-
+    main_args, command_args, command  = parse_args()
+    if command=='train':
+        main_train(main_args, command_args)
+    elif command=='test':
+        main_test(main_args, command_args)

@@ -7,7 +7,7 @@ import json
 import os
 
 from pyTFbindtools.sequence import code_seq
-
+from pyTFbindtools.peaks import FastaPeaksAndLabels
 from pyTFbindtools.cross_validation import (
     ClassificationResult, 
     find_optimal_ambiguous_peak_threshold, 
@@ -76,7 +76,8 @@ def add_reverse_complements(X, y):
     return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
 
 def load_model(fname):
-    pass
+    with open(fname) as fp:
+        return pickle.load(fp)
 
 def set_ambiguous_labels(labels, scores, threshold):
     ambig_labels = (labels == -1)
@@ -289,25 +290,26 @@ class KerasModel(KerasModelBase):
         self._fit(X_train, y_train, X_validation, y_validation,
                   unbalanced_train_epochs, ofname)
 
-        # build the predictor matrixes, including the ambiguous labels
-        print("Setting the ambiguous labels peak threshold.")
-        X_train, y_train = self.build_predictor_and_label_matrices(
-            data_fitting, genome_fasta, filter_ambiguous_labels=False)
-        self.ambiguous_peak_threshold = \
-            self.find_optimal_ambiguous_peak_threshold(
-                X_train, y_train, data_fitting.scores)
-        y_train = set_ambiguous_labels(
-            y_train, data_fitting.scores, self.ambiguous_peak_threshold)
+        if not isinstance(data, FastaPeaksAndLabels):
+            # build predictor matrices with  ambiguous labels
+            print("Setting the ambiguous labels peak threshold.")
+            X_train, y_train = self.build_predictor_and_label_matrices(
+                data_fitting, genome_fasta, filter_ambiguous_labels=False)
+            self.ambiguous_peak_threshold = \
+                self.find_optimal_ambiguous_peak_threshold(
+                    X_train, y_train, data_fitting.scores)
+            y_train = set_ambiguous_labels(
+                y_train, data_fitting.scores, self.ambiguous_peak_threshold)
 
-        X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data_stopping, genome_fasta, filter_ambiguous_labels=False)
-        y_validation = set_ambiguous_labels(
-            y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
-        print self.evaluate(X_validation, y_validation)
+            X_validation, y_validation = self.build_predictor_and_label_matrices(
+                data_stopping, genome_fasta, filter_ambiguous_labels=False)
+            y_validation = set_ambiguous_labels(
+                y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
+            print self.evaluate(X_validation, y_validation)
 
-        print("Re-fitting the model with the imputed data.")
-        self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, ofname)
+            print("Re-fitting the model with the imputed data.")
+            self._fit(X_train, y_train, X_validation, y_validation,
+                      unbalanced_train_epochs, ofname)
 
         return self
 
