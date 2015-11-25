@@ -152,13 +152,11 @@ def main():
                 train, 
                 genome_fasta, 
                 '%s.%i.hd5' % (model_ofname_prefix, fold_index+1),
-                use_cached_model,
-                train.can_use_seq)
+                use_cached_model)
         
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid, 
             genome_fasta,
-            valid.can_use_seq,
             filter_ambiguous_labels=True)
         print "CLEAN:", clean_res
         clean_results.append(clean_res)
@@ -167,7 +165,6 @@ def main():
             res = fit_model.evaluate_peaks_and_labels(
                 valid, 
                 genome_fasta,
-                valid.can_use_seq,
                 filter_ambiguous_labels=False,
                 plot_fname=("ambig.fold%i.png" % fold_index))
             print "FULL:", res

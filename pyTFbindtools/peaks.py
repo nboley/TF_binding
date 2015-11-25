@@ -88,16 +88,6 @@ class PeaksAndLabels():
     @property
     def max_peak_width(self):
         return max(self.peak_widths)
-    
-    @property
-    def can_use_seq(self):
-        '''
-        checks all peak sequences match peak width
-        '''
-        if all([pk.seq is not None for pk in self.peaks]):
-            return all([len(pk.seq)==pk.pk_width for pk in self.peaks])
-        else:
-            return False
 
     def __init__(self, peaks_and_labels):
         # split the peaks and labels into separate columns. Also

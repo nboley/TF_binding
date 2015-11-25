@@ -55,14 +55,14 @@ def balance_matrices(X, labels):
     return np.vstack((pos, neg)), np.array(
         [1]*sample_size + [0]*sample_size, dtype='float32')
 
-def encode_peaks_sequence_into_binary_array(peaks, fasta, use_seq=False):
+def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
     data = 0.25 * np.ones((len(peaks), 4, pk_width), dtype='float32')
     for i, pk in enumerate(peaks):
-        if use_seq:
+        if pk.seq is not None:
             seq = pk.seq
         else:
             seq = fasta.fetch(pk.contig, pk.start, pk.stop)
@@ -172,14 +172,12 @@ class KerasModelBase():
             self, 
             data, 
             genome_fasta,
-            use_seq,
             filter_ambiguous_labels=False,
             plot_fname=None):
         '''evaluate model
         '''
         X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data, genome_fasta, filter_ambiguous_labels=filter_ambiguous_labels,
-            use_seq=use_seq)
+            data, genome_fasta, filter_ambiguous_labels=filter_ambiguous_labels)
         # set the ambiguous labels
         if not filter_ambiguous_labels:
             if plot_fname is not None:
@@ -201,10 +199,10 @@ class KerasModelBase():
             return coded_seqs
 
     def build_predictor_and_label_matrices(
-            self, data, genome_fasta, filter_ambiguous_labels, use_seq):
+            self, data, genome_fasta, filter_ambiguous_labels):
         X = self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
-                    data.peaks, genome_fasta, use_seq=use_seq))
+                    data.peaks, genome_fasta))
         y = np.array(data.labels, dtype='float32')
         if filter_ambiguous_labels:
             X = X[y != -1,:,:,:]
@@ -273,17 +271,15 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(out_filename)
         return self
 
-    def train(self, data, genome_fasta, ofname, use_seq,
+    def train(self, data, genome_fasta, ofname,
               balanced_train_epochs=3, unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
         X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data_stopping, genome_fasta, filter_ambiguous_labels=True,
-            use_seq=use_seq)
+            data_stopping, genome_fasta, filter_ambiguous_labels=True)
 
         X_train, y_train = self.build_predictor_and_label_matrices(
-            data_fitting, genome_fasta, filter_ambiguous_labels=True,
-            use_seq=use_seq)
+            data_fitting, genome_fasta, filter_ambiguous_labels=True)
 
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
@@ -296,8 +292,7 @@ class KerasModel(KerasModelBase):
         # build the predictor matrixes, including the ambiguous labels
         print("Setting the ambiguous labels peak threshold.")
         X_train, y_train = self.build_predictor_and_label_matrices(
-            data_fitting, genome_fasta, filter_ambiguous_labels=False,
-            use_seq=use_seq)
+            data_fitting, genome_fasta, filter_ambiguous_labels=False)
         self.ambiguous_peak_threshold = \
             self.find_optimal_ambiguous_peak_threshold(
                 X_train, y_train, data_fitting.scores)
@@ -305,8 +300,7 @@ class KerasModel(KerasModelBase):
             y_train, data_fitting.scores, self.ambiguous_peak_threshold)
 
         X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data_stopping, genome_fasta, filter_ambiguous_labels=False,
-            use_seq=use_seq)
+            data_stopping, genome_fasta, filter_ambiguous_labels=False)
         y_validation = set_ambiguous_labels(
             y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
         print self.evaluate(X_validation, y_validation)
