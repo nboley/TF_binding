@@ -112,7 +112,7 @@ def find_optimal_ambiguous_peak_threshold(
     original_labels = labels
     labels = labels.copy()
     # find the peaks with ambiguous labels and their scores
-    ambiguous_peaks = np.array(original_labels == 0)        
+    ambiguous_peaks = np.array(original_labels == -1)        
     ambiguous_peak_scores = peak_scores[ambiguous_peaks]
 
     # predict the label proabilities for every peak (ambiguous included)
