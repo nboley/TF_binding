@@ -85,9 +85,9 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels, batch_size=200):
+    def __init__(self, peaks_and_labels, use_cached_model=False, batch_size=200):
         self.batch_size = batch_size
-
+        self.use_cached_model = use_cached_model
         self.seq_len = peaks_and_labels.max_peak_width
         numConv = 30
         convStack = 1
@@ -129,32 +129,26 @@ class KerasModelBase():
     def curr_model_config_hash(self):
         return abs(hash(str(self.model.get_config())))
 
-    def compile(self, loss='binary_crossentropy', optimizer=Adam(),
-                use_cached_model=False, class_mode="binary"):
+    def compile(self, loss='binary_crossentropy', optimizer=Adam(), class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
         fname = "MODEL.%s.%s.obj" % (self.curr_model_config_hash, loss_name)
-        if use_cached_model:
-            if os.path.exists("./"+fname):
-                try:
-                    print "Loading pickled model '%s'" % fname 
-                    with open(fname, "rb") as fp:
-                        self.model = pickle.load(fp)
-                    print "Finished loading pickled model."
-                except IOError:
-                    raise ValueError("ERROR loading picked model!exiting!")
-            else:
-                print "compiling model..."
-                self.model.compile(loss=loss, 
-                                   optimizer=optimizer,
-                                   class_mode=class_mode)
-                print("Saving compiled model to pickle object." )
-                with open(fname, "w") as fp:
-                    pickle.dump(self.model, fp)
+        if self.use_cached_model and os.path.exists(os.path.join(os.getcwd(),fname)):
+            try:
+                print "Loading pickled model '%s'" % fname
+                with open(fname, "rb") as fp:
+                    self.model = pickle.load(fp)
+                print "Finished loading pickled model."
+            except IOError:
+                raise ValueError("ERROR loading picked model!exiting!")
         else:
             print "compiling model..."
             self.model.compile(loss=loss,
                                optimizer=optimizer,
                                class_mode=class_mode)
+            if self.use_cached_model:
+                print("Saving compiled model to pickle object." )
+                with open(fname, "w") as fp:
+                    pickle.dump(self.model, fp)
 
     def predict(self, X_validation, verbose=False):
         preds = self.model.predict_classes(X_validation, verbose=int(verbose))
@@ -220,8 +214,7 @@ class KerasModelBase():
 
 class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
-            self, X_train, y_train, X_validation, y_validation, numEpochs,
-            use_cached_model):
+            self, X_train, y_train, X_validation, y_validation, numEpochs):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)
@@ -230,7 +223,7 @@ class KerasModel(KerasModelBase):
         print 'num training negatives: ', sum(b_y_train==0)
         
         print("Compiling model with binary cross entropy loss.")
-        self.compile('binary_crossentropy', Adam(), use_cached_model)
+        self.compile('binary_crossentropy', Adam())
         early_stopping = EarlyStopping(monitor='val_loss', patience=6)
         self.model.fit(
                 b_X_train, b_y_train,
@@ -245,8 +238,7 @@ class KerasModel(KerasModelBase):
         print self.evaluate(X_validation, y_validation)
         return self
 
-    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs,
-             ofname, use_cached_model):
+    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, ofname):
         X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
@@ -256,7 +248,7 @@ class KerasModel(KerasModelBase):
                                len(y_train)/float(pos_class_cnt)]))
         print("Switiching to cross entropy loss function.")
         print("Compiling model with cross entropy loss.")
-        self.compile('binary_crossentropy', Adam(), use_cached_model)
+        self.compile('binary_crossentropy', Adam())
         best_recall_at_05_fdr = 0
         out_filename = ofname + ".fit_weights.obj"
 
@@ -281,7 +273,7 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(out_filename)
         return self
 
-    def train(self, data, genome_fasta, ofname, use_cached_model, use_seq,
+    def train(self, data, genome_fasta, ofname, use_seq,
               balanced_train_epochs=3, unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
@@ -295,13 +287,12 @@ class KerasModel(KerasModelBase):
 
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
-            X_train, y_train, X_validation, y_validation,
-            balanced_train_epochs, use_cached_model)
-        
+            X_train, y_train, X_validation, y_validation, balanced_train_epochs)
+
         print("Fitting full training set with cross entropy loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, ofname, use_cached_model)
-        
+                  unbalanced_train_epochs, ofname)
+
         # build the predictor matrixes, including the ambiguous labels
         print("Setting the ambiguous labels peak threshold.")
         X_train, y_train = self.build_predictor_and_label_matrices(
@@ -322,7 +313,7 @@ class KerasModel(KerasModelBase):
 
         print("Re-fitting the model with the imputed data.")
         self._fit(X_train, y_train, X_validation, y_validation,
-                  unbalanced_train_epochs, ofname, use_cached_model)
+                  unbalanced_train_epochs, ofname)
 
         return self
 

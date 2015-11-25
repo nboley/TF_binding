@@ -135,7 +135,7 @@ def main():
     training_data = OrderedDict()
     validation_data = OrderedDict()
     if command=='train':
-        model = KerasModel(peaks_and_labels)
+        model = KerasModel(peaks_and_labels, use_cached_model=use_cached_model)
     elif command=='test':
         fit_model = KerasModel(peaks_and_labels, model_fname=model_fname)
         if model_fname is None:
