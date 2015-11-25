@@ -1,21 +1,22 @@
 import sys
-
 import math
-
-import numpy as np
-
-from scipy.optimize import brute, bisect
-from scipy.signal import fftconvolve
-
 from collections import defaultdict, namedtuple
 
-from sequence import code_seq
+import numpy as np
+from scipy.optimize import brute, bisect
+from scipy.signal import fftconvolve, convolve
+from scipy.stats.mstats import mquantiles
+
+import h5py
+
+from pysam import FastaFile
+
+from sequence import one_hot_encode_sequences
+
+from DB import load_genome_metadata
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
-#R = 8.314e-3 # in kJ
-
-REG_LEN = 100000
 
 base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 RC_base_map = {'A': 3, 'C': 2, 'G': 1, 'T': 0}
@@ -27,17 +28,15 @@ def logistic(x):
     try: e_x = math.exp(-x)
     except: e_x = np.exp(-x)
     return 1/(1+e_x)
-    #return e_x/(1+e_x)
 
 PwmModel = namedtuple('PwmModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
-SelexModel = namedtuple('SelexModel', [
+SelexModelData = namedtuple('SelexModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 
     'consensus_energy', 'ddg_array']) 
-
-#pickled_motifs_fname = os.path.join(
-#    os.path.dirname(__file__), 
-#    "../data/motifs/human_and_mouse_motifs.pickle.obj")
+class SelexModel(SelexModelData):
+    def __len__(self):
+        return self.ddg_array.shape[0]
 
 def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
@@ -77,15 +76,13 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     conn = psycopg2.connect("host=mitra dbname=cisbp user=nboley")
     cur = conn.cursor()    
     query = """
-     SELECT tfs.tf_id,
-        format('SELEX_%%s', selex_models.key) AS motif_id,
-        tfs.tf_name,
-        tfs.tf_species,
-        selex_models.consensus_energy,
-        selex_models.ddg_array
-       FROM selex_models
-         JOIN selex_experiments USING (selex_exp_id)
-         JOIN tfs USING (tf_id)
+     SELECT tf_id,
+        format('SELEX_%%s', selex_motif_id) AS motif_id,
+        tf_name,
+        tf_species,
+        consensus_energy,
+        ddg_array
+       FROM best_selex_models
     """
 
     #query = """
@@ -93,7 +90,7 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     #  FROM best_selex_models
     #"""
     if tf_names == None and tf_ids == None and motif_ids == None:
-        cur.execute(query)
+        cur.execute(query, [])
     elif tf_names != None and tf_ids == None and motif_ids == None:
         query += " WHERE tf_name in %s"
         cur.execute(query, [tuple(tf_names),])
@@ -117,23 +114,98 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
-def score_region(region, genome, motifs):
-    seq = genome.fetch(region[0], region[1], region[2])
-    motifs_scores = []
+def load_binding_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
+    selex_motifs = load_selex_models_from_db(tf_names, tf_ids, motif_ids)
+    cisb_motifs = load_pwms_from_db(tf_names, tf_ids, motif_ids)
+    # Get one motif for each and prefer SELEX
+    selex_tf_ids = set(m.tf_id for m in selex_motifs)
+    return selex_motifs+[
+        el for el in cisb_motifs if el.tf_id not in selex_tf_ids]
+
+
+def calc_occ(chem_pot, energies):
+    return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
+
+def _score_coded_seqs_binding_sites(coded_seqs, score_array):
+    n_seqs = coded_seqs.shape[0]
+    seq_len = coded_seqs.shape[1]
+    n_bind_sites = seq_len-score_array.shape[0]+1
+
+    # fft convolve is faster, but uses a lot more memory, so we 
+    # dont use it for large regions
+    convolve_fn = fftconvolve if seq_len < 1000000 else convolve
+    
+    rv = np.zeros((n_seqs, n_bind_sites), dtype='float32')
+    for i, coded_seq in enumerate(coded_seqs):
+        fwd_scores = convolve_fn(
+            coded_seq, np.fliplr(np.flipud(score_array)),
+            mode='valid')
+        rc_scores = convolve_fn(coded_seq, score_array, mode='valid')
+        rv[i,:] = np.hstack((fwd_scores, rc_scores)).max(1)
+    
+    return rv
+
+def score_regions(regions, genome, motifs):
+    seqs = [genome.fetch(region[0], region[1], region[2]) for region in regions]
+    coded_seqs = one_hot_encode_sequences(seqs)
     for motif in motifs:
         if isinstance(motif, PwmModel):
-            N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
-            extended_mat = np.hstack((motif.pwm, N_row))
+            score_array = motif.pwm
         elif isinstance(motif, SelexModel):
-            N_row = np.zeros((len(motif.ddg_array), 1))
-            extended_mat = np.hstack((motif.ddg_array, N_row))
-        coded_seq = code_seq(bytes(seq))
-        FWD_scores = -fftconvolve(coded_seq, extended_mat.T, mode='valid')
-        RC_scores = -fftconvolve(
-            coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
-        scores = np.vstack((FWD_scores, RC_scores)).max(0)
-        motifs_scores.append(scores)
-    return motifs_scores
+            score_array = motif.ddg_array
+        yield _score_coded_seqs_binding_sites(coded_seqs, score_array)
+    return
+
+def build_model_scores_hdf5_file(annotation_id, tf_id):
+    genome_fname = load_genome_metadata(annotation_id).filename
+    genome = FastaFile(genome_fname)
+    models = load_binding_models_from_db(tf_ids=[tf_id,])
+    assert len(models) == 1
+    model = models[0]
+    
+    # open a file to write the scores to
+    fname = "/srv/scratch/nboley/projects/hd5_scoring/binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
+        annotation_id, model.motif_id)
+    
+    # check to see if the file exists and, if it does, raise an error
+    try: 
+        with open(fname): pass
+    except IOError: 
+        pass
+    else: 
+        raise IOError, "File '%s' already exists" % fname
+    
+    with h5py.File(fname, "w") as ofp:
+        for i, (contig, contig_len) in enumerate(
+                zip(genome.references, genome.lengths)):
+            print >> sys.stderr, "Processing %i/%i" % (
+                i+1, len(genome.references))
+            scores = next(score_regions(
+                [(contig, 0, contig_len),], genome, [model,]))
+            dset = ofp.create_dataset(contig, scores.shape, dtype='f')
+            dset[:] = scores
+
+def score_regions_from_hdf5(regions, annotation_id, model):
+    fname = "/srv/scratch/nboley/projects/hd5_scoring/binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (annotation_id, model.motif_id)
+
+    # if there are a lot of regins, it will be faster to cache the hdf5 file in memory
+    if len(regions) > 20000:
+        print "Pre-cacheing hdf5 file '%s'" % fname
+        driver = 'core'
+    else:
+        driver = None
+
+    with h5py.File(fname, 'r', driver=driver) as fp:
+        for contig, start, stop in regions:
+            yield ( (contig, start, stop), 
+                    fp[contig][0, start:stop-len(model)+1] )
+    return
+
+def aggregate_region_scores(
+        scores, quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]):
+    rv = [scores.mean()/len(scores), scores.max()]
+    rv.extend(mquantiles(scores, prob=quantile_probs))
+    return rv
 
 def load_energy_data(fname):
     def load_energy(mo_text):
@@ -354,6 +426,7 @@ class Motif():
         self.lines = None
         self.meta_data_line = None
 
+        print "hjere", pwm
         self.length = len(pwm)
 
         self.consensus_energy = 0.0
