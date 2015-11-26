@@ -13,36 +13,9 @@ from pyTFbindtools.motif_tools import load_energy_data, load_motifs
 
 from pyDNAbinding.DB import load_binding_models_from_db
 from pyDNAbinding.sequence import sample_random_seqs
-from pyDNAbinding.binding_model import FixedLengthDNASequences
+from pyDNAbinding.binding_model import (
+    FixedLengthDNASequences, est_chem_potential )
 from pyDNAbinding.misc import calc_occ
-
-T = 300
-R = 1.987e-3 # in kCal/mol*K
-
-def est_chem_potential(seqs, binding_model, dna_conc, prot_conc):
-    """Estimate chemical affinity for round 1.
-
-    [TF] - [TF]_0 - \sum{all seq}{ [s_i]_0[TF](1/{[TF]+exp(delta_g)}) = 0  
-    exp{u} - [TF]_0 - \sum{i}{ 1/(1+exp(G_i)exp(-)
-    """
-    # calculate the binding affinities for each sequence
-    affinities = -(seqs.score_binding_sites(binding_model, 'MAX').max(1))
-    
-    def calc_bnd_frac(affinities, chem_pot):
-        return calc_occ(chem_pot, affinities).mean()
-    
-    def f(u):
-        bnd_frac = calc_bnd_frac(affinities, u)
-        #print u, bnd_frac, prot_conc, prot_conc*bnd_frac, math.exp(u), \
-        #    dna_conc*bnd_frac + math.exp(u)
-        return prot_conc - math.exp(u) - dna_conc*bnd_frac
-        #return prot_conc - math.exp(u) - prot_conc*bnd_frac
-
-    min_u = -1000
-    max_u = np.log(prot_conc/(R*T))
-    rv = brentq(f, min_u, max_u, xtol=1e-4)
-    return rv
-
 
 def simulate_reads( binding_model, seq_len, sim_sizes,
                     dna_conc, prot_conc,
@@ -99,13 +72,13 @@ def parse_arguments():
                          help='Number of reads to simulate for each round.')    
     
     parser.add_argument( '--prot-conc', type=float, default=7.75e-10,
-                         help='The protein concentration.  (mols/L)')
+                         help='The protein concentration.  (mol/L)')
     parser.add_argument( '--dna-conc', type=float, default=2e-8,
-                         help='The DNA concentration. (mols/L)')
+                         help='The DNA concentration. (mol/L)')
     
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
-    parser.add_argument( '--random-seq-pool-size', type=float, default=1e6,
+    parser.add_argument( '--random-seq-pool-size', type=float, default=1e5,
         help='The random pool size for the bootstrap.')
     
     parser.add_argument( '--verbose', default=False, action='store_true',
