@@ -10,6 +10,7 @@ import numpy as np
 from pyDNAbinding.binding_model import (
     EnergeticDNABindingModel, PWMBindingModel, load_binding_model, 
     DNABindingModels )
+from pyDNAbinding.misc import optional_gzip_open, load_fastq
 
 import pyTFbindtools
 
@@ -170,20 +171,16 @@ class SelexDBConn(object):
         assert len(concs) == 1
         return concs.pop()
 
-def load_text_file(fp, maxnum=1e8):
-    seqs = []
-    for i, line in enumerate(fp):
-        seqs.append(line.strip().upper())
-        if i > maxnum: break
-    return seqs
-
-def load_fastq(fp, maxnum=1e8):
-    seqs = []
-    for i, line in enumerate(fp):
-        if i/4 >= maxnum: break
-        if i%4 == 1:
-            seqs.append(line.strip().upper())
-    return seqs
+def load_sequences(fnames, max_num_seqs_per_file=float('inf')):
+    fnames = list(fnames)
+    rnds_and_seqs = {}
+    rnd_nums = [int(x.split("_")[-1].split(".")[0]) for x in fnames]
+    rnds_and_fnames = dict(zip(rnd_nums, fnames))
+    for rnd, fname in rnds_and_fnames.iteritems():
+        with optional_gzip_open(fname) as fp:
+            loader = load_fastq if ".fastq" in fname else load_text_file
+            rnds_and_seqs[rnd] = loader(fp, max_num_seqs_per_file)
+    return rnds_and_seqs
 
 def load_sequence_data(selex_db_conn,
                        seq_fps,
@@ -370,7 +367,7 @@ def parse_arguments():
         args.starting_pwm.close()
     if args.starting_energy_model is not None: 
         args.starting_energy_model.close()
-
+        
     return ( motif, 
              rnds_and_seqs, background_seqs, 
              selex_db_conn, 
@@ -385,9 +382,7 @@ def fit_model(rnds_and_seqs, background_seqs,
               output_fname_prefix=None):
     assert selex_db_conn is not None or output_fname_prefix is not None
 
-    ref_energy, ddg_array = initial_model.ref_energy, initial_model.ddg_array
-    assert (ddg_array[:,0].round(6) == 0).all()
-    ddg_array = ddg_array[:,1:].T.view(ReducedDeltaDeltaGArray)
+    ref_energy, ddg_array = initial_model.build_all_As_affinity_and_ddg_array()
     
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
@@ -439,9 +434,6 @@ def main():
       partition_background_seqs,
       ofname_prefix
      ) = parse_arguments()
-
-    x0 = initial_model.ddg_array
-    x0[0,:] += initial_model.ref_energy
     
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs, 
@@ -450,15 +442,17 @@ def main():
         n_partitions = 4
     )
 
+    """
     print x0
     data = partitioned_and_coded_rnds_and_seqs.validation
-    from pyTFbindtools.selex.log_lhd import calc_lhd_factory
+    from pyTFbindtools.selex.log_lhd import calc_log_lhd
     calc_lhd, calc_grad = calc_lhd_factory(data)
     chem_affinities = np.array(
         [-28.1]*2, dtype='float32')
     print calc_lhd(x0.T, chem_affinities)
     return
-    
+    """
+        
     fit_model(
         rnds_and_seqs, background_seqs, 
         initial_model,

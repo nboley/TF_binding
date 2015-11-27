@@ -263,6 +263,9 @@ def estimate_dg_matrix_with_adadelta(
         return ref_energy, ddg_array
     
     def f_dg(x, data):
+        """Calculate the loss.
+        
+        """
         ref_energy, ddg_array = extract_data_from_array(x)
         rv = calc_log_lhd(
             ref_energy, 
@@ -272,6 +275,13 @@ def estimate_dg_matrix_with_adadelta(
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
         return -rv + penalty
+
+    def f_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        return approx_fprime(
+            x0, f_dg, 1e-3, data)
 
     # ada delta
     validation_lhds = []
@@ -296,9 +306,8 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = approx_fprime(
-                x0, f_dg, 1e-3, 
-                partitioned_and_coded_rnds_and_seqs.train[train_index])
+            grad = f_grad(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
                 grad_sq + e)*grad
