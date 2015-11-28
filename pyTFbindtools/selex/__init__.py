@@ -120,7 +120,7 @@ def find_pwm_from_starting_alignment(seqs, counts):
     # code the sequences
     all_binding_sites = []
     all_weights = []
-    for seq in seqs:
+    for seq in seqs[:5000]:
         binding_sites = list(enumerate_binding_sites(seq, bs_len))
         all_binding_sites.append( binding_sites )
         weights = np.array([1.0/len(binding_sites)]*len(binding_sites))
@@ -128,7 +128,7 @@ def find_pwm_from_starting_alignment(seqs, counts):
 
     # iterate over the alignments
     prev_counts = counts.copy()
-    for i in xrange(50):
+    for i in xrange(10):
         # upadte the counts
         for bss, weights in izip(all_binding_sites, all_weights):
             for bs, weight in izip(bss, weights):
@@ -158,7 +158,7 @@ def find_pwm_from_starting_alignment(seqs, counts):
 
 def find_pwm(rnds_and_seqs, bs_len):
     consensus = find_consensus_bind_site(
-        rnds_and_seqs[max(rnds_and_seqs.keys())], bs_len)
+        rnds_and_seqs[max(rnds_and_seqs.keys())][:5000], bs_len)
     pyTFbindtools.log("Found consensus %imer '%s'" % (bs_len, consensus))
     counts = np.zeros((4, bs_len))
     for pos, base in enumerate(consensus): 
@@ -167,6 +167,8 @@ def find_pwm(rnds_and_seqs, bs_len):
     # find a pwm using the initial sixmer alignment
     pwm = find_pwm_from_starting_alignment(
         rnds_and_seqs[min(rnds_and_seqs.keys())], counts)
+    pyTFbindtools.log("Found initial model")
+
     return pwm
 
 _SelexData = namedtuple('SelexData', ['bg_seqs', 'rnd_seqs'])

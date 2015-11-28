@@ -340,16 +340,14 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
 def theano_calc_occs(affinities, chem_pot):
     return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
-def theano_build_lhd_and_grad_fns(n_seqs):    
+def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
     prot_conc = TT.scalar(dtype=theano.config.floatX)
-    
-    n_rounds = len(n_seqs)
 
     rnd_seqs = [
         TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
         for i in xrange(n_rounds) ]
-
+        
     bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
     seq_len = bg_seqs.shape[1]
     n_bg_seqs = bg_seqs.shape[0]
@@ -384,7 +382,10 @@ def theano_build_lhd_and_grad_fns(n_seqs):
 
     denominators = TT.log(expected_cnts) + log_bnd_fracs[1:]
 
-    lhd = TT.sum(rnd_numerators - n_seqs*denominators)
+    lhd = 0
+    for i in xrange(n_rounds):
+        lhd += rnd_numerators[i] - rnd_seqs[i].shape[2]*denominators[i]
+    
     lhd_grad = jacobian(lhd, [ref_energy, ddg, chem_affinities])
 
     theano_calc_lhd = theano.function(
@@ -421,24 +422,14 @@ def theano_build_lhd_and_grad_fns(n_seqs):
              theano_calc_penalized_lhd_grad )
 
 def theano_log_lhd_factory(initial_coded_seqs):
-    rnds = initial_coded_seqs.rnd_seqs.keys()
-    def get_num_seqs():
-        n_seqs = []
-        for rnd in xrange(1,max(rnds)+1):
-            if rnd in initial_coded_seqs.rnd_seqs: 
-                n_seqs.append(initial_coded_seqs.rnd_seqs[rnd].n_seqs)
-            else:
-                n_seqs.append(0)
-        return np.array(n_seqs, dtype='float32')
-    
-    n_seqs = get_num_seqs()
+    rnds = initial_coded_seqs.rnd_seqs.keys()    
     ( theano_calc_lhd, 
       theano_calc_grad, 
       theano_calc_penalized_lhd,
       theano_calc_penalized_lhd_grad
-    ) = theano_build_lhd_and_grad_fns(n_seqs)
+    ) = theano_build_lhd_and_grad_fns(max(rnds))
     
-    chem_affinities = np.array([-11.0]*len(n_seqs), dtype='float32')
+    chem_affinities = np.array([-11.0]*max(rnds), dtype='float32')
     
     def calc_lhd(ref_energy, ddg_array, coded_seqs, dna_conc, prot_conc):
         ref_energy = np.array([ref_energy,], dtype='float32')[0]
