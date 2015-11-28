@@ -454,8 +454,8 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
-            ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
-        return theano_calc_lhd_grad(*args)
+            ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
+        return theano_calc_grad(*args)
 
     #def calc_bnd_frac(ddg_array, ref_energy, chem_affinities):
     #    args = coded_seqs_args + [ddg_array, ref_energy, chem_affinities]

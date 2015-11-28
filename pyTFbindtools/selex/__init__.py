@@ -23,9 +23,6 @@ import pyTFbindtools.sequence
 from pyTFbindtools.shape import code_seqs_shape_features
 import log_lhd
 
-
-PARTITION_FN_SAMPLE_SIZE = 10000
-
 MAX_NUM_ITER = 10000
 
 CONSTRAIN_MEAN_ENERGY = True
@@ -280,9 +277,24 @@ def estimate_dg_matrix_with_adadelta(
             dna_conc, 
             prot_conc)
         penalty = calc_penalty(ref_energy, ddg_array)
-        return -rv + penalty
+        return -rv # + penalty
 
     def f_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        ref_energy, ddg_array = extract_data_from_array(x)
+        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
+            ref_energy, 
+            ddg_array, 
+            data,
+            dna_conc, 
+            prot_conc)
+        rv = np.array([ref_energy_grad.tolist(),] + ddg_grad.ravel().tolist(), 
+                      dtype='float32')
+        return -rv
+
+    def f_grad2(x, data):
         """Calculate the loss.
         
         """
@@ -325,9 +337,9 @@ def estimate_dg_matrix_with_adadelta(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
 
             ref_energy, ddg_array = extract_data_from_array(x0)
-            print delta_x[1:].clip(-2, 2).reshape(
-                (ddg_array.shape[1], len(delta_x[1:])/ddg_array.shape[1])).round(3).T
-            
+            print grad
+            #print f_grad2(
+            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             summary = ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
                 "Train: %s (%i)" % (train_lhd, train_index),
@@ -341,10 +353,12 @@ def estimate_dg_matrix_with_adadelta(
             validation_lhds.append(validation_lhd)
             xs.append(x0)
             min_iter = 4*len(partitioned_and_coded_rnds_and_seqs.train)
+            best = float('-inf')
             if i > 2*min_iter:
                 old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
                 new_max = max(validation_lhds[-min_iter:])
-                print "Stop Crit:", old_median, new_max, new_max-old_median
+                if new_max > best: best = new_max
+                print "Stop Crit:", old_median, new_max, new_max-old_median, best
                 if old_median > new_max:
                     break
 
@@ -462,9 +476,10 @@ def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs,
         ddg_array, ref_energy, 
         dna_conc, prot_conc):    
-
+    pyTFbindtools.log("Compiking likleihood function", 'VERBOSE')
     log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.train[0])
+    pyTFbindtools.log("Starting optimization", 'VERBOSE')
 
     while True:
         bs_len = ddg_array.motif_len

@@ -434,7 +434,9 @@ def main():
       partition_background_seqs,
       ofname_prefix
      ) = parse_arguments()
-    
+
+
+    """    
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs, 
         background_seqs, 
@@ -442,7 +444,6 @@ def main():
         n_partitions = 4
     )
 
-    """
     print x0
     data = partitioned_and_coded_rnds_and_seqs.validation
     from pyTFbindtools.selex.log_lhd import calc_log_lhd
