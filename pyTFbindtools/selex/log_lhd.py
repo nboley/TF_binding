@@ -429,9 +429,9 @@ def theano_log_lhd_factory(initial_coded_seqs):
       theano_calc_penalized_lhd_grad
     ) = theano_build_lhd_and_grad_fns(max(rnds))
     
-    chem_affinities = np.array([-11.0]*max(rnds), dtype='float32')
-    
-    def calc_lhd(ref_energy, ddg_array, coded_seqs, dna_conc, prot_conc):
+    def calc_lhd(ref_energy, ddg_array, chem_affinities, 
+                 coded_seqs, 
+                 dna_conc, prot_conc):
         ref_energy = np.array([ref_energy,], dtype='float32')[0]
         coded_seqs_args = [
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
@@ -440,7 +440,9 @@ def theano_log_lhd_factory(initial_coded_seqs):
             ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
         return theano_calc_lhd(*args)
 
-    def calc_grad(ref_energy, ddg_array, coded_seqs, dna_conc, prot_conc):
+    def calc_grad(ref_energy, ddg_array, chem_affinities,
+                  coded_seqs, 
+                  dna_conc, prot_conc):
         coded_seqs_args = [
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]

@@ -18,7 +18,8 @@ import pyTFbindtools.selex
 
 from pyTFbindtools.selex import (
     PartitionedAndCodedSeqs, ReducedDeltaDeltaGArray,
-    progressively_fit_model, find_pwm, sample_random_seqs )
+    progressively_fit_model, find_pwm, sample_random_seqs,
+    estimate_chem_affinities_for_selex_experiment)
 
 INCLUDE_SHAPE = False
 
@@ -383,6 +384,10 @@ def fit_model(rnds_and_seqs, background_seqs,
     assert selex_db_conn is not None or output_fname_prefix is not None
 
     ref_energy, ddg_array = initial_model.build_all_As_affinity_and_ddg_array()
+    chem_affinities = estimate_chem_affinities_for_selex_experiment(
+        background_seqs, 
+        max(rnds_and_seqs.keys()), 
+        initial_model, dna_conc, prot_conc)
 
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
@@ -394,7 +399,7 @@ def fit_model(rnds_and_seqs, background_seqs,
     fit_models = []
     for mo in progressively_fit_model(
             partitioned_and_coded_rnds_and_seqs, 
-            ddg_array, ref_energy, 
+            ddg_array, ref_energy, chem_affinities,
             dna_conc, prot_conc
         ):
         

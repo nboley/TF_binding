@@ -14,6 +14,10 @@ from scipy.stats import ttest_ind
 
 import theano
 
+from pyDNAbinding.binding_model import (
+    FixedLengthDNASequences, est_chem_potential )
+
+
 import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
@@ -82,7 +86,6 @@ class CodedSeqs(object):
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
         
-
 def code_seqs(seqs):
     # materialize for now, until we fix the following to work with generator
     seqs = list(seqs)
@@ -95,6 +98,15 @@ def code_seqs(seqs):
     #  ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
     return CodedSeqs(
         one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
+
+def estimate_chem_affinities_for_selex_experiment(
+        background_seqs, num_rounds, binding_model, dna_conc, prot_conc):
+    all_chem_affinities = []
+    pool = FixedLengthDNASequences(background_seqs)
+    for i in xrange(num_rounds):
+        all_chem_affinities.append(
+            est_chem_potential( pool, binding_model, dna_conc, prot_conc ) )
+    return np.array(all_chem_affinities, dtype=theano.config.floatX)
 
 def enumerate_binding_sites(seq, bs_len):
     for offset in xrange(0, len(seq)-bs_len+1):
@@ -190,6 +202,10 @@ class SelexData(_SelexData):
         return self.rnd_seqs[self.first_rnd_index]
 
 class PartitionedAndCodedSeqs(object):
+    @property
+    def max_rnd(self):
+        return max(self.coded_seqs.keys())
+
     def __init__(self, 
                  rnds_and_seqs, 
                  background_seqs, 
@@ -241,9 +257,11 @@ class PartitionedAndCodedSeqs(object):
 
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
-        init_ddg_array, init_ref_energy,
+        init_ddg_array, init_ref_energy, init_chem_affinities,
         dna_conc, prot_conc,
         ftol=1e-12):    
+    max_rnd = partitioned_and_coded_rnds_and_seqs.max_rnd
+
     def calc_penalty(ref_energy, ddg_array):
         penalty = 0
         
@@ -263,18 +281,22 @@ def estimate_dg_matrix_with_adadelta(
 
     def extract_data_from_array(x):
         ref_energy = x[0]
-        ddg_array = x[1:].reshape(init_ddg_array.shape).astype('float32').view(
+        num_ddg_entries = init_ddg_array.shape[0]*init_ddg_array.shape[1]
+        ddg_array = x[1:1+num_ddg_entries].reshape(
+            init_ddg_array.shape).astype('float32').view(
             ReducedDeltaDeltaGArray)
-        return ref_energy, ddg_array
+        chem_affinities = x[1+num_ddg_entries:] #np.array([-11.0]*max_rnd, dtype='float32')
+        return ref_energy, ddg_array, chem_affinities
     
     def f_dg(x, data):
         """Calculate the loss.
         
         """
-        ref_energy, ddg_array = extract_data_from_array(x)
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         rv = log_lhd.calc_log_lhd(
             ref_energy, 
             ddg_array, 
+            chem_affinities,
             data,
             dna_conc, 
             prot_conc)
@@ -285,14 +307,17 @@ def estimate_dg_matrix_with_adadelta(
         """Calculate the loss.
         
         """
-        ref_energy, ddg_array = extract_data_from_array(x)
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
             ref_energy, 
             ddg_array, 
+            chem_affinities,
             data,
             dna_conc, 
             prot_conc)
-        rv = np.array([ref_energy_grad.tolist(),] + ddg_grad.ravel().tolist(), 
+        rv = np.array([ref_energy_grad.tolist(),] 
+                      + ddg_grad.ravel().tolist()
+                      + chem_pot_grad.tolist(), 
                       dtype='float32')
         return -rv
 
@@ -338,12 +363,13 @@ def estimate_dg_matrix_with_adadelta(
             validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
 
-            ref_energy, ddg_array = extract_data_from_array(x0)
+            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
             print grad
             #print f_grad2(
             #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             summary = ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
+                "Chem Affinities: %s" % (str(chem_affinities.round(2))),
                 "Train: %s (%i)" % (train_lhd, train_index),
                 "Validation: %s" % validation_lhd,
                 "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
@@ -371,6 +397,8 @@ def estimate_dg_matrix_with_adadelta(
 
     x0 = init_ddg_array.copy().astype('float32')
     x0 = np.insert(x0, 0, init_ref_energy)
+    x0 = np.append(x0, init_chem_affinities)
+    print x0
     x = ada_delta(x0)
 
     ref_energy, ddg_array = extract_data_from_array(x)
@@ -476,9 +504,12 @@ FitSelexModel = namedtuple("FitSelexModel", [
 
 def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs,
-        ddg_array, ref_energy, 
-        dna_conc, prot_conc):    
-    pyTFbindtools.log("Compiking likleihood function", 'VERBOSE')
+        ddg_array, 
+        ref_energy, 
+        chem_affinities,
+        dna_conc, 
+        prot_conc):    
+    pyTFbindtools.log("Compiling likleihood function", 'VERBOSE')
     log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.train[0])
     pyTFbindtools.log("Starting optimization", 'VERBOSE')
@@ -486,7 +517,7 @@ def progressively_fit_model(
     while True:
         bs_len = ddg_array.motif_len
         prev_validation_lhd = log_lhd.calc_log_lhd(
-            ref_energy, ddg_array, 
+            ref_energy, ddg_array, chem_affinities,
             partitioned_and_coded_rnds_and_seqs.validation,
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_validation_lhd, 'VERBOSE')
@@ -495,7 +526,7 @@ def progressively_fit_model(
         ( ddg_array, ref_energy, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
-                ddg_array, ref_energy,
+                ddg_array, ref_energy, chem_affinities,
                 dna_conc, prot_conc)
 
         summary = ddg_array.summary_str(ref_energy)
@@ -509,6 +540,7 @@ def progressively_fit_model(
         new_validation_lhd = log_lhd.calc_log_lhd(
             ref_energy, 
             ddg_array, 
+            chem_affinities,
             partitioned_and_coded_rnds_and_seqs.validation,
             dna_conc,
             prot_conc)
