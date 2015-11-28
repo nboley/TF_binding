@@ -357,14 +357,17 @@ def estimate_dg_matrix_with_adadelta(
             delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
                 grad_sq + e)*grad
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            x0 += delta_x.clip(-0.1, 0.1) #grad #delta
+            x0 += delta_x.clip(-1.0, 1.0) #grad #delta
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
 
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
-            print grad
+            print grad[0].round(2)
+            print grad[1:-len(chem_affinities)
+                ].reshape(ddg_array.shape).T.round(2)
+            print grad[-len(chem_affinities):].round(2)
             #print f_grad2(
             #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             summary = ddg_array.summary_str(ref_energy)
@@ -387,7 +390,7 @@ def estimate_dg_matrix_with_adadelta(
                 new_max = max(validation_lhds[-min_iter:])
                 if new_max > best: best = new_max
                 print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                if old_median > new_max:
+                if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
                     break
 
         x_hat_index = np.argmax(np.array(validation_lhds))

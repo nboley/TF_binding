@@ -397,13 +397,16 @@ def theano_build_lhd_and_grad_fns(n_rounds):
             bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
         lhd_grad)
 
-    penalized_lhd = lhd - n_bg_seqs*TT.sum(abs(
-        1 - chem_affinities/prot_conc - dna_conc*rnd_bnd_fracs/prot_conc))
-    penalized_lhd_grad = jacobian(lhd, [ref_energy, ddg, chem_affinities])
+    penalized_lhd = lhd - 100*TT.sum(abs(
+        prot_conc - TT.exp(chem_affinities) - dna_conc*rnd_bnd_fracs))
+    penalized_lhd_grad = jacobian(
+        penalized_lhd, [ref_energy, ddg, chem_affinities])
+    #theano_calc_penalized_lhd = None
     theano_calc_penalized_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [
             bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
         penalized_lhd )
+    #theano_calc_penalized_lhd_grad = None
     theano_calc_penalized_lhd_grad = theano.function(
         [seqs for seqs in rnd_seqs] + [
             bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
@@ -426,7 +429,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
     ( theano_calc_lhd, 
       theano_calc_grad, 
       theano_calc_penalized_lhd,
-      theano_calc_penalized_lhd_grad
+      theano_calc_penalized_grad
     ) = theano_build_lhd_and_grad_fns(max(rnds))
     
     def calc_lhd(ref_energy, ddg_array, chem_affinities, 
@@ -438,7 +441,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
             ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
-        return theano_calc_lhd(*args)
+        return theano_calc_penalized_lhd(*args)
 
     def calc_grad(ref_energy, ddg_array, chem_affinities,
                   coded_seqs, 
@@ -448,7 +451,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
             ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
-        return theano_calc_grad(*args)
+        return theano_calc_penalized_grad(*args)
 
     #def calc_bnd_frac(ddg_array, ref_energy, chem_affinities):
     #    args = coded_seqs_args + [ddg_array, ref_energy, chem_affinities]
