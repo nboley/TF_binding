@@ -165,6 +165,9 @@ def calc_lhd_factory(coded_seqs, coded_bg_seqs):
     def calc_lhd(ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc):
         args = coded_seqs_args + [
             ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
+        for arg in args:
+            try: print type(arg), arg.shape
+            except: print arg
         return theano_calc_penalized_lhd(*args)
 
     def calc_grad(ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc):

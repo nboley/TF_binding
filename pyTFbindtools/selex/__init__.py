@@ -21,7 +21,7 @@ from pyTFbindtools.motif_tools import (
     Motif, load_motif_from_text)
 import pyTFbindtools.sequence
 from pyTFbindtools.shape import code_seqs_shape_features
-from log_lhd import calc_log_lhd, calc_binding_site_energies
+import log_lhd
 
 
 PARTITION_FN_SAMPLE_SIZE = 10000
@@ -54,19 +54,24 @@ def one_hot_encode_sequences(seqs, n_seqs=None, ON_GPU=True):
 
     coded_seqs = pyTFbindtools.sequence.one_hot_encode_sequences(seqs)
     # remove the a's row
-    coded_seqs = coded_seqs[:,:,(1,2,3)]
+    #coded_seqs = coded_seqs[:,:,(1,2,3)]
     # swap the axes so that the array is in sequence-base-position order
     # return a copy to make sure that we're not passing a (slow) view around 
-    coded_seqs = np.swapaxes(coded_seqs, 1, 2).copy()
+    #coded_seqs = np.swapaxes(coded_seqs, 1, 2).copy()
     return coded_seqs.copy()
 
 class CodedSeqs(object):
+    def _array_split_or_none(self, array, n_partitions):
+        if array is None: 
+            return [None]*n_partitions
+        return np.array_split(array, n_partitions)
+
     def __init__(self, 
                  one_hot_coded_seqs, 
                  shape_coded_fwd_seqs=None, 
                  shape_coded_RC_seqs=None):
         self.n_seqs = one_hot_coded_seqs.shape[0]
-        self.seq_length = one_hot_coded_seqs.shape[2]
+        self.seq_length = one_hot_coded_seqs.shape[1]
 
         self.one_hot_coded_seqs = one_hot_coded_seqs
         self.shape_coded_fwd_seqs = shape_coded_fwd_seqs
@@ -74,9 +79,9 @@ class CodedSeqs(object):
 
     def iter_coded_seq_splits(self, n_partitions):
         for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
-            ) in izip(np.array_split(self.one_hot_coded_seqs, n_partitions),
-                      np.array_split(self.shape_coded_fwd_seqs, n_partitions),
-                      np.array_split(self.shape_coded_RC_seqs, n_partitions)
+            ) in izip(self._array_split_or_none(self.one_hot_coded_seqs, n_partitions),
+                      self._array_split_or_none(self.shape_coded_fwd_seqs, n_partitions),
+                      self._array_split_or_none(self.shape_coded_RC_seqs, n_partitions)
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
         
@@ -88,8 +93,9 @@ def code_seqs(seqs):
     one_hot_coded_seqs = one_hot_encode_sequences(seqs)
     n_seqs = one_hot_coded_seqs.shape[0]
     seq_length = one_hot_coded_seqs.shape[2]
-    ( shape_coded_fwd_seqs, shape_coded_RC_seqs 
-      ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
+    shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
+    #( shape_coded_fwd_seqs, shape_coded_RC_seqs 
+    #  ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
     return CodedSeqs(
         one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
 
@@ -267,7 +273,7 @@ def estimate_dg_matrix_with_adadelta(
         
         """
         ref_energy, ddg_array = extract_data_from_array(x)
-        rv = calc_log_lhd(
+        rv = log_lhd.calc_log_lhd(
             ref_energy, 
             ddg_array, 
             data,
@@ -352,7 +358,7 @@ def estimate_dg_matrix_with_adadelta(
     x = ada_delta(x0)
 
     ref_energy, ddg_array = extract_data_from_array(x)
-    validation_lhd = calc_log_lhd(
+    validation_lhd = log_lhd.calc_log_lhd(
         ref_energy, 
         ddg_array, 
         partitioned_and_coded_rnds_and_seqs.validation,
@@ -370,7 +376,7 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
         # calculate the ddg energies for all binding sites. We use this to align
         # the binding sities within the sequences
         # find the index of the best offset
-        energies = calc_binding_site_energies(seqs, ddg_array)
+        energies = log_lhd.calc_binding_site_energies(seqs, ddg_array)
         best_offsets = np.argmin(energies, 1)
 
         ## find the binding sites which align to the sequence boundary. We must 
@@ -456,9 +462,13 @@ def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs,
         ddg_array, ref_energy, 
         dna_conc, prot_conc):    
+
+    log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
+        partitioned_and_coded_rnds_and_seqs.train[0])
+
     while True:
         bs_len = ddg_array.motif_len
-        prev_validation_lhd = calc_log_lhd(
+        prev_validation_lhd = log_lhd.calc_log_lhd(
             ref_energy, ddg_array, 
             partitioned_and_coded_rnds_and_seqs.validation,
             dna_conc, prot_conc)
@@ -479,7 +489,7 @@ def progressively_fit_model(
         #    ))
         pyTFbindtools.log(summary, 'VERBOSE')
 
-        new_validation_lhd = calc_log_lhd(
+        new_validation_lhd = log_lhd.calc_log_lhd(
             ref_energy, 
             ddg_array, 
             partitioned_and_coded_rnds_and_seqs.validation,

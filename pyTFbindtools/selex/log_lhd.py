@@ -11,7 +11,7 @@ from scipy.signal import convolve
 import theano
 import theano.tensor as TT
 from theano.tensor.signal.conv import conv2d as theano_conv2d
-from theano.tensor.extra_ops import cumprod
+from theano.tensor.extra_ops import cumprod, diff as theano_diff
 from theano.gradient import jacobian
 
 from pyTFbindtools.motif_tools import R, T
@@ -39,7 +39,6 @@ def test_RC_equiv():
 
     from pyTFbindtools.motif_tools import ReducedDeltaDeltaGArray
     import pyTFbindtools
-    print dir(pyTFbindtools)
     from pyTFbindtools import selex
     
     seqs = TT.tensor3(name='seqs', dtype=theano.config.floatX)
@@ -390,11 +389,11 @@ def theano_build_lhd_and_grad_fns(n_seqs):
 
     theano_calc_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities],
+            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
         lhd )
     theano_calc_grad = theano.function(
         [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities],
+            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
         lhd_grad)
 
     penalized_lhd = lhd - n_bg_seqs*TT.sum(abs(
@@ -421,35 +420,42 @@ def theano_build_lhd_and_grad_fns(n_seqs):
              theano_calc_penalized_lhd, 
              theano_calc_penalized_lhd_grad )
 
-def theano_log_lhd_factory(coded_seqs, coded_bg_seqs):
-    def get_num_seqs(coded_seqs):
+def theano_log_lhd_factory(initial_coded_seqs):
+    rnds = initial_coded_seqs.rnd_seqs.keys()
+    def get_num_seqs():
         n_seqs = []
-        for rnd in xrange(1,max(coded_seqs.keys())+1):
-            if rnd in coded_seqs: 
-                n_seqs.append(coded_seqs[rnd].shape[0])
+        for rnd in xrange(1,max(rnds)+1):
+            if rnd in initial_coded_seqs.rnd_seqs: 
+                n_seqs.append(initial_coded_seqs.rnd_seqs[rnd].n_seqs)
             else:
                 n_seqs.append(0)
         return np.array(n_seqs, dtype='float32')
     
-    n_seqs = get_num_seqs(coded_seqs)
+    n_seqs = get_num_seqs()
     ( theano_calc_lhd, 
       theano_calc_grad, 
       theano_calc_penalized_lhd,
       theano_calc_penalized_lhd_grad
     ) = theano_build_lhd_and_grad_fns(n_seqs)
     
-    coded_seqs_args = [
-        coded_seqs[i] for i in sorted(coded_seqs.keys())
-    ] + [coded_bg_seqs,]
-    def calc_lhd(ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc):
+    chem_affinities = np.array([-11.0]*len(n_seqs), dtype='float32')
+    
+    def calc_lhd(ref_energy, ddg_array, coded_seqs, dna_conc, prot_conc):
+        ref_energy = np.array([ref_energy,], dtype='float32')[0]
+        coded_seqs_args = [
+            coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
+        ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
-            ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
-        return theano_calc_penalized_lhd(*args)
+            ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
+        return theano_calc_lhd(*args)
 
-    def calc_grad(ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc):
+    def calc_grad(ref_energy, ddg_array, coded_seqs, dna_conc, prot_conc):
+        coded_seqs_args = [
+            coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
+        ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
             ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
-        return theano_calc_penalized_lhd_grad(*args)
+        return theano_calc_lhd_grad(*args)
 
     #def calc_bnd_frac(ddg_array, ref_energy, chem_affinities):
     #    args = coded_seqs_args + [ddg_array, ref_energy, chem_affinities]
@@ -469,6 +475,6 @@ def calc_binding_site_energies(coded_seqs, ddg_array):
             mode='valid')
     return rv
 
-#calc_log_lhd = None
-calc_log_lhd = numerical_log_lhd_factory()
+calc_log_lhd = None
+#calc_log_lhd = numerical_log_lhd_factory()
 #test_RC_equiv()

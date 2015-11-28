@@ -383,7 +383,7 @@ def fit_model(rnds_and_seqs, background_seqs,
     assert selex_db_conn is not None or output_fname_prefix is not None
 
     ref_energy, ddg_array = initial_model.build_all_As_affinity_and_ddg_array()
-    
+
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs, 
