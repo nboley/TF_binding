@@ -7,6 +7,7 @@ from itertools import izip, chain
 from collections import defaultdict, namedtuple
 
 import numpy as np
+np.set_printoptions(precision=2)
 np.random.seed(0)
 
 from scipy.optimize import brentq, approx_fprime
@@ -125,14 +126,14 @@ def find_consensus_bind_site(seqs, bs_len):
                      if cnt == max_cnt)
     return consensus
 
-def find_pwm_from_starting_alignment(seqs, counts):
+def find_pwm_from_starting_alignment(seqs, counts, max_num_seqs=5000):
     assert counts.shape[0] == 4
     bs_len = counts.shape[1]
     
     # code the sequences
     all_binding_sites = []
     all_weights = []
-    for seq in seqs[:5000]:
+    for seq in seqs[:max_num_seqs]:
         binding_sites = list(enumerate_binding_sites(seq, bs_len))
         all_binding_sites.append( binding_sites )
         weights = np.array([1.0/len(binding_sites)]*len(binding_sites))
@@ -170,7 +171,7 @@ def find_pwm_from_starting_alignment(seqs, counts):
 
 def find_pwm(rnds_and_seqs, bs_len):
     consensus = find_consensus_bind_site(
-        rnds_and_seqs[max(rnds_and_seqs.keys())][:5000], bs_len)
+        rnds_and_seqs[max(rnds_and_seqs.keys())], bs_len)
     pyTFbindtools.log("Found consensus %imer '%s'" % (bs_len, consensus))
     counts = np.zeros((4, bs_len))
     for pos, base in enumerate(consensus): 
@@ -326,18 +327,18 @@ def estimate_dg_matrix_with_adadelta(
         
         """
         return approx_fprime(
-            x0, f_dg, 1e-3, data)
+            x0, f_dg, 1e-3, data).astype('float32')
 
     # ada delta
     validation_lhds = []
     train_lhds = []
     xs = []
-    def ada_delta(x0):
+    def ada_delta(x0, UPDATE_BASE_CONTS):
         # from http://arxiv.org/pdf/1212.5701.pdf
         e = 1e-6
-        p = 0.99
-        grad_sq = np.zeros(len(x0))
-        delta_x_sq = np.zeros(len(x0))
+        p = 0.5
+        grad_sq = np.zeros(len(x0), dtype='float32')
+        delta_x_sq = np.zeros(len(x0), dtype='float32')
         
         eps = 1.0
         num_small_decreases = 0
@@ -351,23 +352,35 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            grad = f_grad2(
+                x0.astype('float32'), 
+                partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
-            delta_x = -np.sqrt(delta_x_sq + e)/np.sqrt(
-                grad_sq + e)*grad
+            delta_x = -grad/np.sqrt(grad_sq + e) # np.sqrt(delta_x_sq + e) 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            x0 += delta_x.clip(-1.0, 1.0) #grad #delta
+            x0[0] += delta_x.clip(-1, 1)[0] #grad #delta
+            if UPDATE_BASE_CONTS:
+                x0[1:-len(init_chem_affinities)] += delta_x.clip(
+                    -0.1, 0.1)[1:-len(init_chem_affinities)] 
+            x0[-len(init_chem_affinities):] += delta_x.clip(
+                -1, 1)[-len(init_chem_affinities):] #grad #delta
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
 
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
+            print
             print grad[0].round(2)
             print grad[1:-len(chem_affinities)
                 ].reshape(ddg_array.shape).T.round(2)
             print grad[-len(chem_affinities):].round(2)
+            print 
+            print delta_x[0].round(2)
+            print delta_x[1:-len(chem_affinities)
+                ].reshape(ddg_array.shape).T.round(2)
+            print delta_x[-len(chem_affinities):].round(2)
+
             #print f_grad2(
             #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             summary = ddg_array.summary_str(ref_energy)
@@ -402,8 +415,9 @@ def estimate_dg_matrix_with_adadelta(
     x0 = np.insert(x0, 0, init_ref_energy)
     x0 = np.append(x0, init_chem_affinities)
     print x0
-    x = ada_delta(x0)
-
+    x = ada_delta(x0, True)
+    #x2 = ada_delta(x1, False)
+    #x = ada_delta(x2, True)
     ref_energy, ddg_array = extract_data_from_array(x)
     validation_lhd = log_lhd.calc_log_lhd(
         ref_energy, 

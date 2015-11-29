@@ -335,7 +335,7 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
     # stack the affinities, and then take the min at each bing site
     bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0)
     seq_affinities = bs_affinities.min(1)
-    return seq_affinities
+    return rc_bs_affinities.min(1)
 
 def theano_calc_occs(affinities, chem_pot):
     return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
@@ -388,19 +388,20 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     
     lhd_grad = jacobian(lhd, [ref_energy, ddg, chem_affinities])
 
-    theano_calc_lhd = theano.function(
-        [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
-        lhd )
-    theano_calc_grad = theano.function(
-        [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
-        lhd_grad)
+    theano_calc_lhd, theano_calc_grad = None, None
+    #theano_calc_lhd = theano.function(
+    #    [seqs for seqs in rnd_seqs] + [
+    #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+    #    lhd )
+    #theano_calc_grad = theano.function(
+    #    [seqs for seqs in rnd_seqs] + [
+    #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+    #    lhd_grad)
 
-    penalized_lhd = lhd - 100*TT.sum(abs(
+    penalized_lhd = lhd - bg_seqs.shape[2]*TT.sum(abs(
         prot_conc - TT.exp(chem_affinities) - dna_conc*rnd_bnd_fracs))
     penalized_lhd_grad = jacobian(
-        penalized_lhd, [ref_energy, ddg, chem_affinities])
+        lhd, [ref_energy, ddg, chem_affinities])
     #theano_calc_penalized_lhd = None
     theano_calc_penalized_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [
@@ -440,7 +441,9 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
-            ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
+            ddg_array.T.astype('float32'), 
+            ref_energy, 
+            chem_affinities.astype('float32'), dna_conc, prot_conc]
         return theano_calc_penalized_lhd(*args)
 
     def calc_grad(ref_energy, ddg_array, chem_affinities,

@@ -268,7 +268,7 @@ def write_output(motif_name, ddg_array, ref_energy, ofp=sys.stdout):
             for x in energies )
 
     print >> ofp, ">%s.PWM\t%s" % (motif_name, ddg_array.consensus_seq())
-    pwm = build_pwm(ddg_array, ref_energy, -12.0)
+    pwm = build_pwm(ddg_array, ref_energy, -19.0)
     #print >> ofp, "\t".join(["pos", "A", "C", "G", "T"])
     for pos, freqs in enumerate(pwm.T):
         print >> ofp, str(pos) + "\t" + "\t".join(
@@ -294,7 +294,7 @@ def parse_arguments():
     parser.add_argument( '--starting-energy-model', type=file,
                          help='An energy model to start from.')    
     
-    parser.add_argument( '--initial-binding-site-len', type=int, default=6,
+    parser.add_argument( '--initial-binding-site-len', type=int, default=8,
         help='The starting length of the binding site (this will grow)')
 
     parser.add_argument( '--random-seed', type=int,
