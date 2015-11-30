@@ -349,8 +349,12 @@ def estimate_dg_matrix_with_adadelta(
         x[-len(init_chem_affinities):] += delta_x.clip(
             -1, 1)[-len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        ref_energy += ddg_array[:4,:].min(1).sum()
-        ddg_array[:4,:] -= ddg_array[:4,:].min(1)[:,None]
+        #print ref_energy
+        #print ddg_array
+        ref_energy += ddg_array[:,:4].min(1).sum()
+        ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
+        #print ref_energy
+        #print ddg_array
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
         return x
 
@@ -361,9 +365,9 @@ def estimate_dg_matrix_with_adadelta(
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
         e = 1e-6
-        p = 0.5
+        p = 0.50
         grad_sq = np.zeros(len(x0), dtype='float32')
-        delta_x_sq = np.zeros(len(x0), dtype='float32')
+        delta_x_sq = np.ones(len(x0), dtype='float32')
         
         eps = 1.0
         num_small_decreases = 0
@@ -381,7 +385,7 @@ def estimate_dg_matrix_with_adadelta(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
-            delta_x = -grad/np.sqrt(grad_sq + e) # np.sqrt(delta_x_sq + e) 
+            delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)  # 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
             x0 = update_x(x0, delta_x)
             train_lhd = -f_dg(
