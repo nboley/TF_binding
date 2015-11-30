@@ -17,7 +17,7 @@ import pyTFbindtools
 import pyTFbindtools.selex
 
 from pyTFbindtools.selex import (
-    PartitionedAndCodedSeqs, ReducedDeltaDeltaGArray,
+    PartitionedAndCodedSeqs, 
     progressively_fit_model, find_pwm, sample_random_seqs,
     estimate_chem_affinities_for_selex_experiment)
 
@@ -110,9 +110,9 @@ class SelexDBConn(object):
         return
 
     def insert_model_into_db(
-            self, ref_energy, ddg_array, validation_lhd):
-        motif_len = ddg_array.motif_len
-        consensus_energy, base_contributions = ddg_array.calc_normalized_base_conts(ref_energy)
+            self, mo, validation_lhd):
+        assert isinstance(mo, EnergeticDNABindingModel)
+        motif_len = mo.motif_len
         cur = self.conn.cursor()    
         query = """
         INSERT INTO new_selex_models
@@ -124,8 +124,8 @@ class SelexDBConn(object):
         cur.execute(query, (
             self.exp_id, 
             motif_len, 
-            float(consensus_energy), 
-            base_contributions.tolist(),
+            float(mo.ref_energy), 
+            mo.ddg_array.tolist(),
             float(validation_lhd)
         ))
         self.conn.commit()
@@ -388,10 +388,6 @@ def fit_model(rnds_and_seqs, background_seqs,
         max(rnds_and_seqs.keys()), 
         initial_model, dna_conc, prot_conc)
 
-    ddg_array = initial_model.ddg_array.copy()
-    ref_energy = 0.0
-    #ref_energy, ddg_array = initial_model.build_all_As_affinity_and_ddg_array()
-
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs, 
@@ -402,13 +398,13 @@ def fit_model(rnds_and_seqs, background_seqs,
     fit_models = []
     for mo in progressively_fit_model(
             partitioned_and_coded_rnds_and_seqs, 
-            ddg_array, ref_energy, chem_affinities,
+            initial_model, chem_affinities,
             dna_conc, prot_conc
         ):
         
         if selex_db_conn != None:
             selex_db_conn.insert_model_into_db(
-                mo.ref_energy, mo.ddg_array, mo.new_validation_lhd)
+                mo.energetic_model, mo.new_validation_lhd)
         model_meta_data['dna_conc'] = dna_conc
         model_meta_data['prot_conc'] = prot_conc
         
@@ -417,11 +413,6 @@ def fit_model(rnds_and_seqs, background_seqs,
         model_meta_data['prev_validation_lhd'] = float(mo.prev_validation_lhd)
         model_meta_data['new_validation_lhd'] = float(mo.new_validation_lhd)
 
-        fit_model = EnergeticDNABindingModel(
-            mo.ref_energy,
-            np.vstack((np.zeros(mo.ddg_array.motif_len), mo.ddg_array)).T, 
-            **model_meta_data
-        )
         fit_models.append(fit_model)
         if output_fname_prefix != None:
             ofname = "%s.FITMO.BSLEN%i.yaml" % (

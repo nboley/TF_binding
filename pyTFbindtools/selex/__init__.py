@@ -16,13 +16,14 @@ from scipy.stats import ttest_ind
 import theano
 
 from pyDNAbinding.binding_model import (
-    FixedLengthDNASequences, est_chem_potential, DeltaDeltaGArray )
-
+    FixedLengthDNASequences, est_chem_potential, 
+    EnergeticDNABindingModel, DeltaDeltaGArray )
+from pyDNAbinding.sequence import OneHotCodedDNASeq
 
 import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
-    load_motifs, logistic, R, T, ReducedDeltaDeltaGArray,
+    load_motifs, logistic, R, T,
     Motif, load_motif_from_text)
 import pyTFbindtools.sequence
 from pyTFbindtools.shape import code_seqs_shape_features
@@ -67,6 +68,10 @@ class CodedSeqs(object):
         if array is None: 
             return [None]*n_partitions
         return np.array_split(array, n_partitions)
+
+    def iter_one_hot_coded_seqs(self):
+        for seq in self.one_hot_coded_seqs:
+            yield seq.view(OneHotCodedDNASeq)
 
     def __init__(self, 
                  one_hot_coded_seqs, 
@@ -414,46 +419,45 @@ def estimate_dg_matrix_with_adadelta(
     x0 = init_ddg_array.copy().astype('float32')
     x0 = np.insert(x0, 0, init_ref_energy)
     x0 = np.append(x0, init_chem_affinities)
-    print x0
+
     x = ada_delta(x0, True)
     #x2 = ada_delta(x1, False)
     #x = ada_delta(x2, True)
-    ref_energy, ddg_array = extract_data_from_array(x)
+    ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
     validation_lhd = log_lhd.calc_log_lhd(
         ref_energy, 
         ddg_array, 
+        chem_affinities,
         partitioned_and_coded_rnds_and_seqs.validation,
         dna_conc, 
         prot_conc)
 
-    return ddg_array, ref_energy, validation_lhds, validation_lhd
+    return ddg_array, ref_energy, chem_affinities, validation_lhds, validation_lhd
 
 def sample_random_seqs(n_sims, seq_len):
     return ["".join(random.choice('ACGT') for j in xrange(seq_len))
             for i in xrange(n_sims)]
 
-def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
+def find_best_shift(coded_seqs, binding_model, coded_bg_seqs=None):
     def find_flanking_base_cnts(seqs, base_offset):
         # calculate the ddg energies for all binding sites. We use this to align
         # the binding sities within the sequences
         # find the index of the best offset
-        energies = log_lhd.calc_binding_site_energies(seqs, ddg_array)
+        energies = np.array(
+            binding_model.score_seqs_binding_sites(seqs, 'MAX'))
         best_offsets = np.argmin(energies, 1)
-
+        
         ## find the binding sites which align to the sequence boundary. We must 
         ## remove these because the flanking sequence is not random, and so it
         ## will bias the results
         # deal with left shifts
         if base_offset > 0:
-            base_offset += (ddg_array.motif_len - 1)
+            base_offset += (binding_model.motif_len - 1)
         base_indices = best_offsets + base_offset
         # find which offsets fit inside of the random portion of the sequence
         valid_indices = (base_indices > 0)&(base_indices < seq_len)
         base_cnts = seqs.one_hot_coded_seqs[
-            valid_indices,:,base_indices[valid_indices]].sum(0)
-        # add in the A counts
-        base_cnts = np.insert(
-            base_cnts, 0, valid_indices.sum()-base_cnts.sum())
+            valid_indices,base_indices[valid_indices],:].sum(0)
         return base_cnts
 
     def calc_entropy(cnts):
@@ -485,8 +489,8 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
     #    np.random.choice(coded_bg_seqs.shape[0], sample_size),:,:]
     
     entropies_and_offsets = []
-    for offset in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
-                        xrange(1,min(4, seq_len-ddg_array.motif_len))):
+    for offset in chain(xrange(max(-3, -seq_len+binding_model.motif_len+1), 0), 
+                        xrange(1,min(4, seq_len-binding_model.motif_len))):
         cnts = find_flanking_base_cnts(coded_seqs, offset)
         bg_cnts = find_flanking_base_cnts(coded_bg_seqs, offset)
         t_stat, p_value = estimate_entropy_significance(cnts, bg_cnts)
@@ -514,15 +518,14 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
     return 'LEFT'
 
 FitSelexModel = namedtuple("FitSelexModel", [
-    'ddg_array', 'ref_energy', 
+    'energetic_model', 
     'lhd_path', 'lhd_hat', 
     'prev_validation_lhd', 'new_validation_lhd']
 )
 
 def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs,
-        ddg_array, 
-        ref_energy, 
+        initial_model, 
         chem_affinities,
         dna_conc, 
         prot_conc):    
@@ -531,19 +534,20 @@ def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs.train[0])
     pyTFbindtools.log("Starting optimization", 'VERBOSE')
 
+    curr_mo = initial_model
     while True:
-        bs_len = ddg_array.motif_len
+        i = curr_mo.motif_len
         prev_validation_lhd = log_lhd.calc_log_lhd(
-            ref_energy, ddg_array, chem_affinities,
+            curr_mo.ref_energy, curr_mo.ddg_array, chem_affinities,
             partitioned_and_coded_rnds_and_seqs.validation,
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_validation_lhd, 'VERBOSE')
         
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, lhd_path, lhd_hat 
+        ( ddg_array, ref_energy, chem_affinities, lhd_path, lhd_hat 
             ) = estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs,
-                ddg_array, ref_energy, chem_affinities,
+                curr_mo.ddg_array, curr_mo.ref_energy, chem_affinities,
                 dna_conc, prot_conc)
 
         summary = ddg_array.summary_str(ref_energy)
@@ -568,21 +572,23 @@ def progressively_fit_model(
             new_validation_lhd-prev_validation_lhd
         ), 'VERBOSE')
 
-        yield FitSelexModel( ddg_array, 
-                             ref_energy, 
+        curr_mo = EnergeticDNABindingModel(
+            ref_energy, ddg_array, **initial_model.meta_data)
+
+        yield FitSelexModel( curr_mo, 
                              lhd_path, 
                              lhd_hat, 
                              prev_validation_lhd, 
                              new_validation_lhd)
-        
-        if ( bs_len >= MAX_BS_LEN
-             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+
+        if ( curr_mo.motif_len >= MAX_BS_LEN
+             or curr_mo.motif_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
             break
         
         pyTFbindtools.log("Finding best shift", 'VERBOSE')
         shift_type = find_best_shift(
             partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
-            ddg_array,
+            curr_mo,
             partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
         if shift_type == None:
             pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
@@ -590,18 +596,19 @@ def progressively_fit_model(
             
         if shift_type == 'LEFT':
             pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-            ddg_array = np.hstack(
-                (np.zeros((ddg_array.shape[0], 1), dtype='float32'), 
+            ddg_array = np.vstack(
+                (np.zeros(ddg_array.shape[1], dtype='float32'), 
                  ddg_array)
-            ).view(ReducedDeltaDeltaGArray)
+            ).view(DeltaDeltaGArray)
         elif shift_type == 'RIGHT':
             pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-            ddg_array = np.hstack(
+            ddg_array = np.vstack(
                 (ddg_array, 
-                 np.zeros((ddg_array.shape[0], 1), dtype='float32'))
-            ).view(ReducedDeltaDeltaGArray)
+                 np.zeros(ddg_array.shape[1], dtype='float32'))
+            ).view(DeltaDeltaGArray)
         else:
             assert False, "Unrecognized shift type '%s'" % shift_type
-        ref_energy = ref_energy
-        
+        curr_mo = EnergeticDNABindingModel(
+            ref_energy, ddg_array, **initial_model.meta_data)
+
     return

@@ -467,7 +467,7 @@ def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
 
 def calc_binding_site_energies(coded_seqs, ddg_array):
-    n_bind_sites = coded_seqs.seq_length-ddg_array.shape[1]+1
+    n_bind_sites = coded_seqs.seq_length-ddg_array.motif_len+1
     rv = np.zeros((coded_seqs.n_seqs, n_bind_sites), dtype='float32')
     for i, coded_seq in enumerate(coded_seqs.one_hot_coded_seqs):
         rv[i,:] = convolve(
