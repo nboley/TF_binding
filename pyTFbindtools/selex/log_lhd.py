@@ -328,14 +328,14 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
     # (because it's a true convolution, which means it's in the reverse
     #  direction...)
     fwd_bs_affinities = (
-        ref_energy + theano_conv2d(seqs[:,:,1:], ddg[::-1,::-1])[:,:,0])
+        ref_energy + theano_conv2d(seqs, ddg[::-1,::-1])[:,:,0])
     # ignore the RC A's by ignoring the forward T's by using seqs[:,:,:3]
     # for the reverse complement affinities
-    rc_bs_affinities = ref_energy + theano_conv2d(seqs[:,:,:3], ddg)[:,:,0]
+    rc_bs_affinities = ref_energy + theano_conv2d(seqs, ddg)[:,:,0]
     # stack the affinities, and then take the min at each bing site
     bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0)
     seq_affinities = bs_affinities.min(1)
-    return rc_bs_affinities.min(1)
+    return seq_affinities
 
 def theano_calc_occs(affinities, chem_pot):
     return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
@@ -426,7 +426,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
              theano_calc_penalized_lhd_grad )
 
 def theano_log_lhd_factory(initial_coded_seqs):
-    rnds = initial_coded_seqs.rnd_seqs.keys()    
+    rnds = initial_coded_seqs.rnd_seqs.keys()
     ( theano_calc_lhd, 
       theano_calc_grad, 
       theano_calc_penalized_lhd,
@@ -440,10 +440,11 @@ def theano_log_lhd_factory(initial_coded_seqs):
         coded_seqs_args = [
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
+        #assert False
         args = coded_seqs_args + [
-            ddg_array.T.astype('float32'), 
+            ddg_array,
             ref_energy, 
-            chem_affinities.astype('float32'), dna_conc, prot_conc]
+            chem_affinities.astype(theano.config.floatX), dna_conc, prot_conc]
         return theano_calc_penalized_lhd(*args)
 
     def calc_grad(ref_energy, ddg_array, chem_affinities,
@@ -453,7 +454,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
-            ddg_array.T, ref_energy, chem_affinities, dna_conc, prot_conc]
+            ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
         return theano_calc_penalized_grad(*args)
 
     #def calc_bnd_frac(ddg_array, ref_energy, chem_affinities):

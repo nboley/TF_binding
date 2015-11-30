@@ -16,13 +16,13 @@ from scipy.stats import ttest_ind
 import theano
 
 from pyDNAbinding.binding_model import (
-    FixedLengthDNASequences, est_chem_potential )
+    FixedLengthDNASequences, est_chem_potential, DeltaDeltaGArray )
 
 
 import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
-    load_motifs, logistic, R, T, ReducedDeltaDeltaGArray, 
+    load_motifs, logistic, R, T, ReducedDeltaDeltaGArray,
     Motif, load_motif_from_text)
 import pyTFbindtools.sequence
 from pyTFbindtools.shape import code_seqs_shape_features
@@ -273,8 +273,7 @@ def estimate_dg_matrix_with_adadelta(
 
         # Penalize non-physical differences in base affinities
         if CONSTRAIN_BASE_ENERGY_DIFF:
-            base_conts = ddg_array.calc_base_contributions()
-            energy_diff = base_conts.max(1) - base_conts.min(1)
+            energy_diff = ddg_array.max(1) - ddg_array.min(1)
             penalty += (energy_diff[
                 (energy_diff > MAX_BASE_ENERGY_DIFF)]**2).sum()
         #return 0
@@ -285,7 +284,7 @@ def estimate_dg_matrix_with_adadelta(
         num_ddg_entries = init_ddg_array.shape[0]*init_ddg_array.shape[1]
         ddg_array = x[1:1+num_ddg_entries].reshape(
             init_ddg_array.shape).astype('float32').view(
-            ReducedDeltaDeltaGArray)
+            DeltaDeltaGArray)
         chem_affinities = x[1+num_ddg_entries:] #np.array([-11.0]*max_rnd, dtype='float32')
         return ref_energy, ddg_array, chem_affinities
     
@@ -301,7 +300,7 @@ def estimate_dg_matrix_with_adadelta(
             data,
             dna_conc, 
             prot_conc)
-        penalty = calc_penalty(ref_energy, ddg_array)
+        #penalty = calc_penalty(ref_energy, ddg_array)
         return -rv # + penalty
 
     def f_grad(x, data):
@@ -316,9 +315,9 @@ def estimate_dg_matrix_with_adadelta(
             data,
             dna_conc, 
             prot_conc)
-        rv = np.array([ref_energy_grad.tolist(),] 
-                      + ddg_grad.ravel().tolist()
-                      + chem_pot_grad.tolist(), 
+        rv = np.array([ref_energy_grad.tolist(),]  +
+                      ddg_grad.ravel().tolist() +
+                      chem_pot_grad.tolist(), 
                       dtype='float32')
         return -rv
 
@@ -358,7 +357,8 @@ def estimate_dg_matrix_with_adadelta(
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -grad/np.sqrt(grad_sq + e) # np.sqrt(delta_x_sq + e) 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            x0[0] += delta_x.clip(-1, 1)[0] #grad #delta
+            # update the reference energy
+            #x0[0] += delta_x.clip(-1, 1)[0] #grad #delta
             if UPDATE_BASE_CONTS:
                 x0[1:-len(init_chem_affinities)] += delta_x.clip(
                     -0.1, 0.1)[1:-len(init_chem_affinities)] 
@@ -373,12 +373,12 @@ def estimate_dg_matrix_with_adadelta(
             print
             print grad[0].round(2)
             print grad[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).T.round(2)
+                ].reshape(ddg_array.shape).round(2)
             print grad[-len(chem_affinities):].round(2)
             print 
             print delta_x[0].round(2)
             print delta_x[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).T.round(2)
+                ].reshape(ddg_array.shape).round(2)
             print delta_x[-len(chem_affinities):].round(2)
 
             #print f_grad2(
