@@ -369,7 +369,8 @@ def estimate_dg_matrix_with_adadelta(
         grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
-        
+
+        best = float('-inf')
         eps = 1.0
         num_small_decreases = 0
         valid_train_indices = range(
@@ -423,14 +424,13 @@ def estimate_dg_matrix_with_adadelta(
             validation_lhds.append(validation_lhd)
             xs.append(x0)
             min_iter = 4*len(partitioned_and_coded_rnds_and_seqs.train)
-            best = float('-inf')
             if i > 2*min_iter:
                 old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
                 new_max = max(validation_lhds[-min_iter:])
                 if new_max > best: best = new_max
                 print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                #if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
-                #    break
+                if old_median - new_max > -1e-2 or best - 1.0 > new_max:
+                    break
 
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
