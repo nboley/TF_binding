@@ -292,6 +292,12 @@ def estimate_dg_matrix_with_adadelta(
             DeltaDeltaGArray)
         chem_affinities = x[1+num_ddg_entries:] #np.array([-11.0]*max_rnd, dtype='float32')
         return ref_energy, ddg_array, chem_affinities
+
+    def pack_data_into_array(output, ref_energy, ddg_array, chem_affinities):
+        output[0] = ref_energy
+        output[1:1+len(ddg_array.ravel())] = ddg_array.ravel()
+        output[1+len(ddg_array.ravel()):] = chem_affinities
+        return output
     
     def f_dg(x, data):
         """Calculate the loss.
@@ -333,11 +339,26 @@ def estimate_dg_matrix_with_adadelta(
         return approx_fprime(
             x0, f_dg, 1e-3, data).astype('float32')
 
+    def update_x(x, delta_x):
+        # update the reference energy
+        x[0] += delta_x.clip(-1, 1)[0] #grad #delta
+        # update teh base contributions
+        x[1:-len(init_chem_affinities)] += delta_x.clip(
+            -0.1, 0.1)[1:-len(init_chem_affinities)] 
+        # update the chemical affinities
+        x[-len(init_chem_affinities):] += delta_x.clip(
+            -1, 1)[-len(init_chem_affinities):] #grad #delta
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+        ref_energy += ddg_array[:4,:].min(1).sum()
+        ddg_array[:4,:] -= ddg_array[:4,:].min(1)[:,None]
+        x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
+        return x
+
     # ada delta
     validation_lhds = []
     train_lhds = []
     xs = []
-    def ada_delta(x0, UPDATE_BASE_CONTS):
+    def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
         e = 1e-6
         p = 0.5
@@ -356,19 +377,13 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad2(
+            grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -grad/np.sqrt(grad_sq + e) # np.sqrt(delta_x_sq + e) 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            # update the reference energy
-            #x0[0] += delta_x.clip(-1, 1)[0] #grad #delta
-            if UPDATE_BASE_CONTS:
-                x0[1:-len(init_chem_affinities)] += delta_x.clip(
-                    -0.1, 0.1)[1:-len(init_chem_affinities)] 
-            x0[-len(init_chem_affinities):] += delta_x.clip(
-                -1, 1)[-len(init_chem_affinities):] #grad #delta
+            x0 = update_x(x0, delta_x)
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             validation_lhd = -f_dg(
@@ -416,13 +431,14 @@ def estimate_dg_matrix_with_adadelta(
     
     bs_len = init_ddg_array.motif_len    
 
-    x0 = init_ddg_array.copy().astype('float32')
-    x0 = np.insert(x0, 0, init_ref_energy)
-    x0 = np.append(x0, init_chem_affinities)
+    x0 = np.zeros(1 
+                  + init_ddg_array.shape[0]*init_ddg_array.shape[1] 
+                  + len(init_chem_affinities), 
+                  dtype=theano.config.floatX)
+    x0 = pack_data_into_array(
+        x0, init_ref_energy, init_ddg_array, init_chem_affinities)
 
-    x = ada_delta(x0, True)
-    #x2 = ada_delta(x1, False)
-    #x = ada_delta(x2, True)
+    x = ada_delta(x0)
     ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
     validation_lhd = log_lhd.calc_log_lhd(
         ref_energy, 
@@ -523,6 +539,29 @@ FitSelexModel = namedtuple("FitSelexModel", [
     'prev_validation_lhd', 'new_validation_lhd']
 )
 
+def extend_binding_model(mo, seqs, bg_seqs):
+    pyTFbindtools.log("Finding best shift", 'VERBOSE')
+    shift_type = find_best_shift(seqs, mo, bg_seqs)
+    if shift_type == None:
+        return None
+
+    if shift_type == 'LEFT':
+        pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
+        ddg_array = np.vstack(
+            (np.zeros(mo.ddg_array.shape[1], dtype='float32'), 
+             mo.ddg_array)
+        ).view(DeltaDeltaGArray)
+    elif shift_type == 'RIGHT':
+        pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
+        ddg_array = np.vstack(
+            (mo.ddg_array, 
+             np.zeros(mo.ddg_array.shape[1], dtype='float32'))
+        ).view(DeltaDeltaGArray)
+    else:
+        assert False, "Unrecognized shift type '%s'" % shift_type
+    return EnergeticDNABindingModel(
+        mo.ref_energy, ddg_array, **mo.meta_data)
+
 def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs,
         initial_model, 
@@ -584,31 +623,9 @@ def progressively_fit_model(
         if ( curr_mo.motif_len >= MAX_BS_LEN
              or curr_mo.motif_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
             break
-        
-        pyTFbindtools.log("Finding best shift", 'VERBOSE')
-        shift_type = find_best_shift(
+        curr_mo = extend_binding_model(
+            curr_mo, 
             partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
-            curr_mo,
             partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
-        if shift_type == None:
-            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
-            break
-            
-        if shift_type == 'LEFT':
-            pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-            ddg_array = np.vstack(
-                (np.zeros(ddg_array.shape[1], dtype='float32'), 
-                 ddg_array)
-            ).view(DeltaDeltaGArray)
-        elif shift_type == 'RIGHT':
-            pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-            ddg_array = np.vstack(
-                (ddg_array, 
-                 np.zeros(ddg_array.shape[1], dtype='float32'))
-            ).view(DeltaDeltaGArray)
-        else:
-            assert False, "Unrecognized shift type '%s'" % shift_type
-        curr_mo = EnergeticDNABindingModel(
-            ref_energy, ddg_array, **initial_model.meta_data)
 
     return
