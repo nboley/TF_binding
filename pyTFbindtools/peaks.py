@@ -331,7 +331,7 @@ def label_and_score_peak_with_chipseq_peaks(
             labels.append(1)
             scores.append(score) # XXX
         else:
-            labels.append(-1)
+            labels.append(0)
             scores.append(0)
     return labels, scores
 
@@ -384,17 +384,17 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                 # set the label to zero if there is no clean peak set
                 # (in this case all peaks will be labeled -1 or 1 )
                 # aggregate labels by taking the max over all labels
-                label, score = -1, 0
+                label, score = 0, 0
                 if len(labels) > 0:
                     assert len(scores) > 0
                     label = max(labels)
                     score = max(scores)
-                if include_ambiguous_peaks and label == -1:
+                if include_ambiguous_peaks and label == 0:
                     (relaxed_labels, relaxed_scores
                          ) = label_and_score_peak_with_chipseq_peaks(
                              ambiguous_sample_chipseq_peak_fnames, pk)
                     if max(relaxed_labels) == 1:
-                        label = 0
+                        label = -1
                         score = max(relaxed_scores)
                 
                 yield PeakAndLabel(pk, sample_id, label, score)
