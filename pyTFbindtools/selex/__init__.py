@@ -365,7 +365,7 @@ def estimate_dg_matrix_with_adadelta(
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
         e = 1e-6
-        p = 0.50
+        p = 0.95
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
         

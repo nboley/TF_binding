@@ -402,7 +402,9 @@ def theano_build_lhd_and_grad_fns(n_rounds):
         lhd 
         - bg_seqs.shape[2]*TT.sum(abs(
             prot_conc - TT.exp(chem_affinities) - dna_conc*rnd_bnd_fracs))
-        - (ref_energy+ddg.sum()/4 + 3)**2 )
+        - (ref_energy+ddg.sum()/4 + 3)**2 
+        - TT.max(abs(ddg.max(1) - ddg.min(1) - 8).max(keepdims=True), np.zeros(1))
+    )
 
     penalized_lhd_grad = jacobian(
         penalized_lhd, [ref_energy, ddg, chem_affinities])
