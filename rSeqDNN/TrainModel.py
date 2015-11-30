@@ -35,6 +35,8 @@ def parse_args():
                     help='train and validate on single celltypes')
     parser.add_argument('--validation-contigs', type=str, default=None,
                     help='to validate on chr1 and chr4, input chr1,chr4')
+    parser.add_argument('--include-model-report', default=False, action='store_true',
+                    help='plot model predictions')
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
     train_parser = subparsers.add_parser('train', help='training help')
     test_parser = subparsers.add_parser('test', help='testing help')
@@ -97,7 +99,8 @@ def parse_args():
                   args.only_test_one_fold,
                   args.random_seed,
                   args.single_celltype,
-                  args.validation_contigs)
+                  args.validation_contigs,
+                  args.include_model_report)
     if args.command=='train':
         command_args = ( args.model_prefix,
                          args.use_cached_model)
@@ -112,7 +115,8 @@ def main_train(main_args, train_args):
       only_test_one_fold,
       random_seed,
       single_celltype,
-      validation_contigs ) = main_args
+      validation_contigs,
+      include_model_report ) = main_args
     model_ofname_prefix, use_cached_model = train_args
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
@@ -152,6 +156,12 @@ def main_train(main_args, train_args):
             res.validation_samples = valid.sample_ids
             res.validation_chromosomes = valid.contigs
             results.append(res)
+            if include_model_report:
+                fit_model.classification_report(
+                    valid,
+                    genome_fasta,
+                    "%s.fold%i" % (
+                        model_ofname_prefix, fold_index))
         if only_test_one_fold: break
     print 'CLEAN VALIDATION RESULTS'
     for res in clean_results:
@@ -168,7 +178,8 @@ def main_test(main_args, test_args):
       only_test_one_fold,
       random_seed,
       single_celltype,
-      validation_contigs ) = main_args
+      validation_contigs,
+      include_model_report ) = main_args
     model_fname, weights_fname = test_args
     np.random.seed(random_seed) # fix random seed
     clean_results = ClassificationResults()

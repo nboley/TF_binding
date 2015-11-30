@@ -11,7 +11,8 @@ from pyTFbindtools.peaks import FastaPeaksAndLabels
 from pyTFbindtools.cross_validation import (
     ClassificationResult, 
     find_optimal_ambiguous_peak_threshold, 
-    plot_ambiguous_peaks )
+    plot_ambiguous_peaks,
+    plot_peak_ranks )
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -94,6 +95,7 @@ class KerasModelBase():
         self.batch_size = batch_size
         self.use_cached_model = use_cached_model
         self.seq_len = peaks_and_labels.max_peak_width
+        self.ambiguous_peak_threshold = None
 
         print 'building default rSeqDNN architecture...'
         num_conv_outputs = ((self.seq_len - conv_width) + 1)
@@ -316,3 +318,18 @@ class KerasModel(KerasModelBase):
 
         return self
 
+    def classification_report(
+            self, data, genome_fasta, ofname, filter_ambiguous_labels=True):
+        '''plots TP, FP, FN, TN peaks
+        '''
+        X, y_true = self.build_predictor_and_label_matrices(
+            data, genome_fasta, False)
+        if filter_ambiguous_labels:
+            X = X = X[y_true != -1,:,:,:]
+            y_true_scores = data.scores[y_true != -1]
+            y_true = y_true[y_true != -1]
+        y_pred = self.predict(X).squeeze()
+        y_pred_scores = self.predict_proba(X).squeeze()
+        plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname)
+
+        return self

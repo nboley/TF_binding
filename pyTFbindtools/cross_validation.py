@@ -9,6 +9,9 @@ from scipy.stats.mstats import mquantiles
 from sklearn import cross_validation
 from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot
 
 TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
@@ -147,9 +150,6 @@ def find_optimal_ambiguous_peak_threshold(
     return best_thresh
 
 def plot_ambiguous_peaks(scores, pred_prbs, ofname):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot
 
     def make_boxplot(n_groups=20):
         groups = defaultdict(list)
@@ -235,3 +235,40 @@ def iter_train_validation_splits(sample_ids, contigs,
                 (train_samples, train_chrs),
                 (validation_samples, validation_contigs))
     return
+
+def plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname):
+    true_positives = (y_pred*y_true)==1
+    false_positives = (y_pred*(1-y_true))==1
+    false_negatives = ((1-y_pred)*y_true)==1
+    true_negatives = ((1-y_pred)*(1-y_true))==1
+    y_pred_ranks = rankdata(y_pred_scores)
+    y_true_ranks = rankdata(y_true_scores)
+    assert len(y_pred)==len(y_pred_scores)
+    assert len(y_pred_scores)==len(y_pred_ranks)
+    def plot_peaks(true_peak_scores, pred_peak_scores, score_name):
+        matplotlib.pyplot.close()
+        f, axarr = matplotlib.pyplot.subplots(2, 2, sharex=True, sharey=True)
+        f.text(0.5, 0.05, 'true %s'%score_name, ha='center', va='center')
+        f.text(0.05, 0.5, 'predicted %s'%score_name, ha='center', va='center',
+               rotation='vertical')
+        axarr[0, 0].set_title('true positives')
+        axarr[0, 0].scatter(true_peak_scores[true_positives],
+                            pred_peak_scores[true_positives])
+        axarr[1, 1].set_title('false positives')
+        axarr[1, 1].scatter(true_peak_scores[false_positives],
+                            pred_peak_scores[false_positives])
+        axarr[0, 1].set_title('false negatives')
+        axarr[0, 1].scatter(true_peak_scores[false_negatives],
+                            pred_peak_scores[false_negatives])
+        axarr[1, 0].set_title('true negatives')
+        axarr[1, 0].scatter(true_peak_scores[true_negatives],
+                            pred_peak_scores[true_negatives])
+        xticklabels = axarr[1, 0].get_xticklabels() + axarr[1, 1].get_xticklabels()
+        matplotlib.pyplot.setp(xticklabels, rotation=45, fontsize=10)
+        yticklabels = axarr[1, 0].get_yticklabels() + axarr[0, 0].get_yticklabels()
+        matplotlib.pyplot.setp(yticklabels, fontsize=10)
+        matplotlib.pyplot.savefig('%s.peak_%s.png' % (ofname, score_name))
+    plot_peaks(y_true_scores, y_pred_scores, 'scores')
+    plot_peaks(y_true_ranks, y_pred_ranks, 'ranks')
+    return
+
