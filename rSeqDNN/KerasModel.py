@@ -12,7 +12,8 @@ from pyTFbindtools.cross_validation import (
     ClassificationResult, 
     find_optimal_ambiguous_peak_threshold, 
     plot_ambiguous_peaks,
-    plot_peak_ranks )
+    plot_peak_ranks,
+    plot_pr_curve )
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -331,5 +332,6 @@ class KerasModel(KerasModelBase):
         y_pred = self.predict(X).squeeze()
         y_pred_scores = self.predict_proba(X).squeeze()
         plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname)
+        plot_pr_curve(y_true, y_pred_scores, ofname)
 
         return self

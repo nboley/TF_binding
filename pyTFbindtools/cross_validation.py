@@ -272,3 +272,17 @@ def plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname):
     plot_peaks(y_true_ranks, y_pred_ranks, 'ranks')
     return
 
+def plot_pr_curve(y_true, y_pred_scores, ofname):
+    precision, recall, thresholds = precision_recall_curve(y_true, y_pred_scores)
+    auPRC = auc(recall, precision)
+    matplotlib.pyplot.clf()
+    matplotlib.pyplot.plot(recall, precision, label='auPRC = %0.2f' % auPRC)
+    matplotlib.pyplot.legend(loc="upper right")
+    matplotlib.pyplot.xlabel('Recall')
+    matplotlib.pyplot.ylabel('Precision')
+    matplotlib.pyplot.ylim([0.0, 1.05])
+    matplotlib.pyplot.xlim([0.0, 1.0])
+    matplotlib.pyplot.title('Precision-Recall Curve')
+    matplotlib.pyplot.savefig('%s.pr_curve.png' % ofname)
+    return
+
