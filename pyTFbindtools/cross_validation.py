@@ -135,7 +135,7 @@ def find_optimal_ambiguous_peak_threshold(
     labels[ambiguous_peaks] = 1.0
     # for each threshold, change the labels and evaluate the model's 
     # performance
-    best_f1 = 0.0
+    best_recall_at_05_fdr = 0.0
     best_thresh = None
     for i, thresh in enumerate(ambiguous_thresholds):
         print "Testing thresh %i/%i" % (i+1, len(ambiguous_thresholds))
@@ -143,8 +143,8 @@ def find_optimal_ambiguous_peak_threshold(
             ambiguous_peaks&(peak_scores <= thresh))
         labels[ambig_peaks_below_threshold] = 0
         res = mo.evaluate(predictors, labels)
-        if res.F1 > best_f1:
-            best_f1 = res.F1
+        if res.recall_at_05_fdr > best_recall_at_05_fdr:
+            best_recall_at_05_fdr = res.recall_at_05_fdr
             best_thresh = thresh
 
     return best_thresh
