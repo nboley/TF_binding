@@ -383,11 +383,14 @@ def fit_model(rnds_and_seqs, background_seqs,
               output_fname_prefix=None):
     assert selex_db_conn is not None or output_fname_prefix is not None
 
-    ref_energy, ddg_array = initial_model.build_all_As_affinity_and_ddg_array()
     chem_affinities = estimate_chem_affinities_for_selex_experiment(
         background_seqs, 
         max(rnds_and_seqs.keys()), 
         initial_model, dna_conc, prot_conc)
+
+    ddg_array = initial_model.ddg_array.copy()
+    ref_energy = 0.0
+    #ref_energy, ddg_array = initial_model.build_all_As_affinity_and_ddg_array()
 
     pyTFbindtools.log("Coding sequences", 'VERBOSE')
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
