@@ -341,7 +341,7 @@ def estimate_dg_matrix_with_adadelta(
 
     def update_x(x, delta_x):
         # update the reference energy
-        x[0] += delta_x.clip(-1, 1)[0] #grad #delta
+        #x[0] += delta_x.clip(-1, 1)[0] #grad #delta
         # update teh base contributions
         x[1:-len(init_chem_affinities)] += delta_x.clip(
             -0.1, 0.1)[1:-len(init_chem_affinities)] 
@@ -364,8 +364,9 @@ def estimate_dg_matrix_with_adadelta(
     xs = []
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-6
+        e = 1e-2
         p = 0.95
+        grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
         
@@ -381,9 +382,10 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad(
+            new_grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
+            grad = 0.3*grad + 0.7*new_grad
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)  # 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
@@ -427,8 +429,8 @@ def estimate_dg_matrix_with_adadelta(
                 new_max = max(validation_lhds[-min_iter:])
                 if new_max > best: best = new_max
                 print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
-                    break
+                #if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
+                #    break
 
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
