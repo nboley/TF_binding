@@ -11,7 +11,9 @@ from scipy.signal import convolve
 import theano
 import theano.tensor as TT
 from theano.tensor.signal.conv import conv2d as theano_conv2d
-from theano.tensor.extra_ops import cumprod, diff as theano_diff
+from theano.tensor.extra_ops import (
+    cumsum as theano_cumsum, 
+    diff as theano_diff )
 from theano.gradient import jacobian
 
 from pyTFbindtools.motif_tools import R, T
@@ -340,6 +342,19 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
 def theano_calc_occs(affinities, chem_pot):
     return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
+def theano_calc_log_occs(affinities, chem_pot):
+    return -TT.log(1 + TT.exp((-chem_pot+affinities)/(R*T)))
+
+def NAIVE_theano_log_sum_log_occs(log_occs):
+    return TT.log(TT.sum(np.exp(log_occs), axis=0))
+
+def theano_log_sum_log_occs(log_occs):
+    scale_factor = log_occs.max()
+    centered_log_occs = log_occs - scale_factor
+    centered_rv = TT.log(TT.sum(np.exp(centered_log_occs), axis=0))
+    return centered_rv + scale_factor
+
+
 def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
     prot_conc = TT.scalar(dtype=theano.config.floatX)
@@ -366,25 +381,37 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     rnd_numerators = []
     for seq_rnd in xrange(1,n_rounds+1):
         rnd_numerators.append(TT.sum([
-            -TT.log(1.0 + TT.exp(
-                (-chem_affinities[i-1] + rnds_seq_affinities[seq_rnd-1])/(R*T))).sum()
+            theano_calc_log_occs(
+                chem_affinities[i-1], 
+                rnds_seq_affinities[seq_rnd-1]
+            ).sum()
             for i in xrange(1, seq_rnd+1) 
         ]))
 
     # calculate the lhd denominator
     expected_cnts = (4.0**seq_len)/n_bg_seqs
-    bg_bindingsite_occs = TT.stack(
-        [TT.ones_like(bg_seq_affinities)/bg_seq_affinities.shape[0],] + 
-        [theano_calc_occs(bg_seq_affinities, chem_affinities[i-1])
-         for i in xrange(1,n_rounds+1)])
-    log_bnd_fracs = TT.log(TT.sum(cumprod(bg_bindingsite_occs, axis=0), axis=1))
-    rnd_bnd_fracs = theano_diff(log_bnd_fracs)
+    # calculate the log bound occupancies for each background sequence
+    # for each chemical affinity
+    # XXX - can we eliminate the list comprehension???
+    bg_bindingsite_log_occs = TT.stack([
+        theano_calc_log_occs(bg_seq_affinities, chem_affinities[i-1])
+        for i in xrange(1,n_rounds+1)
+    ])
+    
+    # calcualte the probability that a particular sequence was bound
+    # in each round and all previous rounds
+    bg_bindingsite_cumulative_log_occs = theano_cumsum(
+        bg_bindingsite_log_occs, axis=0)
+    # calculate the cumulative log occupancy for each round
+    denominators = theano_log_sum_log_occs(
+        bg_bindingsite_cumulative_log_occs)
 
-    denominators = TT.log(expected_cnts) + log_bnd_fracs[1:]
+    rnd_bnd_fracs = denominators
+    #rnd_bnd_fracs = theano_diff(TT.log(bnd_fracs))
 
     lhd = 0
     for i in xrange(n_rounds):
-        lhd += rnd_numerators[i] - rnd_seqs[i].shape[2]*denominators[i]
+        lhd += rnd_numerators[i] - rnd_seqs[i].shape[0]*denominators[i]
     
     lhd_grad = jacobian(lhd, [ref_energy, ddg, chem_affinities])
 
@@ -400,14 +427,14 @@ def theano_build_lhd_and_grad_fns(n_rounds):
 
     penalized_lhd = ( 
         lhd 
-        - bg_seqs.shape[2]*TT.sum(abs(
-            prot_conc - TT.exp(chem_affinities) - dna_conc*rnd_bnd_fracs))
-        - (ref_energy+ddg.sum()/4 + 3)**2 
+        - n_bg_seqs*TT.sum(abs(
+            prot_conc - TT.exp(chem_affinities) - dna_conc*TT.exp(rnd_bnd_fracs)))
+        - (ref_energy+ddg.sum()/4 + 3)**2
         - TT.max(
-            ((ddg.max(1) - ddg.min(1) - 8)**2).max(keepdims=True), 
+            ((ddg.max(1) - ddg.min(1) - 4)**2).max(keepdims=True), 
             np.zeros(1))
     )
-
+    penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
         penalized_lhd, [ref_energy, ddg, chem_affinities])
     #theano_calc_penalized_lhd = None

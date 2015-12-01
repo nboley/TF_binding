@@ -314,7 +314,7 @@ def estimate_dg_matrix_with_adadelta(
         #penalty = calc_penalty(ref_energy, ddg_array)
         return -rv # + penalty
 
-    def f_grad(x, data):
+    def f_grad2(x, data):
         """Calculate the loss.
         
         """
@@ -330,9 +330,12 @@ def estimate_dg_matrix_with_adadelta(
                       ddg_grad.ravel().tolist() +
                       chem_pot_grad.tolist(), 
                       dtype='float32')
+        #for i in xrange(len(rv)/2):
+        #    j = random.randrange(len(rv))
+        #    rv[j] = 0.0
         return -rv
 
-    def f_grad2(x, data):
+    def f_grad(x, data):
         """Calculate the loss.
         
         """
@@ -347,12 +350,12 @@ def estimate_dg_matrix_with_adadelta(
             -0.1, 0.1)[1:-len(init_chem_affinities)] 
         # update the chemical affinities
         x[-len(init_chem_affinities):] += delta_x.clip(
-            -1, 1)[-len(init_chem_affinities):] #grad #delta
+            -0.1, 0.1)[-len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         #print ref_energy
         #print ddg_array
-        ref_energy += ddg_array[:,:4].min(1).sum()
-        ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
+        #ref_energy += ddg_array[:,:4].min(1).sum()
+        #ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
         #print ref_energy
         #print ddg_array
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
@@ -364,7 +367,7 @@ def estimate_dg_matrix_with_adadelta(
     xs = []
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-2
+        e = 1e-6
         p = 0.95
         grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
@@ -383,10 +386,9 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            new_grad = f_grad(
+            grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
-            grad = 0.3*grad + 0.7*new_grad
             grad_sq = p*grad_sq + (1-p)*(grad**2)
             delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)  # 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
@@ -423,15 +425,16 @@ def estimate_dg_matrix_with_adadelta(
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
             xs.append(x0)
-            min_iter = 4*len(partitioned_and_coded_rnds_and_seqs.train)
+            min_iter = 10*len(partitioned_and_coded_rnds_and_seqs.train)
             if i > 2*min_iter:
                 old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
                 new_max = max(validation_lhds[-min_iter:])
                 if new_max > best: best = new_max
                 print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                if old_median - new_max > -1e-2 or best - 1.0 > new_max:
-                    break
-
+                #if (abs(old_median - new_max) < 1e-2
+                #    or float(best > max(validation_lhds[-2*min_iter:]))):
+                #    break
+        
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
     
@@ -574,7 +577,7 @@ def progressively_fit_model(
         chem_affinities,
         dna_conc, 
         prot_conc):    
-    pyTFbindtools.log("Compiling likleihood function", 'VERBOSE')
+    pyTFbindtools.log("Compiling likelihood function", 'VERBOSE')
     log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.train[0])
     pyTFbindtools.log("Starting optimization", 'VERBOSE')
