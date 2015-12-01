@@ -3,6 +3,7 @@ sys.setrecursionlimit(50000)
 
 import cPickle as pickle
 import numpy as np
+import scipy.misc
 import json
 import os
 
@@ -14,6 +15,9 @@ from pyTFbindtools.cross_validation import (
     plot_ambiguous_peaks,
     plot_peak_ranks,
     plot_pr_curve )
+from matplotlib import (
+    pyplot as plt,
+    image as mpimg )
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -319,6 +323,31 @@ class KerasModel(KerasModelBase):
 
         return self
 
+    def plot_convolutions(
+            self, ofname):
+        '''visualize convolutions with logo motifs
+        '''
+        scripts_dir = os.environ.get("UTIL_SCRIPTS_DIR")
+        weights, biases = self.model.layers[0].get_weights()
+        num_conv, _, _, conv_width = weights.shape
+        reshaped_weights = np.reshape(weights, (num_conv, 4, conv_width))
+        temp_fname = "tempFile.txt"
+        for i in xrange(num_conv):
+            plt.clf()
+            plt.figure(figsize=(20, 20))
+            plt.axis('off')
+            np.savetxt(temp_fname, reshaped_weights[i].T, delimiter='\t')
+            png_fname = "%s.%s.png" % (ofname, str(i))
+            os.system("Rscript %s/logoViz/plotConvFilter.R %s %s %s" % (
+                scripts_dir, temp_fname, png_fname, str(biases[i])))
+            plt.imshow(mpimg.imread(png_fname))
+            plt.title("Convolution %s" % str(i))
+            plt.savefig("%s.convolution_%s.png" % (ofname, str(i)))
+            os.system("rm %s" % png_fname)
+        os.system("rm %s" % temp_fname)
+
+        return self
+
     def classification_report(
             self, data, genome_fasta, ofname, filter_ambiguous_labels=True):
         '''plots TP, FP, FN, TN peaks
@@ -333,5 +362,6 @@ class KerasModel(KerasModelBase):
         y_pred_scores = self.predict_proba(X).squeeze()
         plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname)
         plot_pr_curve(y_true, y_pred_scores, ofname)
+        self.plot_convolutions(ofname)
 
         return self
