@@ -351,7 +351,7 @@ def estimate_dg_matrix_with_adadelta(
             print "="*100
             print grad
             print "="*100
-            assert False
+            #assert False
             return f_FD_grad(x, data)
         return grad
 
@@ -399,12 +399,13 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad(
+            new_grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
+            grad = 0.5*grad + 0.5*new_grad
             grad_sq = p*grad_sq + (1-p)*(grad**2)
 
-            delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)  # 
+            delta_x = -0.1*grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
             x0 = update_x(x0, delta_x)
             train_lhd = -f_dg(
@@ -442,7 +443,8 @@ def estimate_dg_matrix_with_adadelta(
             if i > 2*min_iter:
                 old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
                 new_max = max(validation_lhds[-min_iter:])
-                if new_max > best: best = new_max
+                if np.isfinite(new_max) and new_max > best: 
+                    best = new_max
                 print "Stop Crit:", old_median, new_max, new_max-old_median, best
                 #if (abs(old_median - new_max) < 1e-2
                 #    or float(best > max(validation_lhds[-2*min_iter:]))):

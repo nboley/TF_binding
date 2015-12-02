@@ -350,10 +350,10 @@ def theano_calc_log_occs(affinities, chem_pot):
     #return -TT.log(1.0 + TT.exp(inner))
     ## Make this more stable for large values of inner
     # log (a+c) = log(a) + log(1+c/a)
-    return -inner-TT.log(1.0+TT.exp(-inner.clip(-20, 20)))
+    return -inner-TT.log(1.0+TT.exp(-inner.clip(-10, 10)))
 
 def NAIVE_theano_log_sum_log_occs(log_occs):
-    return TT.log(1e-30 + TT.sum(np.exp(log_occs), axis=1))
+    return TT.log(1e-37 + TT.sum(np.exp(log_occs), axis=1))
 
 def theano_log_sum_log_occs(log_occs):
     scale_factor = log_occs.max()
@@ -448,6 +448,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     # TT.log(expected_cnts) + 
     lhd = (print_numerators(rnd_numerators) 
            - print_denominators(n_seqs*denominators)).sum()
+    lhd = (rnd_numerators - n_seqs*denominators).sum()
     
     #print_scaled_denom = theano.printing.Print('scaled_denom')
     #print_numerators_str = theano.printing.Print('num_str')
