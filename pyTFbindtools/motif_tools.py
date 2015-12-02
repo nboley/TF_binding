@@ -13,8 +13,6 @@ from pysam import FastaFile
 
 from sequence import one_hot_encode_sequences
 
-from DB import load_genome_metadata
-
 T = 300
 R = 1.987e-3 # in kCal/mol*K
 
@@ -157,6 +155,7 @@ def score_regions(regions, genome, motifs):
     return
 
 def build_model_scores_hdf5_file(annotation_id, tf_id):
+    from DB import load_genome_metadata
     genome_fname = load_genome_metadata(annotation_id).filename
     genome = FastaFile(genome_fname)
     models = load_binding_models_from_db(tf_ids=[tf_id,])
