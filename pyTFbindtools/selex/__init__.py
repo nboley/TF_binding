@@ -314,7 +314,7 @@ def estimate_dg_matrix_with_adadelta(
         #penalty = calc_penalty(ref_energy, ddg_array)
         return -rv # + penalty
 
-    def f_grad2(x, data):
+    def f_analytic_grad(x, data):
         """Calculate the loss.
         
         """
@@ -335,22 +335,34 @@ def estimate_dg_matrix_with_adadelta(
         #    rv[j] = 0.0
         return -rv
 
-    def f_grad(x, data):
+    def f_FD_grad(x, data):
         """Calculate the loss.
         
         """
         return approx_fprime(
             x0, f_dg, 1e-3, data).astype('float32')
 
+    def f_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        grad = f_analytic_grad(x, data)
+        if not np.isfinite(grad).all():
+            print "="*100
+            print grad
+            print "="*100
+            return f_FD_grad(x, data)
+        return grad
+
     def update_x(x, delta_x):
         # update the reference energy
         #x[0] += delta_x.clip(-1, 1)[0] #grad #delta
         # update teh base contributions
         x[1:-len(init_chem_affinities)] += delta_x.clip(
-            -0.1, 0.1)[1:-len(init_chem_affinities)] 
+            -0.001, 0.001)[1:-len(init_chem_affinities)] 
         # update the chemical affinities
         x[-len(init_chem_affinities):] += delta_x.clip(
-            -0.1, 0.1)[-len(init_chem_affinities):] #grad #delta
+            -0.01, 0.01)[-len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         #print ref_energy
         #print ddg_array
@@ -367,7 +379,7 @@ def estimate_dg_matrix_with_adadelta(
     xs = []
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-6
+        e = 1e-2
         p = 0.95
         grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
@@ -390,13 +402,14 @@ def estimate_dg_matrix_with_adadelta(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
+
             delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)  # 
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
             x0 = update_x(x0, delta_x)
-            train_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            validation_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.validation)
+            train_lhd = 0 #-f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            validation_lhd = 0 #-f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.validation)
 
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
             print
@@ -421,7 +434,6 @@ def estimate_dg_matrix_with_adadelta(
                 ))
 
             pyTFbindtools.log(summary, 'DEBUG')
-            
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
             xs.append(x0)
