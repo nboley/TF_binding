@@ -405,13 +405,14 @@ def estimate_dg_matrix_with_adadelta(
             grad = 0.5*grad + 0.5*new_grad
             grad_sq = p*grad_sq + (1-p)*(grad**2)
 
-            delta_x = -0.1*grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
+            delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
             delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
+            
             x0 = update_x(x0, delta_x)
-            train_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
+            train_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
 
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
             print

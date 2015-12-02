@@ -356,10 +356,12 @@ def NAIVE_theano_log_sum_log_occs(log_occs):
     return TT.log(1e-37 + TT.sum(np.exp(log_occs), axis=1))
 
 def theano_log_sum_log_occs(log_occs):
-    scale_factor = log_occs.max()
-    centered_log_occs = log_occs - scale_factor
+    # theano.printing.Print('scale_factor')
+    scale_factor = (
+        TT.max(log_occs, axis=1, keepdims=True))
+    centered_log_occs = (log_occs - scale_factor)
     centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
-    return centered_rv + scale_factor
+    return centered_rv + scale_factor.flatten()
 
 def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
@@ -415,9 +417,9 @@ def theano_build_lhd_and_grad_fns(n_rounds):
         theano_calc_log_occs(bg_seq_affinities, chem_affinities[i-1])
         for i in xrange(1,n_rounds+1)
     ])
-    bg_bindingsite_log_weights = TT.zeros_like(bg_bindingsite_log_occs)
+    bg_bindingsite_log_weights = TT.ones_like(bg_bindingsite_log_occs)
     for i in xrange(n_rounds):
-        # if we are in round 0 initialize to sum to 0
+        # if we are in round 0 initialize to sum to be uniform across seqs
         if i == 0:
             bg_bindingsite_log_weights = TT.set_subtensor(
                 bg_bindingsite_log_weights[i,:],
@@ -440,6 +442,8 @@ def theano_build_lhd_and_grad_fns(n_rounds):
             bg_bindingsite_log_weights[i,:],
             bg_bindingsite_log_occs[i,:]
         )
+    # sum up the bg log ocucpancies. Since the weights are initialzied to
+    # sum to one, this is actually the mean occupancy of the background seqs
     bg_log_occs = (
         theano_log_sum_log_occs(bg_bindingsite_log_weights))
 
@@ -465,16 +469,18 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #    lhd_grad)
 
     print_bnd_frac = theano.printing.Print('bnd_frac')
-    bnd_frac = print_bnd_frac(TT.exp(bg_log_occs))
+    bnd_frac = ( #print_bnd_frac(
+        TT.exp(bg_log_occs))
     unbnd_imbalance = (
         TT.log((prot_conc - TT.exp(chem_affinities) - dna_conc*bnd_frac)**2) )
     penalized_lhd = ( 
         lhd 
-        - TT.sum(unbnd_imbalance)
-        - (ref_energy+ddg.sum()/4 + 3)**2
-        #- TT.max(
-        #    ((ddg.max(1) - ddg.min(1) - 4)**2).max(keepdims=True), 
-        #    np.zeros(1))
+        - 100*TT.sum(unbnd_imbalance)
+        - 100*(ref_energy+ddg.sum()/4 + 3)**2
+        - 100*TT.max(
+            ((ddg.max(1) - ddg.min(1) - 6)**2).max(keepdims=True), 
+            np.zeros(1)
+        )**2
     )
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
