@@ -351,6 +351,7 @@ def estimate_dg_matrix_with_adadelta(
             print "="*100
             print grad
             print "="*100
+            assert False
             return f_FD_grad(x, data)
         return grad
 
