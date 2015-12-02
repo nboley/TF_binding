@@ -11,7 +11,10 @@ from scipy.signal import convolve
 import theano
 import theano.tensor as TT
 from theano.tensor.signal.conv import conv2d as theano_conv2d
-from theano.tensor.extra_ops import cumprod, diff as theano_diff
+from theano.tensor.extra_ops import (
+    cumprod, 
+    diff as theano_diff,
+    cumsum as theano_cumsum)
 from theano.gradient import jacobian
 
 from pyTFbindtools.motif_tools import R, T
@@ -339,8 +342,9 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
-    return -TT.log(1.0 + TT.exp(inner))
+    #return -TT.log(1.0 + TT.exp(inner)) # .clip(-1000, 10)
     # log (a+c) = log(a) + log(1+c/a)
+    return -inner-TT.log(1.0+TT.exp(-inner.clip(-20, 20)))
     #return -inner
 
 def NAIVE_theano_log_sum_log_occs(log_occs):
@@ -349,58 +353,82 @@ def NAIVE_theano_log_sum_log_occs(log_occs):
 def theano_log_sum_log_occs(log_occs):
     scale_factor = log_occs.max()
     centered_log_occs = log_occs - scale_factor
-    centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
+    centered_rv = TT.log(1e-30+TT.sum(TT.exp(centered_log_occs), axis=1))
     return centered_rv + scale_factor
 
-def theano_calc_occs(affinities, chem_pot):
-    return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
+#def theano_calc_occs(affinities, chem_pot):
+#    return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
 def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
     prot_conc = TT.scalar(dtype=theano.config.floatX)
 
-    rnd_seqs = [
-        TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
-        for i in xrange(n_rounds) ]
-        
+    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
+    ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
+    chem_affinities = TT.vector(dtype=theano.config.floatX)
+
     bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
     seq_len = bg_seqs.shape[1]
     n_bg_seqs = bg_seqs.shape[0]
+
+    rnd_seqs = [
+        TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
+        for i in xrange(n_rounds) ]
     
-    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
-    ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
-
-    chem_affinities = TT.vector(dtype=theano.config.floatX)
-
+    n_seqs = TT.ones_like(chem_affinities)
+    for rnd in xrange(n_rounds):
+        n_seqs = TT.set_subtensor(n_seqs[rnd], rnd_seqs[rnd].shape[0])
+    
     # calculate the sequence affinities
     rnds_seq_affinities = [
         theano_calc_affinities(seqs, ref_energy, ddg) for seqs in rnd_seqs ]
     bg_seq_affinities = theano_calc_affinities(bg_seqs, ref_energy, ddg)
 
     # calculate the lhd numerators
-    rnd_numerators = []
-    for seq_rnd in xrange(1,n_rounds+1):
-        rnd_numerators.append(TT.sum([
-            theano_calc_log_occs(
-                rnds_seq_affinities[seq_rnd-1], chem_affinities[i-1]
-            ).sum()
-            for i in xrange(1, seq_rnd+1) 
-        ]))
+    rnd_numerators = TT.zeros_like(chem_affinities)
+    for seq_rnd in xrange(n_rounds):
+        for i in xrange(seq_rnd+1) :
+            rnd_numerators = TT.inc_subtensor(
+                rnd_numerators[seq_rnd],
+                theano_calc_log_occs(
+                    rnds_seq_affinities[seq_rnd], chem_affinities[i]
+                ).sum()
+            )
+    
+    # calculate the occupancy of the background sequences for each 
+    # chemical affinity
+    bg_bindingsite_log_occs = TT.stack([
+        theano_calc_log_occs(bg_seq_affinities, chem_affinities[i-1])
+        for i in xrange(1,n_rounds+1)
+    ])
+    
+    expected_cnts = (4.0**seq_len)/bg_seqs.shape[0]
+    denominators = theano_log_sum_log_occs(
+        theano_cumsum(
+            bg_bindingsite_log_occs, axis=0)
+    )# + TT.log(expected_cnts)
 
-    # calculate the lhd denominator
-    expected_cnts = (4.0**seq_len)/n_bg_seqs
+    """
+
+    expected_cnts = (4.0**seq_len)
     bg_bindingsite_occs = TT.stack(
         [TT.ones_like(bg_seq_affinities)/bg_seq_affinities.shape[0],] + 
         [theano_calc_occs(bg_seq_affinities, chem_affinities[i-1])
          for i in xrange(1,n_rounds+1)])
-    log_bnd_fracs = TT.log(TT.sum(cumprod(bg_bindingsite_occs, axis=0), axis=1))
-    rnd_bnd_fracs = theano_diff(log_bnd_fracs)
-
-    denominators = TT.log(expected_cnts) + log_bnd_fracs[1:]
-
-    lhd = 0
-    for i in xrange(n_rounds):
-        lhd += rnd_numerators[i] - rnd_seqs[i].shape[0]*denominators[i]
+    bnd_fracs = TT.sum(expected_cnts*cumprod(bg_bindingsite_occs, axis=0), axis=1)
+    #rnd_bnd_fracs = theano_diff(log_bnd_fracs)
+    print_bnd_fracs = theano.printing.Print('bnd_fracs')
+    denominators = TT.log(print_bnd_fracs(bnd_fracs[1:]))
+    # expected_cnts*
+    """
+    print_numerators = theano.printing.Print('numerators')
+    print_denominators = theano.printing.Print('denominators')
+    # TT.log(expected_cnts) + 
+    lhd = (print_numerators(rnd_numerators) 
+           - print_denominators(n_seqs*denominators)).sum()
+    #lhd = 0
+    #for i in xrange(n_rounds):
+    #    lhd += rnd_numerators[i] - rnd_seqs[i].shape[0]*denominators[i]
     
     lhd_grad = jacobian(lhd, [ref_energy, ddg, chem_affinities])
 
@@ -414,10 +442,10 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
     #    lhd_grad)
 
-    penalized_lhd = lhd - bg_seqs.shape[2]*TT.sum(abs(
-        prot_conc - TT.exp(chem_affinities) - dna_conc*rnd_bnd_fracs))
+    penalized_lhd = lhd # - bg_seqs.shape[2]*TT.sum(abs(
+        #prot_conc - TT.exp(chem_affinities) - dna_conc*rnd_bnd_fracs))
     penalized_lhd_grad = jacobian(
-        lhd, [ref_energy, ddg, chem_affinities])
+        penalized_lhd, [ref_energy, ddg, chem_affinities])
     #theano_calc_penalized_lhd = None
     theano_calc_penalized_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [

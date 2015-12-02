@@ -390,9 +390,9 @@ def estimate_dg_matrix_with_adadelta(
                 "Validation: %s" % validation_lhd,
                 "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
                 ))
-
-            pyTFbindtools.log(summary, 'DEBUG')
             
+            pyTFbindtools.log(summary, 'DEBUG')
+            #raw_input()
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
             xs.append(x0)
