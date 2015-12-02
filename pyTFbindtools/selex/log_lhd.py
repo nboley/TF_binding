@@ -337,6 +337,21 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
     seq_affinities = bs_affinities.min(1)
     return rc_bs_affinities.min(1)
 
+def theano_calc_log_occs(affinities, chem_pot):
+    inner = (-chem_pot+affinities)/(R*T)
+    return -TT.log(1.0 + TT.exp(inner))
+    # log (a+c) = log(a) + log(1+c/a)
+    #return -inner
+
+def NAIVE_theano_log_sum_log_occs(log_occs):
+    return TT.log(TT.sum(np.exp(log_occs), axis=1))
+
+def theano_log_sum_log_occs(log_occs):
+    scale_factor = log_occs.max()
+    centered_log_occs = log_occs - scale_factor
+    centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
+    return centered_rv + scale_factor
+
 def theano_calc_occs(affinities, chem_pot):
     return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
@@ -366,8 +381,9 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     rnd_numerators = []
     for seq_rnd in xrange(1,n_rounds+1):
         rnd_numerators.append(TT.sum([
-            -TT.log(1.0 + TT.exp(
-                (-chem_affinities[i-1] + rnds_seq_affinities[seq_rnd-1])/(R*T))).sum()
+            theano_calc_log_occs(
+                rnds_seq_affinities[seq_rnd-1], chem_affinities[i-1]
+            ).sum()
             for i in xrange(1, seq_rnd+1) 
         ]))
 

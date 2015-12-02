@@ -352,7 +352,7 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad2(
+            grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
             grad_sq = p*grad_sq + (1-p)*(grad**2)
@@ -362,8 +362,8 @@ def estimate_dg_matrix_with_adadelta(
             if UPDATE_BASE_CONTS:
                 x0[1:-len(init_chem_affinities)] += delta_x.clip(
                     -0.1, 0.1)[1:-len(init_chem_affinities)] 
-            x0[-len(init_chem_affinities):] += delta_x.clip(
-                -1, 1)[-len(init_chem_affinities):] #grad #delta
+            #x0[-len(init_chem_affinities):] += delta_x.clip(
+            #    -1, 1)[-len(init_chem_affinities):] #grad #delta
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             validation_lhd = -f_dg(
@@ -403,8 +403,8 @@ def estimate_dg_matrix_with_adadelta(
                 new_max = max(validation_lhds[-min_iter:])
                 if new_max > best: best = new_max
                 print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
-                    break
+                #if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
+                #    break
 
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
