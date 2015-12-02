@@ -14,7 +14,7 @@ from theano.tensor.signal.conv import conv2d as theano_conv2d
 from theano.tensor.extra_ops import (
     cumsum as theano_cumsum, 
     diff as theano_diff )
-from theano.gradient import jacobian
+from theano.gradient import jacobian, hessian
 
 from theano.compile.nanguardmode import NanGuardMode
 
@@ -345,12 +345,12 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
 #    return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
 def theano_calc_log_occs(affinities, chem_pot):
-    inner = (-chem_pot+affinities)/(R*T)
+    inner = (-chem_pot+affinities.clip(-16, 0))/(R*T)
     ## Naive version
     #return -TT.log(1.0 + TT.exp(inner))
     ## Make this more stable for large values of inner
     # log (a+c) = log(a) + log(1+c/a)
-    return -inner-TT.log(1.0+TT.exp(-inner.clip(-10, 10)))
+    return -inner-TT.log(1.0+TT.exp(-inner.clip(-20, 20)))
 
 def NAIVE_theano_log_sum_log_occs(log_occs):
     return TT.log(1e-37 + TT.sum(np.exp(log_occs), axis=1))
@@ -362,6 +362,35 @@ def theano_log_sum_log_occs(log_occs):
     centered_log_occs = (log_occs - scale_factor)
     centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
     return centered_rv + scale_factor.flatten()
+
+def reduce_to_vector(*args):
+    # Reduce all inputs to vector
+    join_args = []
+    for i,arg in enumerate(args):
+       if arg.type.ndim: # it is not a scalar
+            join_args.append(arg.flatten())
+       else:
+            join_args.append( TT.shape_padleft(arg))
+    # join them into a vector
+    return TT.join(0, *join_args)  
+
+    g_all  = reduce_to_vector(*penalized_lhd_grad)
+    H, updates = theano.scan( 
+        lambda i,g_all,m,v,s: reduce_to_vector( 
+            TT.grad(g_all[i], ref_energy),  
+            TT.grad(g_all[i], ddg), 
+            TT.grad(g_all[i], chem_affinities) ), 
+        sequences = TT.arange(g_all.shape[0]), 
+        non_sequences= [g_all, ref_energy, ddg, chem_affinities]
+    )
+
+    print reduce_to_vector(ddg)
+    penalized_lhd_hessian = hessian(
+        penalized_lhd, 
+        wrt=reduce_to_vector(ddg))
+    print penalized_lhd_hessian
+    assert False
+
 
 def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
@@ -485,16 +514,19 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
         penalized_lhd, [ref_energy, ddg, chem_affinities])
+    
     #theano_calc_penalized_lhd = None
     theano_calc_penalized_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [
             bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
-        penalized_lhd )
+        penalized_lhd,
+        allow_input_downcast=True)
     #theano_calc_penalized_lhd_grad = None
     theano_calc_penalized_lhd_grad = theano.function(
         [seqs for seqs in rnd_seqs] + [
             bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
-        penalized_lhd_grad
+        penalized_lhd_grad,
+        allow_input_downcast=True
         #mode=NanGuardMode(nan_is_error=False, inf_is_error=False, big_is_error=False)
     )
 

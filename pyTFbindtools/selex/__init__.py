@@ -355,15 +355,18 @@ def estimate_dg_matrix_with_adadelta(
             return f_FD_grad(x, data)
         return grad
 
-    def update_x(x, delta_x):
+    def update_x(x, delta_x, max_update=0.1):
+        if np.abs(delta_x).max() > max_update:
+            delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
+        
         # update the reference energy
         #x[0] += delta_x.clip(-1, 1)[0] #grad #delta
         # update teh base contributions
-        x[1:-len(init_chem_affinities)] += delta_x.clip(
-            -0.01, 0.01)[1:-len(init_chem_affinities)] 
+        x[1:-len(init_chem_affinities)] += delta_x[
+            1:-len(init_chem_affinities)] 
         # update the chemical affinities
-        x[-len(init_chem_affinities):] += delta_x.clip(
-            -0.1, 0.1)[-len(init_chem_affinities):] #grad #delta
+        x[-len(init_chem_affinities):] += delta_x[
+            -len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         #print ref_energy
         #print ddg_array
@@ -399,10 +402,10 @@ def estimate_dg_matrix_with_adadelta(
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            new_grad = f_grad(
+            grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
-            grad = 0.5*grad + 0.5*new_grad
+            #grad = 0.01*grad + 0.50*new_grad
             grad_sq = p*grad_sq + (1-p)*(grad**2)
 
             delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
