@@ -346,9 +346,9 @@ def theano_calc_occs(affinities, chem_pot):
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
-    #return -TT.log(1 + TT.exp(inner.clip(-10, 15)))
+    return -TT.log(1 + TT.exp(inner))
     # log (a+c) = log(a) + log(1+c/a)
-    return -inner
+    #return -inner
 
 def NAIVE_theano_log_sum_log_occs(log_occs):
     return TT.log(TT.sum(np.exp(log_occs), axis=1))
