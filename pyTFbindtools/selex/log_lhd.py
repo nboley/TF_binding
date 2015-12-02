@@ -411,37 +411,37 @@ def theano_build_lhd_and_grad_fns(n_rounds):
             bg_bindingsite_log_occs, axis=0)
     )# + TT.log(expected_cnts)
     
-    """
     bg_bindingsite_log_occs = TT.stack([
         theano_calc_log_occs(bg_seq_affinities, chem_affinities[i-1])
         for i in xrange(1,n_rounds+1)
     ])
     bg_bindingsite_log_weights = TT.zeros_like(bg_bindingsite_log_occs)
-    for i in xrange(1,n_rounds+1):
+    for i in xrange(n_rounds):
         # if we are in round 0 initialize to sum to 0
         if i == 0:
             bg_bindingsite_log_weights = TT.set_subtensor(
-                bg_bindingsite_weights[i-1,:],
+                bg_bindingsite_log_weights[i,:],
                 -TT.log(n_bg_seqs)
             )
         # otherwise, initialize to the previous round, and then normalize
         else:
             bg_bindingsite_log_weights = TT.set_subtensor(
-                bg_bindingsite_log_weights[i-1,:],
-                bg_bindingsite_log_weights[i-2,:]
+                bg_bindingsite_log_weights[i,:],
+                bg_bindingsite_log_weights[i-1,:]
             )
             # normalize so that the probabilities to sum to 1
             bg_bindingsite_log_weights = TT.inc_subtensor(
-                bg_bindingsite_log_weights[i-1,:],
-                -theano_log_sum_log_occs(bg_bindingsite_log_weights)[i-1]
+                bg_bindingsite_log_weights[i,:],
+                -theano_log_sum_log_occs(bg_bindingsite_log_weights)[i]
             )
 
         # update with the current probabilities
         bg_bindingsite_log_weights = TT.inc_subtensor(
-            bg_bindingsite_log_weights[i-1,:],
-            bg_bindingsite_log_occs[i-1,:]
+            bg_bindingsite_log_weights[i,:],
+            bg_bindingsite_log_occs[i,:]
         )
-    """
+    bg_log_occs = (
+        theano_log_sum_log_occs(bg_bindingsite_log_weights))
 
     print_numerators = theano.printing.Print('numerators')
     print_denominators = theano.printing.Print('denominators')
@@ -464,18 +464,19 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
     #    lhd_grad)
 
-    """
+    print_bnd_frac = theano.printing.Print('bnd_frac')
+    bnd_frac = print_bnd_frac(TT.exp(bg_log_occs))
+    unbnd_imbalance = (
+        TT.log((prot_conc - TT.exp(chem_affinities) - dna_conc*bnd_frac)**2) )
     penalized_lhd = ( 
         lhd 
-        - n_bg_seqs*TT.sum(abs(
-            prot_conc - TT.exp(chem_affinities) - dna_conc*TT.exp(bg_log_occs)))
+        - TT.sum(unbnd_imbalance)
         - (ref_energy+ddg.sum()/4 + 3)**2
-        - TT.max(
-            ((ddg.max(1) - ddg.min(1) - 4)**2).max(keepdims=True), 
-            np.zeros(1))
+        #- TT.max(
+        #    ((ddg.max(1) - ddg.min(1) - 4)**2).max(keepdims=True), 
+        #    np.zeros(1))
     )
-    """
-    penalized_lhd = lhd
+    #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
         penalized_lhd, [ref_energy, ddg, chem_affinities])
     #theano_calc_penalized_lhd = None
