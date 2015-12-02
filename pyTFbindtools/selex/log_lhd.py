@@ -384,7 +384,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
 
     lhd = 0
     for i in xrange(n_rounds):
-        lhd += rnd_numerators[i] - rnd_seqs[i].shape[2]*denominators[i]
+        lhd += rnd_numerators[i] - rnd_seqs[i].shape[0]*denominators[i]
     
     lhd_grad = jacobian(lhd, [ref_energy, ddg, chem_affinities])
 
