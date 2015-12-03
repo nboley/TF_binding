@@ -286,3 +286,37 @@ def plot_pr_curve(y_true, y_pred_scores, ofname):
     matplotlib.pyplot.savefig('%s.pr_curve.png' % ofname)
     return
 
+def rank_convolutions(convolution_scores, y_true, y_pred):
+    """
+    Rank contribution of convolutions to classification of
+    true positives, false positives, false negatives and true negatives.
+    Parameters
+    ----------
+    convolution_scores : 3d array
+        (N, K, L) array with scores on N sequences of K convolutions
+        with L maxpool windows.
+    y_true : 1d array
+        true labels.
+    y_pred : 1d array
+        predicted labels.
+    Returns
+    -------
+    convolution_ranks : dictionary of rank lists
+        convolution_ranks['true_positives'][j] is the rank of convolution
+        j in classifying true_positives.
+    """
+    ## sum scores across maxpool windows for ranking
+    sum_scores = np.sum(convolution_scores, axis=2)
+    subset_names = ['true_positives', 'false_positives',
+                    'false_negatives', 'true_negatives']
+    true_positives = (y_pred*y_true)==1
+    false_positives = (y_pred*(1-y_true))==1
+    false_negatives = ((1-y_pred)*y_true)==1
+    true_negatives = ((1-y_pred)*(1-y_true))==1
+    subset_indices = [true_positives, false_positives,
+                      false_negatives, true_negatives]
+    ## sum scores over subset for subset-specific ranking
+    subset_ranks = [rankdata(sum_scores[indx].sum(axis=0)) for indx in subset_indices]
+    convolution_ranks = dict(zip(subset_names, subset_ranks))
+
+    return convolution_ranks
