@@ -80,7 +80,7 @@ def score_regions_with_deepbind(
     # write the peaks sequence to a fasta file
     peaks = []
     labels = []
-    for pk, sample, label in peaks_and_labels_iterator:
+    for pk, sample, label, score in peaks_and_labels_iterator:
         if peaks_and_labels_iterator._cur_val%10000 == 0:
             print peaks_and_labels_iterator._cur_val, peaks_and_labels_iterator.n
         peaks.append((pk, sample))
