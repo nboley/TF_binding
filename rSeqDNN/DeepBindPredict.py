@@ -20,7 +20,7 @@ from pyTFbindtools.peaks import (
     PeaksAndLabelsThreadSafeIterator
 )
 
-from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
+from rSeqDNN import init_prediction_script_argument_parser
 
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
