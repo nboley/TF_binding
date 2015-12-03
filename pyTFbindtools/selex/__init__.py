@@ -10,7 +10,7 @@ import numpy as np
 np.set_printoptions(precision=2)
 np.random.seed(0)
 
-from scipy.optimize import brentq, approx_fprime
+from scipy.optimize import brentq, approx_fprime, bracket, minimize_scalar
 from scipy.stats import ttest_ind
 
 import theano
@@ -260,121 +260,30 @@ class PartitionedAndCodedSeqs(object):
             for i in xrange(2, self.n_partitions)
         ]
 
-def estimate_dg_matrix_with_adadelta(
-        partitioned_and_coded_rnds_and_seqs,
-        init_ddg_array, init_ref_energy, init_chem_affinities,
-        dna_conc, prot_conc,
-        ftol=1e-12):    
-    max_rnd = partitioned_and_coded_rnds_and_seqs.max_rnd
+def hessian(x, jac, epsilon=1e-6):
+    """Numerical approximation to the Hessian
+    Parameters
+    ------------
+    x: array-like
+        The evaluation point
+    jac: 
+        jacobian of the function
+    epsilon: float
+        The size of the step
+    """
+    N = x.size
+    h = np.zeros((N,N))
+    df_0 = jac(x)
+    for i in xrange(N):
+        xx0 = 1.*x[i]
+        x[i] = xx0 + epsilon
+        df_1 = jac(x)
+        h[i,:] = (df_1 - df_0)/epsilon
+        x[i] = xx0
+    return h
 
-    def calc_penalty(ref_energy, ddg_array):
-        penalty = 0
-        
-        # Penalize models with non-physical mean affinities
-        new_mean_energy = ref_energy + ddg_array.sum()/3
-        if CONSTRAIN_MEAN_ENERGY:
-            penalty += (new_mean_energy - EXPECTED_MEAN_ENERGY)**2
-
-        # Penalize non-physical differences in base affinities
-        if CONSTRAIN_BASE_ENERGY_DIFF:
-            energy_diff = ddg_array.max(1) - ddg_array.min(1)
-            penalty += (energy_diff[
-                (energy_diff > MAX_BASE_ENERGY_DIFF)]**2).sum()
-        #return 0
-        return penalty
-
-    def extract_data_from_array(x):
-        ref_energy = x[0]
-        num_ddg_entries = init_ddg_array.shape[0]*init_ddg_array.shape[1]
-        ddg_array = x[1:1+num_ddg_entries].reshape(
-            init_ddg_array.shape).astype('float32').view(
-            DeltaDeltaGArray)
-        chem_affinities = x[1+num_ddg_entries:] #np.array([-11.0]*max_rnd, dtype='float32')
-        return ref_energy, ddg_array, chem_affinities
-
-    def pack_data_into_array(output, ref_energy, ddg_array, chem_affinities):
-        output[0] = ref_energy
-        output[1:1+len(ddg_array.ravel())] = ddg_array.ravel()
-        output[1+len(ddg_array.ravel()):] = chem_affinities
-        return output
-    
-    def f_dg(x, data):
-        """Calculate the loss.
-        
-        """
-        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        rv = log_lhd.calc_log_lhd(
-            ref_energy, 
-            ddg_array, 
-            chem_affinities,
-            data,
-            dna_conc, 
-            prot_conc)
-        #penalty = calc_penalty(ref_energy, ddg_array)
-        return -rv # + penalty
-
-    def f_analytic_grad(x, data):
-        """Calculate the loss.
-        
-        """
-        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
-            ref_energy, 
-            ddg_array, 
-            chem_affinities,
-            data,
-            dna_conc, 
-            prot_conc)
-        rv = np.array([ref_energy_grad.tolist(),]  +
-                      ddg_grad.ravel().tolist() +
-                      chem_pot_grad.tolist(), 
-                      dtype='float32')
-        #for i in xrange(len(rv)/2):
-        #    j = random.randrange(len(rv))
-        #    rv[j] = 0.0
-        return -rv
-
-    def f_FD_grad(x, data):
-        """Calculate the loss.
-        
-        """
-        return approx_fprime(
-            x0, f_dg, 1e-3, data).astype('float32')
-
-    def f_grad(x, data):
-        """Calculate the loss.
-        
-        """
-        grad = f_analytic_grad(x, data)
-        if not np.isfinite(grad).all():
-            print "="*100
-            print grad
-            print "="*100
-            #assert False
-            return f_FD_grad(x, data)
-        return grad
-
-    def update_x(x, delta_x, max_update=0.1):
-        if np.abs(delta_x).max() > max_update:
-            delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
-        
-        # update the reference energy
-        #x[0] += delta_x.clip(-1, 1)[0] #grad #delta
-        # update teh base contributions
-        #x[1:-len(init_chem_affinities)] += delta_x[
-        #    1:-len(init_chem_affinities)] 
-        # update the chemical affinities
-        x[-len(init_chem_affinities):] += delta_x[
-            -len(init_chem_affinities):] #grad #delta
-        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-
-        # normalize the energies so that the consensus sequence has
-        # energy set to 0
-        #ref_energy += ddg_array[:,:4].min(1).sum()
-        #ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
-        x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
-        return x
-
+# OLD ADA DELTA CODE
+"""
     # ada delta
     validation_lhds = []
     train_lhds = []
@@ -443,6 +352,11 @@ def estimate_dg_matrix_with_adadelta(
                 ))
 
             pyTFbindtools.log(summary, 'DEBUG')
+            
+            h = hessian(x0, lambda x: f_grad(
+                x, partitioned_and_coded_rnds_and_seqs.train[train_index]))
+            print h
+            
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
             xs.append(x0)
@@ -454,6 +368,240 @@ def estimate_dg_matrix_with_adadelta(
                 print "Stop Crit:", new_max, best-new_max, best
                 if (float(best > max(validation_lhds[-2*min_iter:]))):
                     break
+            
+            raw_input()
+        
+        x_hat_index = np.argmax(np.array(validation_lhds))
+        return xs[x_hat_index]
+"""
+
+def estimate_dg_matrix_with_adadelta(
+        partitioned_and_coded_rnds_and_seqs,
+        init_ddg_array, init_ref_energy, init_chem_affinities,
+        dna_conc, prot_conc,
+        ftol=1e-12):    
+    max_rnd = partitioned_and_coded_rnds_and_seqs.max_rnd
+
+    def calc_penalty(ref_energy, ddg_array):
+        penalty = 0
+        
+        # Penalize models with non-physical mean affinities
+        new_mean_energy = ref_energy + ddg_array.sum()/3
+        if CONSTRAIN_MEAN_ENERGY:
+            penalty += (new_mean_energy - EXPECTED_MEAN_ENERGY)**2
+
+        # Penalize non-physical differences in base affinities
+        if CONSTRAIN_BASE_ENERGY_DIFF:
+            energy_diff = ddg_array.max(1) - ddg_array.min(1)
+            penalty += (energy_diff[
+                (energy_diff > MAX_BASE_ENERGY_DIFF)]**2).sum()
+        #return 0
+        return penalty
+
+    def extract_data_from_array(x):
+        ref_energy = x[0]
+        num_ddg_entries = init_ddg_array.shape[0]*init_ddg_array.shape[1]
+        ddg_array = x[1:1+num_ddg_entries].reshape(
+            init_ddg_array.shape).astype('float32').view(
+            DeltaDeltaGArray)
+        chem_affinities = x[1+num_ddg_entries:] #np.array([-11.0]*max_rnd, dtype='float32')
+        return ref_energy, ddg_array, chem_affinities
+
+    def pack_data_into_array(output, ref_energy, ddg_array, chem_affinities):
+        output[0] = ref_energy
+        output[1:1+len(ddg_array.ravel())] = ddg_array.ravel()
+        output[1+len(ddg_array.ravel()):] = chem_affinities
+        return output
+    
+    def f_dg(x, data):
+        """Calculate the loss.
+        
+        """
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+
+        #val, est_chem_affinities, num, denom = log_lhd.numerical_log_lhd(
+        #    ref_energy, ddg_array,
+        #    data,
+        #    dna_conc, prot_conc)
+        #print num
+        #print denom
+        #print "CHEM POT:", est_chem_affinities
+        #return -val
+        rv = log_lhd.calc_log_lhd(
+            ref_energy, 
+            ddg_array, 
+            chem_affinities,
+            data,
+            dna_conc, 
+            prot_conc)
+        #penalty = calc_penalty(ref_energy, ddg_array)
+        return -rv # + penalty
+
+    def f_analytic_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
+            ref_energy, 
+            ddg_array, 
+            chem_affinities,
+            data,
+            dna_conc, 
+            prot_conc)
+        rv = np.array([ref_energy_grad.tolist(),]  +
+                      ddg_grad.ravel().tolist() +
+                      chem_pot_grad.tolist(), 
+                      dtype='float32')
+        #for i in xrange(len(rv)/2):
+        #    j = random.randrange(len(rv))
+        #    rv[j] = 0.0
+        return -rv
+
+    def f_FD_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        return approx_fprime(
+            x0, f_dg, 1e-3, data).astype('float32')
+
+    def f_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        #return f_FD_grad(x, data)
+        grad = f_analytic_grad(x, data)
+        if not np.isfinite(grad).all():
+            print "="*100
+            print grad
+            print "="*100
+            #assert False
+            return f_FD_grad(x, data)
+        return grad
+
+    def update_x(x, delta_x, max_update=10.0):
+        if np.abs(delta_x).max() > max_update:
+            delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
+        
+        # update the reference energy
+        x[0] += delta_x[0] #grad #delta
+        # update teh base contributions
+        x[1:-len(init_chem_affinities)] += delta_x[
+            1:-len(init_chem_affinities)] 
+        # update the chemical affinities
+        x[-len(init_chem_affinities):] += delta_x[
+            -len(init_chem_affinities):] #grad #delta
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+        chem_affinities[:] = chem_affinities.mean()
+        # normalize the energies so that the consensus sequence has
+        # energy set to 0
+        #ref_energy += ddg_array[:,:4].min(1).sum()
+        #ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
+        x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
+        return x
+
+    # ada delta
+    validation_lhds = []
+    train_lhds = []
+    xs = []
+    def ada_delta(x0):
+        # from http://arxiv.org/pdf/1212.5701.pdf
+        e = 1e-4
+        p = 0.95
+        grad = np.zeros(len(x0), dtype='float32')
+        grad_sq = np.zeros(len(x0), dtype='float32')
+        delta_x_sq = np.ones(len(x0), dtype='float32')
+
+        old_validation_lhd = float('-inf')
+        
+        best = float('-inf')
+        valid_train_indices = range(
+            len(partitioned_and_coded_rnds_and_seqs.train))
+        random.shuffle(valid_train_indices)
+        for i in xrange(MAX_NUM_ITER):
+            if len(valid_train_indices) == 0:
+                valid_train_indices = range(
+                    len(partitioned_and_coded_rnds_and_seqs.train))
+                random.shuffle(valid_train_indices)
+            train_index = valid_train_indices.pop()
+
+            assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
+            val = f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            grad = f_grad(
+                x0.astype('float32'), 
+                partitioned_and_coded_rnds_and_seqs.train[train_index])
+            """
+            h = hessian(
+                x0, 
+                lambda x: f_grad(
+                    x, partitioned_and_coded_rnds_and_seqs.train[train_index]),
+                e)
+            h = np.ones((x0.size, x0.size), dtype='float32')
+            def f(a):
+                step = np.zeros(x0.size) + a
+                delta_x = -(step*grad + step.dot(h)*step)
+                return f_dg(
+                    x0 + delta_x, 
+                    partitioned_and_coded_rnds_and_seqs.train[train_index])
+            rv = minimize_scalar(f, bounds=[1e-12, 10*e], method='bounded')
+            print rv
+            step = np.zeros(x0.size) + (rv.x if np.isfinite(rv.fun) else e)
+            delta_x = -(step*grad + step.dot(h)*step)
+            #delta_x = delta_x/np.abs(delta_x).max()
+            """
+            #grad = 0.95*grad + 0.05*new_grad
+            grad_sq = p*grad_sq + (1-p)*(grad**2)
+
+            delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
+            delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
+            x0 = update_x(x0, delta_x)
+
+            validation_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.validation)
+            train_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            #if validation_lhd < old_validation_lhd:
+            #    grad[:] = 0
+            #old_validation_lhd = validation_lhd
+            
+            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
+            print
+            print grad[0].round(2)
+            print grad[1:-len(chem_affinities)
+                ].reshape(ddg_array.shape).round(2)
+            print grad[-len(chem_affinities):].round(2)
+            print 
+            print delta_x[0].round(2)
+            print delta_x[1:-len(chem_affinities)
+                ].reshape(ddg_array.shape).round(2)
+            print delta_x[-len(chem_affinities):].round(2)
+
+            #print f_grad2(
+            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            summary = ddg_array.summary_str(ref_energy)
+            summary += "\n" + "\n".join((
+                "Chem Affinities: %s" % (str(chem_affinities.round(2))),
+                "Train: %s (%i)" % (train_lhd, train_index),
+                "Validation: %s" % validation_lhd,
+                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
+                ))
+
+            pyTFbindtools.log(summary, 'DEBUG')
+                        
+            train_lhds.append(train_lhd)
+            validation_lhds.append(validation_lhd)
+            xs.append(x0)
+            min_iter = 2*len(partitioned_and_coded_rnds_and_seqs.train)
+            if i > 2*min_iter:
+                new_max = max(validation_lhds[-2*min_iter:])
+                if np.isfinite(new_max) and new_max > best: 
+                    best = new_max
+                print "Stop Crit:", new_max, best-new_max, best
+                if (float(best > max(validation_lhds[-2*min_iter:]))):
+                    break
+            
+            #raw_input()
         
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
@@ -597,11 +745,14 @@ def progressively_fit_model(
         chem_affinities,
         dna_conc, 
         prot_conc):    
+    #pyTFbindtools.log("Compiling OLD likelihood function", 'VERBOSE')
+    #log_lhd.numerical_log_lhd = log_lhd.numerical_log_lhd_factory()
+
     pyTFbindtools.log("Compiling likelihood function", 'VERBOSE')
     log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.train[0])
-    pyTFbindtools.log("Starting optimization", 'VERBOSE')
 
+    pyTFbindtools.log("Starting optimization", 'VERBOSE')
     curr_mo = initial_model
     while True:
         i = curr_mo.motif_len

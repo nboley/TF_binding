@@ -416,7 +416,7 @@ def fit_model(rnds_and_seqs, background_seqs,
         fit_models.append(fit_model)
         if output_fname_prefix != None:
             ofname = "%s.FITMO.BSLEN%i.yaml" % (
-                output_fname_prefix, mo.ddg_array.motif_len)
+                output_fname_prefix, mo.energetic_model.ddg_array.motif_len)
             with open(ofname, "w") as ofp:
                 fit_model.save(ofp)
 

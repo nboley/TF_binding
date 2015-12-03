@@ -92,16 +92,9 @@ def test_RC_equiv():
 
     print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
     return
-    
-def numerical_log_lhd_factory():
-    import theano
-    import theano.tensor as TT
-    from theano.tensor.signal.conv import conv2d as theano_conv2d
 
-    # ignore theano warnings
-    import warnings
-    warnings.simplefilter("ignore")
-
+def three_base_calc_affinities():
+    # place to store code
     ############################################################################
     ##
     ## Theano function to calculate reverse complment invariant affinities
@@ -111,6 +104,7 @@ def numerical_log_lhd_factory():
     ddg_base_cont = TT.matrix(name='ddg_base_cont', dtype=theano.config.floatX)
     fwd_bs_base_affinities = theano_conv2d(
         one_hot_seqs, ddg_base_cont[::-1,::-1])[:,0,:]
+
     rc_ddg_base_cont = (
         TT.concatenate((
             ddg_base_cont[(1,0),:], 
@@ -123,6 +117,7 @@ def numerical_log_lhd_factory():
         theano_conv2d(one_hot_seqs, 
                       rc_ddg_base_cont[::-1,::-1]) + ddg_base_cont[2,:].sum()
     )[:,0,:]
+
     bs_affinities_without_shape = TT.stack(
         (fwd_bs_base_affinities, rc_bs_base_affinities), axis=1).min(1)
 
@@ -163,8 +158,44 @@ def numerical_log_lhd_factory():
                 ddg_array.base_portion,
                 ddg_array.shape_portion)
         else:
+            assert ddg_array.shape[2] == 4
             return theano_calc_affinities_without_shape(
                 seqs.one_hot_coded_seqs, 
+                ddg_array.base_portion)
+
+    
+def numerical_log_lhd_factory():
+    import theano
+    import theano.tensor as TT
+    from theano.tensor.signal.conv import conv2d as theano_conv2d
+
+    # ignore theano warnings
+    import warnings
+    warnings.simplefilter("ignore")
+
+
+    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
+    ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
+    one_hot_seqs = TT.tensor3(name='one_hot_seqs', dtype=theano.config.floatX)
+
+    theano_calc_affinities_without_shape = theano.function(
+        [one_hot_seqs, ref_energy, ddg], 
+        theano_calc_affinities(one_hot_seqs, ref_energy, ddg) )
+    
+    def calc_affinities(seqs, ref_energy, ddg_array):
+        if ddg_array.shape[1] == 10:
+            assert False
+            return theano_calc_affinities_with_shape(
+                seqs.one_hot_coded_seqs, 
+                seqs.shape_coded_fwd_seqs, 
+                seqs.shape_coded_RC_seqs,             
+                ddg_array.base_portion,
+                ddg_array.shape_portion)
+        else:
+            assert ddg_array.shape[1] == 4
+            return theano_calc_affinities_without_shape(
+                seqs.one_hot_coded_seqs,
+                ref_energy,
                 ddg_array.base_portion)
 
     ############################################################################
@@ -253,7 +284,7 @@ def numerical_log_lhd_factory():
             prot_conc):
         # now calculate the denominator (the normalizing factor for each round)
         # calculate the expected bin counts in each energy level for round 0
-        energies = ref_energy + calc_affinities(background_seqs, ddg_array)
+        energies = calc_affinities(background_seqs, ref_energy, ddg_array)
         expected_cnts = (4**seq_len)/float(background_seqs.n_seqs)
         curr_occupancies = expected_cnts*np.ones(
             len(energies), dtype=theano.config.floatX)
@@ -292,7 +323,7 @@ def numerical_log_lhd_factory():
         rnds_and_seq_ddgs = {}
         for rnd, rnd_coded_seqs in coded_seqs.rnd_seqs.iteritems():
             rnds_and_seq_ddgs[rnd] = calc_affinities(
-                rnd_coded_seqs, ddg_array)
+                rnd_coded_seqs, 0.0, ddg_array)
 
         # calcualte the denominators
         chem_affinities, denominators = calc_lhd_denominators_and_chem_pots(
@@ -318,7 +349,7 @@ def numerical_log_lhd_factory():
             print numerators
             print denominators
             raise
-        return lhd
+        return lhd, chem_affinities, numerators, denominators
 
     def calc_log_lhd_gradient(
             ref_energy, ddg_array, coded_seqs, dna_conc, prot_conc):
@@ -345,7 +376,7 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
 #    return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
 def theano_calc_log_occs(affinities, chem_pot):
-    inner = (-chem_pot+affinities.clip(-16, 0))/(R*T)
+    inner = (-chem_pot+affinities.clip(-24, 0))/(R*T)
     ## Naive version
     #return -TT.log(1.0 + TT.exp(inner))
     ## Make this more stable for large values of inner
@@ -479,8 +510,8 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     print_numerators = theano.printing.Print('numerators')
     print_denominators = theano.printing.Print('denominators')
     # TT.log(expected_cnts) + 
-    lhd = (print_numerators(rnd_numerators) 
-           - print_denominators(n_seqs*denominators)).sum()
+    #lhd = (print_numerators(rnd_numerators) 
+    #       - n_seqs*print_denominators(denominators)).sum()
     lhd = (rnd_numerators - n_seqs*denominators).sum()
     
     #print_scaled_denom = theano.printing.Print('scaled_denom')
