@@ -146,7 +146,7 @@ def find_pwm_from_starting_alignment(seqs, counts, max_num_seqs=5000):
 
     # iterate over the alignments
     prev_counts = counts.copy()
-    for i in xrange(10):
+    for i in xrange(50):
         # upadte the counts
         for bss, weights in izip(all_binding_sites, all_weights):
             for bs, weight in izip(bss, weights):
@@ -186,7 +186,6 @@ def find_pwm(rnds_and_seqs, bs_len):
     pwm = find_pwm_from_starting_alignment(
         rnds_and_seqs[min(rnds_and_seqs.keys())], counts)
     pyTFbindtools.log("Found initial model")
-
     return pwm
 
 _SelexData = namedtuple('SelexData', ['bg_seqs', 'rnd_seqs'])
@@ -362,18 +361,17 @@ def estimate_dg_matrix_with_adadelta(
         # update the reference energy
         #x[0] += delta_x.clip(-1, 1)[0] #grad #delta
         # update teh base contributions
-        x[1:-len(init_chem_affinities)] += delta_x[
-            1:-len(init_chem_affinities)] 
+        #x[1:-len(init_chem_affinities)] += delta_x[
+        #    1:-len(init_chem_affinities)] 
         # update the chemical affinities
         x[-len(init_chem_affinities):] += delta_x[
             -len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        #print ref_energy
-        #print ddg_array
+
+        # normalize the energies so that the consensus sequence has
+        # energy set to 0
         #ref_energy += ddg_array[:,:4].min(1).sum()
         #ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
-        #print ref_energy
-        #print ddg_array
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
         return x
 
@@ -389,6 +387,8 @@ def estimate_dg_matrix_with_adadelta(
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
 
+        old_validation_lhd = float('-inf')
+        
         best = float('-inf')
         eps = 1.0
         num_small_decreases = 0
@@ -405,7 +405,7 @@ def estimate_dg_matrix_with_adadelta(
             grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
-            #grad = 0.01*grad + 0.50*new_grad
+            #grad = 0.95*grad + 0.05*new_grad
             grad_sq = p*grad_sq + (1-p)*(grad**2)
 
             delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
@@ -416,6 +416,9 @@ def estimate_dg_matrix_with_adadelta(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            #if validation_lhd < old_validation_lhd:
+            #    grad[:] = 0
+            #old_validation_lhd = validation_lhd
 
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
             print
@@ -445,14 +448,12 @@ def estimate_dg_matrix_with_adadelta(
             xs.append(x0)
             min_iter = 10*len(partitioned_and_coded_rnds_and_seqs.train)
             if i > 2*min_iter:
-                old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
-                new_max = max(validation_lhds[-min_iter:])
+                new_max = max(validation_lhds[-2*min_iter:])
                 if np.isfinite(new_max) and new_max > best: 
                     best = new_max
-                print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                #if (abs(old_median - new_max) < 1e-2
-                #    or float(best > max(validation_lhds[-2*min_iter:]))):
-                #    break
+                print "Stop Crit:", new_max, best-new_max, best
+                if (float(best > max(validation_lhds[-2*min_iter:]))):
+                    break
         
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
