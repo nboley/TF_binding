@@ -413,12 +413,12 @@ def fit_model(rnds_and_seqs, background_seqs,
         model_meta_data['prev_validation_lhd'] = float(mo.prev_validation_lhd)
         model_meta_data['new_validation_lhd'] = float(mo.new_validation_lhd)
 
-        fit_models.append(fit_model)
+        fit_models.append(mo)
         if output_fname_prefix != None:
             ofname = "%s.FITMO.BSLEN%i.yaml" % (
                 output_fname_prefix, mo.energetic_model.ddg_array.motif_len)
             with open(ofname, "w") as ofp:
-                fit_model.save(ofp)
+                mo.energetic_model.save(ofp)
 
     if output_fname_prefix is not None:
         fit_models = DNABindingModels(fit_models)

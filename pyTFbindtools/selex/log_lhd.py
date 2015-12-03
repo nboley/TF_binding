@@ -13,7 +13,8 @@ import theano.tensor as TT
 from theano.tensor.signal.conv import conv2d as theano_conv2d
 from theano.tensor.extra_ops import (
     cumsum as theano_cumsum, 
-    diff as theano_diff )
+    diff as theano_diff,
+    repeat as theano_repeat)
 from theano.gradient import jacobian, hessian
 
 from theano.compile.nanguardmode import NanGuardMode
@@ -422,6 +423,8 @@ def reduce_to_vector(*args):
     print penalized_lhd_hessian
     assert False
 
+def relu(x):
+    return (x + abs(x))/2
 
 def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
@@ -471,7 +474,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     denominators = theano_log_sum_log_occs(
         theano_cumsum(
             bg_bindingsite_log_occs, axis=0)
-    )# + TT.log(expected_cnts)
+    ) + TT.log(expected_cnts)
     
     bg_bindingsite_log_occs = TT.stack([
         theano_calc_log_occs(bg_seq_affinities, chem_affinities[i-1])
@@ -529,18 +532,21 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #    lhd_grad)
 
     print_bnd_frac = theano.printing.Print('bnd_frac')
-    bnd_frac = ( #print_bnd_frac(
-        TT.exp(bg_log_occs))
-    unbnd_imbalance = (
-        TT.log((prot_conc - TT.exp(chem_affinities) - dna_conc*bnd_frac)**2) )
+    log_unbnd_imbalance = (  
+        TT.log(prot_conc) 
+        - theano_log_sum_log_occs(
+            TT.stack(
+                chem_affinities,
+                TT.log(dna_conc) + bg_log_occs
+            ).transpose()
+        )
+    )
+
     penalized_lhd = ( 
         lhd 
-        - 100*TT.sum(unbnd_imbalance)
+        - 100*TT.sum(log_unbnd_imbalance**2)
         - 100*(ref_energy+ddg.sum()/4 + 3)**2
-        - 100*TT.max(
-            ((ddg.max(1) - ddg.min(1) - 6)**2).max(keepdims=True), 
-            np.zeros(1)
-        )**2
+        - 100*TT.sum( relu(TT.max(ddg, axis=1) - TT.min(ddg, axis=1) - 6)**2 )
     )
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(

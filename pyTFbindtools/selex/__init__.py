@@ -282,99 +282,6 @@ def hessian(x, jac, epsilon=1e-6):
         x[i] = xx0
     return h
 
-# OLD ADA DELTA CODE
-"""
-    # ada delta
-    validation_lhds = []
-    train_lhds = []
-    xs = []
-    def ada_delta(x0):
-        # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-2
-        p = 0.95
-        grad = np.zeros(len(x0), dtype='float32')
-        grad_sq = np.zeros(len(x0), dtype='float32')
-        delta_x_sq = np.ones(len(x0), dtype='float32')
-
-        old_validation_lhd = float('-inf')
-        
-        best = float('-inf')
-        eps = 1.0
-        num_small_decreases = 0
-        valid_train_indices = range(
-            len(partitioned_and_coded_rnds_and_seqs.train))
-        random.shuffle(valid_train_indices)
-        for i in xrange(MAX_NUM_ITER):
-            if len(valid_train_indices) == 0:
-                valid_train_indices = range(
-                    len(partitioned_and_coded_rnds_and_seqs.train))
-                random.shuffle(valid_train_indices)
-            train_index = valid_train_indices.pop()
-            assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad(
-                x0.astype('float32'), 
-                partitioned_and_coded_rnds_and_seqs.train[train_index])
-            #grad = 0.95*grad + 0.05*new_grad
-            grad_sq = p*grad_sq + (1-p)*(grad**2)
-
-            delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
-            delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            
-            x0 = update_x(x0, delta_x)
-            validation_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.validation)
-            train_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            #if validation_lhd < old_validation_lhd:
-            #    grad[:] = 0
-            #old_validation_lhd = validation_lhd
-
-            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
-            print
-            print grad[0].round(2)
-            print grad[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).round(2)
-            print grad[-len(chem_affinities):].round(2)
-            print 
-            print delta_x[0].round(2)
-            print delta_x[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).round(2)
-            print delta_x[-len(chem_affinities):].round(2)
-
-            #print f_grad2(
-            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            summary = ddg_array.summary_str(ref_energy)
-            summary += "\n" + "\n".join((
-                "Chem Affinities: %s" % (str(chem_affinities.round(2))),
-                "Train: %s (%i)" % (train_lhd, train_index),
-                "Validation: %s" % validation_lhd,
-                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
-                ))
-
-            pyTFbindtools.log(summary, 'DEBUG')
-            
-            h = hessian(x0, lambda x: f_grad(
-                x, partitioned_and_coded_rnds_and_seqs.train[train_index]))
-            print h
-            
-            train_lhds.append(train_lhd)
-            validation_lhds.append(validation_lhd)
-            xs.append(x0)
-            min_iter = 10*len(partitioned_and_coded_rnds_and_seqs.train)
-            if i > 2*min_iter:
-                new_max = max(validation_lhds[-2*min_iter:])
-                if np.isfinite(new_max) and new_max > best: 
-                    best = new_max
-                print "Stop Crit:", new_max, best-new_max, best
-                if (float(best > max(validation_lhds[-2*min_iter:]))):
-                    break
-            
-            raw_input()
-        
-        x_hat_index = np.argmax(np.array(validation_lhds))
-        return xs[x_hat_index]
-"""
-
 def estimate_dg_matrix_with_adadelta(
         partitioned_and_coded_rnds_and_seqs,
         init_ddg_array, init_ref_energy, init_chem_affinities,
@@ -479,7 +386,7 @@ def estimate_dg_matrix_with_adadelta(
             return f_FD_grad(x, data)
         return grad
 
-    def update_x(x, delta_x, max_update=10.0):
+    def update_x(x, delta_x, max_update=0.01):
         if np.abs(delta_x).max() > max_update:
             delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
         
@@ -492,7 +399,7 @@ def estimate_dg_matrix_with_adadelta(
         x[-len(init_chem_affinities):] += delta_x[
             -len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        chem_affinities[:] = chem_affinities.mean()
+        #chem_affinities[:] = chem_affinities.mean()
         # normalize the energies so that the consensus sequence has
         # energy set to 0
         #ref_energy += ddg_array[:,:4].min(1).sum()
@@ -500,20 +407,33 @@ def estimate_dg_matrix_with_adadelta(
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
         return x
 
+    def line_search_update(x0, grad, data, e):
+        h = hessian(x0, lambda x: f_grad(x, data), e)
+        #h = np.ones((x0.size, x0.size), dtype='float32')
+        def f(a): 
+            step = np.zeros(x0.size) + a
+            delta_x = -(step*grad + step.dot(h)*step)
+            return f_dg(x0 + delta_x, data)
+        rv = minimize_scalar(f, bounds=[1e-12, 10*e], method='bounded')
+        print rv
+        step = np.zeros(x0.size) + (rv.x if np.isfinite(rv.fun) else e)
+        return -(step*grad + step.dot(h)*step)
+
     # ada delta
     validation_lhds = []
     train_lhds = []
     xs = []
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-4
-        p = 0.95
+        e = 1e-6
+        p = 0.90
         grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
 
         old_validation_lhd = float('-inf')
-        
+
+        rounds_since_update = 0        
         best = float('-inf')
         valid_train_indices = range(
             len(partitioned_and_coded_rnds_and_seqs.train))
@@ -524,46 +444,31 @@ def estimate_dg_matrix_with_adadelta(
                     len(partitioned_and_coded_rnds_and_seqs.train))
                 random.shuffle(valid_train_indices)
             train_index = valid_train_indices.pop()
-
             assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            val = f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+
             grad = f_grad(
                 x0.astype('float32'), 
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
-            """
-            h = hessian(
-                x0, 
-                lambda x: f_grad(
-                    x, partitioned_and_coded_rnds_and_seqs.train[train_index]),
-                e)
-            h = np.ones((x0.size, x0.size), dtype='float32')
-            def f(a):
-                step = np.zeros(x0.size) + a
-                delta_x = -(step*grad + step.dot(h)*step)
-                return f_dg(
-                    x0 + delta_x, 
-                    partitioned_and_coded_rnds_and_seqs.train[train_index])
-            rv = minimize_scalar(f, bounds=[1e-12, 10*e], method='bounded')
-            print rv
-            step = np.zeros(x0.size) + (rv.x if np.isfinite(rv.fun) else e)
-            delta_x = -(step*grad + step.dot(h)*step)
-            #delta_x = delta_x/np.abs(delta_x).max()
-            """
-            #grad = 0.95*grad + 0.05*new_grad
-            grad_sq = p*grad_sq + (1-p)*(grad**2)
 
-            delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
-            delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
+            # use the hessian informed line search
+            if False:
+                delta_x = line_search_update(
+                    x0, grad,
+                    partitioned_and_coded_rnds_and_seqs.train[train_index],
+                    e)
+            # use Ada delta
+            else:
+                #grad = 0.95*grad + 0.05*new_grad
+                grad_sq = p*grad_sq + (1-p)*(grad**2)
+                delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
+                delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)            
+
             x0 = update_x(x0, delta_x)
 
             validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
             train_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            #if validation_lhd < old_validation_lhd:
-            #    grad[:] = 0
-            #old_validation_lhd = validation_lhd
             
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
             print
@@ -577,8 +482,6 @@ def estimate_dg_matrix_with_adadelta(
                 ].reshape(ddg_array.shape).round(2)
             print delta_x[-len(chem_affinities):].round(2)
 
-            #print f_grad2(
-            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             summary = ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
@@ -592,16 +495,19 @@ def estimate_dg_matrix_with_adadelta(
             train_lhds.append(train_lhd)
             validation_lhds.append(validation_lhd)
             xs.append(x0)
-            min_iter = 2*len(partitioned_and_coded_rnds_and_seqs.train)
+            min_iter = 25*len(partitioned_and_coded_rnds_and_seqs.train)
             if i > 2*min_iter:
-                new_max = max(validation_lhds[-2*min_iter:])
-                if np.isfinite(new_max) and new_max > best: 
-                    best = new_max
-                print "Stop Crit:", new_max, best-new_max, best
-                if (float(best > max(validation_lhds[-2*min_iter:]))):
+                rounds_since_update += 1
+                new_median = np.median(np.array(
+                    validation_lhds[-min_iter:]))
+                old_median = np.median(np.array(
+                    validation_lhds[-2*min_iter:-min_iter]))
+                if np.isfinite(validation_lhd) and validation_lhd > best: 
+                    best = validation_lhd
+                    rounds_since_update = 0
+                print "Stop Crit:", old_median, new_median, new_median-old_median, best, rounds_since_update, min_iter
+                if (rounds_since_update > min_iter and new_median < old_median):
                     break
-            
-            #raw_input()
         
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
