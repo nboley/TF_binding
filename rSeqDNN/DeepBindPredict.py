@@ -131,8 +131,7 @@ def parse_args():
             args.tf_id,
             args.annotation_id,
             args.half_peak_width, 
-            args.max_num_peaks_per_sample, 
-            args.skip_ambiguous_peaks)
+            args.max_num_peaks_per_sample )
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
@@ -156,7 +155,7 @@ def main():
         # XXX Untested 
         pred_labels = np.zeros(len(prbs))
         pred_labels[prbs > 0.5] = 1.0
-        pred_labels[prbs <= 0.5] = -1.0
+        pred_labels[prbs <= 0.5] = 0.0
         res = ClassificationResult(labels, pred_labels, prbs)
         results.append(res)
         print "Fold_%i" % fold_i, res
