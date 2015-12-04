@@ -80,16 +80,21 @@ def score_regions_with_deepbind(
     # write the peaks sequence to a fasta file
     peaks = []
     labels = []
-    for pk, sample, label, score in peaks_and_labels_iterator:
-        if peaks_and_labels_iterator._cur_val%10000 == 0:
-            print peaks_and_labels_iterator._cur_val, peaks_and_labels_iterator.n
-        peaks.append((pk, sample))
-        labels.append(label)
-        seq = genome_fasta.fetch(pk.contig, pk.start, pk.stop)
-        deepbind_process.stdin.write(seq + "\n")
-    deepbind_process.stdin.close()
-    deepbind_process.wait()
-    
+    try:
+        for pk, sample, label, score in peaks_and_labels_iterator:
+            if peaks_and_labels_iterator._cur_val%10000 == 0:
+                print peaks_and_labels_iterator._cur_val, peaks_and_labels_iterator.n
+            peaks.append((pk, sample))
+            labels.append(label)
+            seq = genome_fasta.fetch(pk.contig, pk.start, pk.stop)
+            deepbind_process.stdin.write(seq + "\n")
+        deepbind_process.stdin.close()
+        deepbind_process.wait()
+    except Exception as e:
+        if e.errno==32:
+            print 'DeepBind closed unexpectedly!'
+        raise e
+
     temp_ofp.seek(0)
     for (peak, sample), line, label in izip(peaks, temp_ofp, labels):
         ofp.write("%s_%s_%i_%i\t%i\t%f\n" % (
@@ -102,6 +107,8 @@ def parse_args():
         'main script for testing rSeqDNN')
     args = parser.parse_args()
 
+    if args.half_peak_width >= 500:
+        raise ValueError('DeepBind requires half peak width less than 500!')
     assert args.annotation_id is not None or args.genome_fasta is not None, \
         "Must set either --annotation-id or --genome-fasta"
     if args.genome_fasta is None:
