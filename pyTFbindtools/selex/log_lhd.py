@@ -91,7 +91,8 @@ def test_RC_equiv():
     print energy_diff + calc_binding_site_energies(coded_seq, RC_ddg_array)
     print energy_diff + calc_binding_site_energies(coded_RC_seq, RC_ddg_array)[:,::-1]
 
-    print -energy_diff + calc_binding_site_energies(coded_seq[None,(1,2,3),:], RC_ddg_array)
+    print -energy_diff + calc_binding_site_energies(
+        coded_seq[None,(1,2,3),:], RC_ddg_array)
     return
 
 def three_base_calc_affinities():
@@ -522,10 +523,10 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #lhd = TT.sum(print_numerators_str(rnd_numerators) - print_scaled_denom(1000*denominators))
 
     theano_calc_lhd, theano_calc_grad = None, None
-    #theano_calc_lhd = theano.function(
-    #    [seqs for seqs in rnd_seqs] + [
-    #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
-    #    lhd )
+    theano_calc_lhd = theano.function(
+        [seqs for seqs in rnd_seqs] + [
+            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+        lhd )
     #theano_calc_grad = theano.function(
     #    [seqs for seqs in rnd_seqs] + [
     #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
@@ -542,11 +543,13 @@ def theano_build_lhd_and_grad_fns(n_rounds):
         )
     )
 
+    mean_energy = ref_energy+ddg.sum()/4
     penalized_lhd = ( 
         lhd 
         - 100*TT.sum(log_unbnd_imbalance**2)
-        - 100*(ref_energy+ddg.sum()/4 + 3)**2
-        - 100*TT.sum( relu(TT.max(ddg, axis=1) - TT.min(ddg, axis=1) - 6)**2 )
+        - 100*TT.exp(abs(mean_energy-3))
+        - 100*TT.sum( TT.exp(
+            TT.max(ddg, axis=1) - TT.min(ddg, axis=1) - 4))
     )
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
@@ -589,7 +592,8 @@ def theano_log_lhd_factory(initial_coded_seqs):
     
     def calc_lhd(ref_energy, ddg_array, chem_affinities, 
                  coded_seqs, 
-                 dna_conc, prot_conc):
+                 dna_conc, prot_conc,
+                 penalized=True):
         ref_energy = np.array([ref_energy,], dtype='float32')[0]
         coded_seqs_args = [
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
@@ -599,7 +603,10 @@ def theano_log_lhd_factory(initial_coded_seqs):
             ddg_array,
             ref_energy, 
             chem_affinities.astype(theano.config.floatX), dna_conc, prot_conc]
-        return theano_calc_penalized_lhd(*args)
+        if penalized:
+            return theano_calc_penalized_lhd(*args)
+        else:
+            return theano_calc_lhd(*args)
 
     def calc_grad(ref_energy, ddg_array, chem_affinities,
                   coded_seqs, 

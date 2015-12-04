@@ -320,7 +320,7 @@ def estimate_dg_matrix_with_adadelta(
         output[1+len(ddg_array.ravel()):] = chem_affinities
         return output
     
-    def f_dg(x, data):
+    def f_dg(x, data, penalized=True):
         """Calculate the loss.
         
         """
@@ -340,7 +340,8 @@ def estimate_dg_matrix_with_adadelta(
             chem_affinities,
             data,
             dna_conc, 
-            prot_conc)
+            prot_conc,
+            penalized)
         #penalty = calc_penalty(ref_energy, ddg_array)
         return -rv # + penalty
 
@@ -402,8 +403,8 @@ def estimate_dg_matrix_with_adadelta(
         #chem_affinities[:] = chem_affinities.mean()
         # normalize the energies so that the consensus sequence has
         # energy set to 0
-        #ref_energy += ddg_array[:,:4].min(1).sum()
-        #ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
+        ref_energy += ddg_array[:,:4].min(1).sum()
+        ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
         return x
 
@@ -433,6 +434,7 @@ def estimate_dg_matrix_with_adadelta(
 
         old_validation_lhd = float('-inf')
 
+        zeroing_base_thresh = 4
         rounds_since_update = 0        
         best = float('-inf')
         valid_train_indices = range(
@@ -465,6 +467,8 @@ def estimate_dg_matrix_with_adadelta(
 
             x0 = update_x(x0, delta_x)
 
+            unpenalized_validation_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.validation, False)
             validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation)
             train_lhd = -f_dg(
@@ -487,13 +491,26 @@ def estimate_dg_matrix_with_adadelta(
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
                 "Train: %s (%i)" % (train_lhd, train_index),
                 "Validation: %s" % validation_lhd,
-                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
+                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
+                "Real Lhd: %s" % unpenalized_validation_lhd
                 ))
 
             pyTFbindtools.log(summary, 'DEBUG')
-                        
+
+            energy_diffs = ddg_array.max(1) - ddg_array.min(1)
+            max_diff_index = energy_diffs.argmax()
+            print i, zeroing_base_thresh, max_diff_index, energy_diffs
+            if energy_diffs[max_diff_index] > zeroing_base_thresh: 
+                ref_energy += ddg_array[max_diff_index,:].mean()
+                ddg_array[max_diff_index,:] = 0
+                zeroing_base_thresh += 0.5
+                rounds_since_update = 0
+                
+            x0 = pack_data_into_array(
+                x0, ref_energy, ddg_array, chem_affinities)
+            
             train_lhds.append(train_lhd)
-            validation_lhds.append(validation_lhd)
+            validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
             min_iter = 25*len(partitioned_and_coded_rnds_and_seqs.train)
             if i > 2*min_iter:
@@ -502,11 +519,12 @@ def estimate_dg_matrix_with_adadelta(
                     validation_lhds[-min_iter:]))
                 old_median = np.median(np.array(
                     validation_lhds[-2*min_iter:-min_iter]))
-                if np.isfinite(validation_lhd) and validation_lhd > best: 
-                    best = validation_lhd
+                if np.isfinite(unpenalized_validation_lhd) \
+                   and unpenalized_validation_lhd > best: 
+                    best = unpenalized_validation_lhd
                     rounds_since_update = 0
                 print "Stop Crit:", old_median, new_median, new_median-old_median, best, rounds_since_update, min_iter
-                if (rounds_since_update > min_iter and new_median < old_median):
+                if rounds_since_update > min_iter:
                     break
         
         x_hat_index = np.argmax(np.array(validation_lhds))
@@ -519,7 +537,7 @@ def estimate_dg_matrix_with_adadelta(
                   + len(init_chem_affinities), 
                   dtype=theano.config.floatX)
     x0 = pack_data_into_array(
-        x0, init_ref_energy, init_ddg_array, init_chem_affinities)
+        x0, init_ref_energy, init_ddg_array/2, init_chem_affinities)
 
     x = ada_delta(x0)
     ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
