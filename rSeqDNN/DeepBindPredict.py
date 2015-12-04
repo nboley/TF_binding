@@ -105,10 +105,14 @@ def score_regions_with_deepbind(
 def parse_args():
     parser = init_prediction_script_argument_parser(
         'main script for testing rSeqDNN')
+    parser.add_argument('--validation-contigs', type=str, default=None,
+                    help='to validate on chr1 and chr4, input chr1,chr4')
     args = parser.parse_args()
 
     if args.half_peak_width >= 500:
         raise ValueError('DeepBind requires half peak width less than 500!')
+    if args.validation_contigs is not None:
+        args.validation_contigs = set(args.validation_contigs.split(','))
     assert args.annotation_id is not None or args.genome_fasta is not None, \
         "Must set either --annotation-id or --genome-fasta"
     if args.genome_fasta is None:
@@ -138,13 +142,14 @@ def parse_args():
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
         
-    return peaks_and_labels, genome_fasta, args.tf_id, args.threads
+    return peaks_and_labels, genome_fasta, args.tf_id, args.threads, args.validation_contigs
 
 def main():
-    peaks_and_labels, genome_fasta, tf_id, num_threads = parse_args()
+    peaks_and_labels, genome_fasta, tf_id, num_threads, validation_contigs = parse_args()
     results = ClassificationResults()
     for fold_i, (train, valid) in enumerate(
-            peaks_and_labels.iter_train_validation_subsets()):
+            peaks_and_labels.iter_train_validation_subsets(
+                validation_contigs=validation_contigs)):
         peaks_and_labels_iterator = valid.thread_safe_iter()
         ofname = "scores.%s.fold%i.txt" % (tf_id, fold_i)
         ofp = ThreadSafeFile(ofname, "w")
