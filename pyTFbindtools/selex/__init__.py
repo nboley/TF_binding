@@ -16,7 +16,7 @@ from scipy.stats import ttest_ind
 import theano
 
 from pyDNAbinding.binding_model import (
-    FixedLengthDNASequences, est_chem_potential, 
+    FixedLengthDNASequences, est_chem_potential_from_affinities, calc_occ,
     EnergeticDNABindingModel, DeltaDeltaGArray )
 from pyDNAbinding.sequence import OneHotCodedDNASeq
 
@@ -106,12 +106,23 @@ def code_seqs(seqs):
         one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
 
 def estimate_chem_affinities_for_selex_experiment(
-        background_seqs, num_rounds, binding_model, dna_conc, prot_conc):
+        bg_seqs, num_rounds, binding_model, dna_conc, prot_conc):
+    # if this is a numpy array, assume that they're one hot encoded seqs
+    if isinstance(bg_seqs, CodedSeqs):
+        affinities = -(np.array(
+            binding_model.score_seqs_binding_sites(bg_seqs, 'MAX')).max(1))
+    else:
+        bg_seqs = FixedLengthDNASequences(bg_seqs)
+        affinities = -(bg_seqs.score_binding_sites(binding_model, 'MAX').max(1))
+    
     all_chem_affinities = []
-    pool = FixedLengthDNASequences(background_seqs)
+    weights = np.ones(len(affinities), dtype=float)
     for i in xrange(num_rounds):
-        all_chem_affinities.append(
-            est_chem_potential( pool, binding_model, dna_conc, prot_conc ) )
+        weights /= weights.sum()
+        chem_pot = est_chem_potential_from_affinities(
+            affinities, dna_conc, prot_conc, weights )
+        weights *= calc_occ(chem_pot, affinities)
+        all_chem_affinities.append(chem_pot)
     return np.array(all_chem_affinities, dtype=theano.config.floatX)
 
 def enumerate_binding_sites(seq, bs_len):
@@ -497,6 +508,28 @@ def estimate_dg_matrix_with_adadelta(
 
             pyTFbindtools.log(summary, 'DEBUG')
 
+            mo = EnergeticDNABindingModel(ref_energy, ddg_array)
+            new_chem_affinities = estimate_chem_affinities_for_selex_experiment(
+                partitioned_and_coded_rnds_and_seqs.validation.bg_seqs, 
+                partitioned_and_coded_rnds_and_seqs.max_rnd, 
+                mo, dna_conc, prot_conc)
+            print "="*40
+            print new_chem_affinities
+            #assert False
+            
+            """
+            imbalance = log_lhd.calc_log_unbnd_frac(
+                ref_energy, 
+                ddg_array, 
+                chem_affinities,
+                partitioned_and_coded_rnds_and_seqs.validation,
+                dna_conc, 
+                prot_conc)
+            print "="*40
+            print imbalance
+            """
+            
+            """
             energy_diffs = ddg_array.max(1) - ddg_array.min(1)
             max_diff_index = energy_diffs.argmax()
             print i, zeroing_base_thresh, max_diff_index, energy_diffs
@@ -505,7 +538,8 @@ def estimate_dg_matrix_with_adadelta(
                 ddg_array[max_diff_index,:] = 0
                 zeroing_base_thresh += 0.5
                 rounds_since_update = 0
-                
+            """
+            
             x0 = pack_data_into_array(
                 x0, ref_energy, ddg_array, chem_affinities)
             
@@ -673,7 +707,8 @@ def progressively_fit_model(
     #log_lhd.numerical_log_lhd = log_lhd.numerical_log_lhd_factory()
 
     pyTFbindtools.log("Compiling likelihood function", 'VERBOSE')
-    log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
+    (log_lhd.calc_log_lhd, log_lhd.calc_grad, log_lhd.calc_log_unbnd_frac
+     ) = log_lhd.theano_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.train[0])
 
     pyTFbindtools.log("Starting optimization", 'VERBOSE')

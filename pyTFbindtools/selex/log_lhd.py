@@ -542,12 +542,16 @@ def theano_build_lhd_and_grad_fns(n_rounds):
             ).transpose()
         )
     )
+    theano_calc_log_unbnd_imbalance = theano.function(
+        [bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+        log_unbnd_imbalance,
+        allow_input_downcast=True)
 
     mean_energy = ref_energy+ddg.sum()/4
     penalized_lhd = ( 
         lhd 
-        - 100*TT.sum(log_unbnd_imbalance**2)
-        - 100*TT.exp(abs(mean_energy-3))
+        #- 100*TT.sum(log_unbnd_imbalance**2)
+        #- 100*TT.exp(abs(mean_energy-3))
         - 100*TT.sum( TT.exp(
             TT.max(ddg, axis=1) - TT.min(ddg, axis=1) - 4))
     )
@@ -580,14 +584,16 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     return ( theano_calc_lhd, 
              theano_calc_grad, 
              theano_calc_penalized_lhd, 
-             theano_calc_penalized_lhd_grad )
+             theano_calc_penalized_lhd_grad,
+             theano_calc_log_unbnd_imbalance)
 
 def theano_log_lhd_factory(initial_coded_seqs):
     rnds = initial_coded_seqs.rnd_seqs.keys()
     ( theano_calc_lhd, 
       theano_calc_grad, 
       theano_calc_penalized_lhd,
-      theano_calc_penalized_grad
+      theano_calc_penalized_grad,
+      theano_calc_log_unbnd_imbalance
     ) = theano_build_lhd_and_grad_fns(max(rnds))
     
     def calc_lhd(ref_energy, ddg_array, chem_affinities, 
@@ -618,11 +624,20 @@ def theano_log_lhd_factory(initial_coded_seqs):
             ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
         return theano_calc_penalized_grad(*args)
 
+    def calc_log_unbnd_imbalance(
+            ref_energy, ddg_array, chem_affinities,
+            coded_seqs, 
+            dna_conc, prot_conc):
+        return theano_calc_log_unbnd_imbalance(
+            coded_seqs.bg_seqs.one_hot_coded_seqs, 
+            ddg_array, ref_energy, chem_affinities,
+            dna_conc, prot_conc)
+
     #def calc_bnd_frac(ddg_array, ref_energy, chem_affinities):
     #    args = coded_seqs_args + [ddg_array, ref_energy, chem_affinities]
     #    return theano_calc_bnd_fraction(*args)
 
-    return calc_lhd, calc_grad
+    return calc_lhd, calc_grad, calc_log_unbnd_imbalance
 
 def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
