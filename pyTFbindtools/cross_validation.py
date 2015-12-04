@@ -33,7 +33,8 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'validation_chromosomes',
     'validation_samples', 
 
-    'auROC', 'auPRC', 'F1', 'recall_at_05_fdr', 'recall_at_01_fdr',
+    'auROC', 'auPRC', 'F1', 'recall_at_05_fdr', 'recall_at_10_fdr',
+    'recall_at_20_fdr',
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
 
@@ -73,7 +74,8 @@ class ClassificationResult(object):
         self.auPRC = auc(recall, precision)
         self.F1 = f1_score(positives, predicted_labels)
         self.recall_at_05_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.05)
-        self.recall_at_01_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.01)
+        self.recall_at_10_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.10)
+        self.recall_at_20_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.20)
 
         return
 
@@ -104,7 +106,8 @@ class ClassificationResult(object):
         rv.append("auPRC: %.3f" % self.auPRC)
         rv.append("F1: %.3f" % self.F1)
         rv.append("Recall @ 0.05 FDR: %.3f" % self.recall_at_05_fdr)
-        rv.append("Recall @ 0.01 FDR: %.3f" % self.recall_at_01_fdr)
+        rv.append("Recall @ 0.10 FDR: %.3f" % self.recall_at_10_fdr)
+        rv.append("Recall @ 0.20 FDR: %.3f" % self.recall_at_20_fdr)
         rv.append("Positive Accuracy: %.3f (%i/%i)" % (
             self.positive_accuracy, self.num_true_positives,self.num_positives))
         rv.append("Negative Accuracy: %.3f (%i/%i)" % (
@@ -179,6 +182,9 @@ class ClassificationResults(list):
         balanced_accuracies = [x.balanced_accuracy for x in self]    
         auROCs = [x.auROC for x in self]
         auRPCs = [x.auPRC for x in self]
+        at_05_fdrs = [x.recall_at_05_fdr for x in self]
+        at_10_fdrs = [x.recall_at_10_fdr for x in self]
+        at_20_fdrs = [x.recall_at_20_fdr for x in self]
         rv = []
         rv.append("Balanced Accuracies: %.3f (%.3f-%.3f)" % (
             sum(balanced_accuracies)/len(self),
@@ -187,6 +193,12 @@ class ClassificationResults(list):
             sum(auROCs)/len(self), min(auROCs), max(auROCs)))
         rv.append("auPRC:               %.3f (%.3f-%.3f)" % (
             sum(auRPCs)/len(self), min(auRPCs), max(auRPCs)))
+        rv.append("Recalls at 0.05 fdr: %.3f (%.3f-%.3f)" % (
+            sum(at_05_fdrs)/len(self), min(at_05_fdrs), max(at_05_fdrs)))
+        rv.append("Recalls at 0.10 fdr: %.3f (%.3f-%.3f)" % (
+            sum(at_10_fdrs)/len(self), min(at_10_fdrs), max(at_10_fdrs)))
+        rv.append("Recalls at 0.20 fdr: %.3f (%.3f-%.3f)" % (
+            sum(at_20_fdrs)/len(self), min(at_20_fdrs), max(at_20_fdrs)))
         return "\n".join(rv)
 
     @property
