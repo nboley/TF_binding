@@ -378,12 +378,13 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
 #    return 1 / (1 + TT.exp((-chem_pot+affinities)/(R*T)))
 
 def theano_calc_log_occs(affinities, chem_pot):
-    inner = (-chem_pot+affinities.clip(-24, 0))/(R*T)
-    ## Naive version
-    #return -TT.log(1.0 + TT.exp(inner))
-    ## Make this more stable for large values of inner
-    # log (a+c) = log(a) + log(1+c/a)
-    return -inner-TT.log(1.0+TT.exp(-inner.clip(-20, 20)))
+    inner = (-chem_pot+affinities)/(R*T)
+    lower = TT.switch(inner>35, inner, 0)
+    mid = TT.switch((inner >= -10)&(inner <= 35), 
+                    TT.log(1.0 + TT.exp(inner)),
+                    0 )
+    upper = TT.switch(inner>35, inner, 0)
+    return -(lower + mid + upper)
 
 def NAIVE_theano_log_sum_log_occs(log_occs):
     return TT.log(1e-37 + TT.sum(np.exp(log_occs), axis=1))
@@ -426,6 +427,7 @@ def reduce_to_vector(*args):
 
 def relu(x):
     return (x + abs(x))/2
+
 
 def theano_build_lhd_and_grad_fns(n_rounds):    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
@@ -551,9 +553,8 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     penalized_lhd = ( 
         lhd 
         #- 100*TT.sum(log_unbnd_imbalance**2)
-        #- 100*TT.exp(abs(mean_energy-3))
-        - 100*TT.sum( TT.exp(
-            TT.max(ddg, axis=1) - TT.min(ddg, axis=1) - 4))
+        - 100*TT.exp((-3-mean_energy)**2)
+        #- 100*TT.sum(TT.exp(TT.std(ddg, axis=1)))
     )
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(

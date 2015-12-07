@@ -403,13 +403,13 @@ def estimate_dg_matrix_with_adadelta(
             delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
         
         # update the reference energy
-        x[0] += delta_x[0] #grad #delta
+        #x[0] += delta_x[0] #grad #delta
         # update teh base contributions
         x[1:-len(init_chem_affinities)] += delta_x[
             1:-len(init_chem_affinities)] 
         # update the chemical affinities
-        x[-len(init_chem_affinities):] += delta_x[
-            -len(init_chem_affinities):] #grad #delta
+        #x[-len(init_chem_affinities):] += delta_x[
+        #    -len(init_chem_affinities):] #grad #delta
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         #chem_affinities[:] = chem_affinities.mean()
         # normalize the energies so that the consensus sequence has
@@ -420,14 +420,14 @@ def estimate_dg_matrix_with_adadelta(
         return x
 
     def line_search_update(x0, grad, data, e):
-        h = hessian(x0, lambda x: f_grad(x, data), e)
-        #h = np.ones((x0.size, x0.size), dtype='float32')
+        #h = hessian(x0, lambda x: f_grad(x, data), e)
+        h = np.ones((x0.size, x0.size), dtype='float32')
         def f(a): 
             step = np.zeros(x0.size) + a
             delta_x = -(step*grad + step.dot(h)*step)
             return f_dg(x0 + delta_x, data)
         rv = minimize_scalar(f, bounds=[1e-12, 10*e], method='bounded')
-        print rv
+        #print rv
         step = np.zeros(x0.size) + (rv.x if np.isfinite(rv.fun) else e)
         return -(step*grad + step.dot(h)*step)
 
@@ -464,7 +464,7 @@ def estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
 
             # use the hessian informed line search
-            if False:
+            if True:
                 delta_x = line_search_update(
                     x0, grad,
                     partitioned_and_coded_rnds_and_seqs.train[train_index],
@@ -497,9 +497,18 @@ def estimate_dg_matrix_with_adadelta(
                 ].reshape(ddg_array.shape).round(2)
             print delta_x[-len(chem_affinities):].round(2)
 
+            chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
+                ref_energy, 
+                ddg_array, 
+                chem_affinities,
+                partitioned_and_coded_rnds_and_seqs.validation,
+                dna_conc, 
+                prot_conc)
+
             summary = ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
+                "Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
                 "Train: %s (%i)" % (train_lhd, train_index),
                 "Validation: %s" % validation_lhd,
                 "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
@@ -508,6 +517,7 @@ def estimate_dg_matrix_with_adadelta(
 
             pyTFbindtools.log(summary, 'DEBUG')
 
+            """
             mo = EnergeticDNABindingModel(ref_energy, ddg_array)
             new_chem_affinities = estimate_chem_affinities_for_selex_experiment(
                 partitioned_and_coded_rnds_and_seqs.validation.bg_seqs, 
@@ -516,30 +526,19 @@ def estimate_dg_matrix_with_adadelta(
             print "="*40
             print new_chem_affinities
             #assert False
+            """
+
             
-            """
-            imbalance = log_lhd.calc_log_unbnd_frac(
-                ref_energy, 
-                ddg_array, 
-                chem_affinities,
-                partitioned_and_coded_rnds_and_seqs.validation,
-                dna_conc, 
-                prot_conc)
-            print "="*40
-            print imbalance
-            """
-            
-            """
             energy_diffs = ddg_array.max(1) - ddg_array.min(1)
             max_diff_index = energy_diffs.argmax()
             print i, zeroing_base_thresh, max_diff_index, energy_diffs
+            """
             if energy_diffs[max_diff_index] > zeroing_base_thresh: 
                 ref_energy += ddg_array[max_diff_index,:].mean()
                 ddg_array[max_diff_index,:] = 0
                 zeroing_base_thresh += 0.5
                 rounds_since_update = 0
             """
-            
             x0 = pack_data_into_array(
                 x0, ref_energy, ddg_array, chem_affinities)
             
@@ -547,19 +546,14 @@ def estimate_dg_matrix_with_adadelta(
             validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
             min_iter = 25*len(partitioned_and_coded_rnds_and_seqs.train)
-            if i > 2*min_iter:
-                rounds_since_update += 1
-                new_median = np.median(np.array(
-                    validation_lhds[-min_iter:]))
-                old_median = np.median(np.array(
-                    validation_lhds[-2*min_iter:-min_iter]))
-                if np.isfinite(unpenalized_validation_lhd) \
-                   and unpenalized_validation_lhd > best: 
-                    best = unpenalized_validation_lhd
-                    rounds_since_update = 0
-                print "Stop Crit:", old_median, new_median, new_median-old_median, best, rounds_since_update, min_iter
-                if rounds_since_update > min_iter:
-                    break
+            rounds_since_update += 1
+            if np.isfinite(unpenalized_validation_lhd) \
+               and unpenalized_validation_lhd > best: 
+                best = unpenalized_validation_lhd
+                rounds_since_update = 0
+            print "Stop Crit:", unpenalized_validation_lhd, best, rounds_since_update, min_iter
+            if i > 2*min_iter and rounds_since_update > min_iter:
+                break
         
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
