@@ -398,7 +398,7 @@ def estimate_dg_matrix_with_adadelta(
             return f_FD_grad(x, data)
         return grad
 
-    def update_x(x, delta_x, max_update=0.01):
+    def update_x(x, delta_x, max_update=0.03):
         if np.abs(delta_x).max() > max_update:
             delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
 
@@ -476,18 +476,19 @@ def estimate_dg_matrix_with_adadelta(
                 grad_sq = p*grad_sq + (1-p)*(grad**2)
                 delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
                 delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)            
-
+            
             x0 = update_x(x0, delta_x)
 
             unpenalized_validation_lhd = -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.validation, False)
-            validation_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.validation)
-            train_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            #validation_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.validation)
+            #train_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
-            print
+
+            """
             print grad[0].round(2)
             print grad[1:-len(chem_affinities)
                 ].reshape(ddg_array.shape).round(2)
@@ -497,21 +498,23 @@ def estimate_dg_matrix_with_adadelta(
             print delta_x[1:-len(chem_affinities)
                 ].reshape(ddg_array.shape).round(2)
             print delta_x[-len(chem_affinities):].round(2)
-
-            chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
-                ref_energy, 
-                ddg_array, 
-                chem_affinities,
-                partitioned_and_coded_rnds_and_seqs.validation,
-                dna_conc, 
-                prot_conc)
-
-            summary = ddg_array.summary_str(ref_energy)
+            """
+            #chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
+            #    ref_energy, 
+            #    ddg_array, 
+            #    chem_affinities,
+            #    partitioned_and_coded_rnds_and_seqs.validation,
+            #    dna_conc, 
+            #    prot_conc)
+            
+            summary = ""
+            #summary = "\n%s\n" % str(b-a)
+            summary += ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
-                "Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
-                "Train: %s (%i)" % (train_lhd, train_index),
-                "Validation: %s" % validation_lhd,
+                #"Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
+                #"Train: %s (%i)" % (train_lhd, train_index),
+                #"Validation: %s" % validation_lhd,
                 "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
                 "Real Lhd: %s" % unpenalized_validation_lhd
                 ))
@@ -541,7 +544,6 @@ def estimate_dg_matrix_with_adadelta(
                         break
                     ref_energy += ddg_array[max_diff_index,:].mean()
                     ddg_array[max_diff_index,:] = 0
-            
             #if energy_diffs[max_diff_index] > zeroing_base_thresh: 
             #    ref_energy += ddg_array[max_diff_index,:].mean()
             #    ddg_array[max_diff_index,:] = 0
@@ -551,7 +553,7 @@ def estimate_dg_matrix_with_adadelta(
             x0 = pack_data_into_array(
                 x0, ref_energy, ddg_array, chem_affinities)
             
-            train_lhds.append(train_lhd)
+            train_lhds.append(0)
             validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
             min_iter = 20*len(partitioned_and_coded_rnds_and_seqs.train)
