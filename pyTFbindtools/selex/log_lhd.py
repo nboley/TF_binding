@@ -549,6 +549,8 @@ def theano_build_lhd_and_grad_fns(n_rounds):
         log_unbnd_imbalance,
         allow_input_downcast=True)
 
+    print_mean_energy = theano.printing.Print('mean_energy')
+    #mean_energy = print_mean_energy(bg_seq_affinities.sum()/n_bg_seqs)
     mean_energy = ref_energy+ddg.sum()/4
     penalized_lhd = ( 
         lhd 

@@ -69,8 +69,15 @@ sample for sequencing.
 # molar protein:DNA ratio: 1:25
 # volume: 5.0e-5 L 
 n_dna_seq = 7.5e-8/(1.079734e-21*119) # molecules  - g/( g/oligo * oligo/molecule)
-jolma_dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
-jolma_prot_conc = jolma_dna_conc/25 # mol/L (should be 25)
+n_prot_mol = n_dna_seq/25
+n_water_mol = 55.1*5.0e-5*6.02e23 # mol/L*volume*molecule/mol
+
+#jolma_dna_conc = n_dna_seq/(6.02e23*5.0e-5) # mol/L
+#jolma_prot_conc = jolma_dna_conc/25 # mol/L (should be 25)
+
+jolma_dna_conc = n_dna_seq/(n_dna_seq + n_prot_mol + n_water_mol)
+jolma_prot_conc = n_prot_mol/(n_dna_seq + n_prot_mol + n_water_mol)
+
 #prot_conc *= 10
 
 USE_FULL_BG_FOR_PART_FN = True
@@ -198,12 +205,14 @@ def load_sequence_data(selex_db_conn,
     rnds_and_seqs = load_sequences(
         (x.name for x in seq_fps), max_num_seqs_per_file)
 
+    """
     if  max_num_seqs_per_file < min_num_background_sequences:
         pyTFbindtools.log(
             "WARNING: reducing the number of background sequences to --max-num-seqs-per-file ")
         min_num_background_sequences = max_num_seqs_per_file
     else:
         min_num_background_sequences = min_num_background_sequences
+    """
     
     background_seqs = None
     if background_seq_fp is not None:

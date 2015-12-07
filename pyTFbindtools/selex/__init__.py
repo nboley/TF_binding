@@ -401,27 +401,28 @@ def estimate_dg_matrix_with_adadelta(
     def update_x(x, delta_x, max_update=0.01):
         if np.abs(delta_x).max() > max_update:
             delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
-        
-        # update the reference energy
-        #x[0] += delta_x[0] #grad #delta
-        # update teh base contributions
-        x[1:-len(init_chem_affinities)] += delta_x[
-            1:-len(init_chem_affinities)] 
-        # update the chemical affinities
-        #x[-len(init_chem_affinities):] += delta_x[
-        #    -len(init_chem_affinities):] #grad #delta
+
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        #chem_affinities[:] = chem_affinities.mean()
+        d_ref_energy, d_ddg_array, d_chem_affinities = extract_data_from_array(
+            delta_x)
+        #ref_energy += d_ref_energy
+        # normalzie the gradient to penaliuze updates for bases with 
+        # big differentials
+        ddg_array += d_ddg_array/(
+            np.exp(ddg_array.max(1) - ddg_array.min(1))[:,None] )
+        #chem_affinities += d_chem_affinities
+
         # normalize the energies so that the consensus sequence has
         # energy set to 0
         ref_energy += ddg_array[:,:4].min(1).sum()
         ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
+
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
         return x
 
     def line_search_update(x0, grad, data, e):
-        #h = hessian(x0, lambda x: f_grad(x, data), e)
-        h = np.ones((x0.size, x0.size), dtype='float32')
+        h = hessian(x0, lambda x: f_grad(x, data), e)
+        #h = np.ones((x0.size, x0.size), dtype='float32')
         def f(a): 
             step = np.zeros(x0.size) + a
             delta_x = -(step*grad + step.dot(h)*step)
@@ -438,14 +439,14 @@ def estimate_dg_matrix_with_adadelta(
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
         e = 1e-6
-        p = 0.90
+        p = 0.50
         grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
 
         old_validation_lhd = float('-inf')
 
-        zeroing_base_thresh = 4
+        zeroing_base_thresh = 1.0
         rounds_since_update = 0        
         best = float('-inf')
         valid_train_indices = range(
@@ -464,7 +465,7 @@ def estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs.train[train_index])
 
             # use the hessian informed line search
-            if True:
+            if False:
                 delta_x = line_search_update(
                     x0, grad,
                     partitioned_and_coded_rnds_and_seqs.train[train_index],
@@ -532,28 +533,37 @@ def estimate_dg_matrix_with_adadelta(
             energy_diffs = ddg_array.max(1) - ddg_array.min(1)
             max_diff_index = energy_diffs.argmax()
             print i, zeroing_base_thresh, max_diff_index, energy_diffs
-            """
-            if energy_diffs[max_diff_index] > zeroing_base_thresh: 
-                ref_energy += ddg_array[max_diff_index,:].mean()
-                ddg_array[max_diff_index,:] = 0
-                zeroing_base_thresh += 0.5
-                rounds_since_update = 0
-            """
+            if i%100 == 0 and i <= 1000:
+                for j in xrange(2):
+                    energy_diffs = ddg_array.max(1) - ddg_array.min(1)
+                    max_diff_index = energy_diffs.argmax()
+                    if energy_diffs[max_diff_index] < zeroing_base_thresh: 
+                        break
+                    ref_energy += ddg_array[max_diff_index,:].mean()
+                    ddg_array[max_diff_index,:] = 0
+            
+            #if energy_diffs[max_diff_index] > zeroing_base_thresh: 
+            #    ref_energy += ddg_array[max_diff_index,:].mean()
+            #    ddg_array[max_diff_index,:] = 0
+            #    zeroing_base_thresh += 0.5
+            #    rounds_since_update = 0
+
             x0 = pack_data_into_array(
                 x0, ref_energy, ddg_array, chem_affinities)
             
             train_lhds.append(train_lhd)
             validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
-            min_iter = 25*len(partitioned_and_coded_rnds_and_seqs.train)
-            rounds_since_update += 1
-            if np.isfinite(unpenalized_validation_lhd) \
-               and unpenalized_validation_lhd > best: 
-                best = unpenalized_validation_lhd
-                rounds_since_update = 0
+            min_iter = 20*len(partitioned_and_coded_rnds_and_seqs.train)
             print "Stop Crit:", unpenalized_validation_lhd, best, rounds_since_update, min_iter
-            if i > 2*min_iter and rounds_since_update > min_iter:
-                break
+            if i > max(1000, 2*min_iter):
+                if np.isfinite(unpenalized_validation_lhd) \
+                   and unpenalized_validation_lhd > best: 
+                    best = unpenalized_validation_lhd
+                    rounds_since_update = 0
+                rounds_since_update += 1
+                if rounds_since_update > min_iter:
+                    break
         
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
@@ -565,7 +575,7 @@ def estimate_dg_matrix_with_adadelta(
                   + len(init_chem_affinities), 
                   dtype=theano.config.floatX)
     x0 = pack_data_into_array(
-        x0, init_ref_energy, init_ddg_array/2, init_chem_affinities)
+        x0, init_ref_energy, init_ddg_array, init_chem_affinities)
 
     x = ada_delta(x0)
     ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
