@@ -359,6 +359,12 @@ def numerical_log_lhd_factory():
 
     return calc_log_lhd
 
+def softmax(x):
+    scale_factor = x.max(axis=1, keepdims=True)
+    e_x = TT.exp(x - scale_factor)
+    weights = e_x/e_x.sum(axis=1, keepdims=True)
+    return (x*weights).sum(1)
+
 def theano_calc_affinities(seqs, ref_energy, ddg):
     # ignore the A's in the forward direction by using seqs[:,:,1:]
     # flip the convolution along both axis to give the forward convolution
@@ -371,7 +377,7 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
     rc_bs_affinities = ref_energy + theano_conv2d(seqs, ddg)[:,:,0]
     # stack the affinities, and then take the min at each bing site
     bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0)
-    seq_affinities = bs_affinities.min(1)
+    seq_affinities = -softmax(-bs_affinities) # bs_affinities.min(1)
     return seq_affinities
 
 #def theano_calc_occs(affinities, chem_pot):
@@ -433,13 +439,15 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     dna_conc = TT.scalar(dtype=theano.config.floatX)
     prot_conc = TT.scalar(dtype=theano.config.floatX)
 
-    ddg = TT.matrix(name='ddg', dtype=theano.config.floatX)
-    ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
-    chem_affinities = TT.vector(dtype=theano.config.floatX)
-
     bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
     seq_len = bg_seqs.shape[1]
     n_bg_seqs = bg_seqs.shape[0]
+
+    ddg_flat = TT.vector(name='ddg', dtype=theano.config.floatX)
+    ddg = ddg_flat.reshape((ddg_flat.shape[0]/4, 4))
+    
+    ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
+    chem_affinities = TT.vector(dtype=theano.config.floatX)
 
     rnd_seqs = [
         TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
@@ -527,7 +535,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     theano_calc_lhd, theano_calc_grad = None, None
     theano_calc_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         lhd )
     #theano_calc_grad = theano.function(
     #    [seqs for seqs in rnd_seqs] + [
@@ -545,7 +553,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
         )
     )
     theano_calc_log_unbnd_imbalance = theano.function(
-        [bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+        [bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         log_unbnd_imbalance,
         allow_input_downcast=True)
 
@@ -561,23 +569,33 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
         penalized_lhd, [ref_energy, ddg, chem_affinities])
+
+    penalized_lhd_hessian = hessian(
+        penalized_lhd, wrt=ddg_flat)
     
     #theano_calc_penalized_lhd = None
     theano_calc_penalized_lhd = theano.function(
         [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         penalized_lhd,
         allow_input_downcast=True)
     #theano_calc_penalized_lhd_grad = None
     theano_calc_penalized_lhd_grad = theano.function(
         [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
+            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         penalized_lhd_grad,
         allow_input_downcast=True
         #mode=NanGuardMode(nan_is_error=False, inf_is_error=False, big_is_error=False)
     )
-
-
+    #theano_calc_penalized_lhd_hessian = None
+    theano_calc_penalized_lhd_hessian = theano.function(
+        [seqs for seqs in rnd_seqs] + [
+            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
+        penalized_lhd_hessian,
+        allow_input_downcast=True
+        #mode=NanGuardMode(nan_is_error=False, inf_is_error=False, big_is_error=False)
+    )
+    
     #theano_calc_bnd_fraction = theano.function(
     #    [seqs for seqs in rnd_seqs] + [
     #        bg_seqs, ddg, ref_energy, chem_affinities],
@@ -588,6 +606,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
              theano_calc_grad, 
              theano_calc_penalized_lhd, 
              theano_calc_penalized_lhd_grad,
+             theano_calc_penalized_lhd_hessian,
              theano_calc_log_unbnd_imbalance)
 
 def theano_log_lhd_factory(initial_coded_seqs):
@@ -596,6 +615,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
       theano_calc_grad, 
       theano_calc_penalized_lhd,
       theano_calc_penalized_grad,
+      theano_calc_penalized_hessian,
       theano_calc_log_unbnd_imbalance
     ) = theano_build_lhd_and_grad_fns(max(rnds))
     
@@ -609,7 +629,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         #assert False
         args = coded_seqs_args + [
-            ddg_array,
+            ddg_array.ravel(),
             ref_energy, 
             chem_affinities.astype(theano.config.floatX), dna_conc, prot_conc]
         if penalized:
@@ -624,8 +644,18 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
         ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
         args = coded_seqs_args + [
-            ddg_array, ref_energy, chem_affinities, dna_conc, prot_conc]
+            ddg_array.ravel(), ref_energy, chem_affinities, dna_conc, prot_conc]
         return theano_calc_penalized_grad(*args)
+
+    def calc_hessian(ref_energy, ddg_array, chem_affinities,
+                     coded_seqs, 
+                     dna_conc, prot_conc):
+        coded_seqs_args = [
+            coded_seqs.rnd_seqs[i].one_hot_coded_seqs for i in sorted(rnds)
+        ] + [coded_seqs.bg_seqs.one_hot_coded_seqs,]
+        args = coded_seqs_args + [
+            ddg_array.ravel(), ref_energy, chem_affinities, dna_conc, prot_conc]
+        return theano_calc_penalized_hessian(*args)
 
     def calc_log_unbnd_imbalance(
             ref_energy, ddg_array, chem_affinities,
@@ -633,14 +663,14 @@ def theano_log_lhd_factory(initial_coded_seqs):
             dna_conc, prot_conc):
         return theano_calc_log_unbnd_imbalance(
             coded_seqs.bg_seqs.one_hot_coded_seqs, 
-            ddg_array, ref_energy, chem_affinities,
+            ddg_array.ravel(), ref_energy, chem_affinities,
             dna_conc, prot_conc)
 
     #def calc_bnd_frac(ddg_array, ref_energy, chem_affinities):
     #    args = coded_seqs_args + [ddg_array, ref_energy, chem_affinities]
     #    return theano_calc_bnd_fraction(*args)
 
-    return calc_lhd, calc_grad, calc_log_unbnd_imbalance
+    return calc_lhd, calc_grad, calc_hessian, calc_log_unbnd_imbalance
 
 def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))

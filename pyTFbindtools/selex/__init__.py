@@ -246,6 +246,8 @@ class PartitionedAndCodedSeqs(object):
             assert self.seq_length == self.coded_seqs[rnd].seq_length
         self.coded_bg_seqs = code_seqs(background_seqs)
         assert self.seq_length == self.coded_bg_seqs.seq_length
+        self.data = SelexData(
+            self.coded_bg_seqs, self.coded_seqs)
         
         # store views to partitioned subsets of the data 
         self._partitioned_data = [{} for i in xrange(self.n_partitions)]
@@ -398,7 +400,18 @@ def estimate_dg_matrix_with_adadelta(
             return f_FD_grad(x, data)
         return grad
 
-    def update_x(x, delta_x, max_update=0.03):
+    def f_hessian(x, data):
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+        hessian = log_lhd.calc_hessian(
+            ref_energy, 
+            ddg_array, 
+            chem_affinities,
+            data,
+            dna_conc, 
+            prot_conc)
+        return hessian
+    
+    def update_x(x, delta_x, max_update=0.20):
         if np.abs(delta_x).max() > max_update:
             delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
 
@@ -443,9 +456,11 @@ def estimate_dg_matrix_with_adadelta(
         grad = np.zeros(len(x0), dtype='float32')
         grad_sq = np.zeros(len(x0), dtype='float32')
         delta_x_sq = np.ones(len(x0), dtype='float32')
+        avg_delta_x = np.zeros(len(x0), dtype='float32')
 
         old_validation_lhd = float('-inf')
 
+        num_burn_in_iter = 500
         zeroing_base_thresh = 1.0
         rounds_since_update = 0        
         best = float('-inf')
@@ -453,23 +468,22 @@ def estimate_dg_matrix_with_adadelta(
             len(partitioned_and_coded_rnds_and_seqs.train))
         random.shuffle(valid_train_indices)
         for i in xrange(MAX_NUM_ITER):
-            if len(valid_train_indices) == 0:
-                valid_train_indices = range(
-                    len(partitioned_and_coded_rnds_and_seqs.train))
-                random.shuffle(valid_train_indices)
-            train_index = valid_train_indices.pop()
-            assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
+            if False:
+                if len(valid_train_indices) == 0:
+                    valid_train_indices = range(
+                        len(partitioned_and_coded_rnds_and_seqs.train))
+                    random.shuffle(valid_train_indices)
+                train_index = valid_train_indices.pop()
+                assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
+                data = partitioned_and_coded_rnds_and_seqs.train[train_index]
+            else:
+                data = partitioned_and_coded_rnds_and_seqs.data
 
-            grad = f_grad(
-                x0.astype('float32'), 
-                partitioned_and_coded_rnds_and_seqs.train[train_index])
+            grad = f_grad(x0.astype('float32'), data)
 
             # use the hessian informed line search
             if False:
-                delta_x = line_search_update(
-                    x0, grad,
-                    partitioned_and_coded_rnds_and_seqs.train[train_index],
-                    e)
+                delta_x = line_search_update(x0, grad, data, e )
             # use Ada delta
             else:
                 #grad = 0.95*grad + 0.05*new_grad
@@ -478,13 +492,17 @@ def estimate_dg_matrix_with_adadelta(
                 delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)            
             
             x0 = update_x(x0, delta_x)
+            avg_delta_x = 0.95*avg_delta_x + 0.05*delta_x
+            hessian = f_hessian(x0, data)
+            print hessian
 
-            unpenalized_validation_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.validation, False)
+            #unpenalized_validation_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.validation, False)
             #validation_lhd = -f_dg(
             #    x0, partitioned_and_coded_rnds_and_seqs.validation)
             #train_lhd = -f_dg(
             #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            unpenalized_validation_lhd = -f_dg(x0, data, False)
             
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
 
@@ -499,13 +517,16 @@ def estimate_dg_matrix_with_adadelta(
                 ].reshape(ddg_array.shape).round(2)
             print delta_x[-len(chem_affinities):].round(2)
             """
-            #chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
-            #    ref_energy, 
-            #    ddg_array, 
-            #    chem_affinities,
-            #    partitioned_and_coded_rnds_and_seqs.validation,
-            #    dna_conc, 
-            #    prot_conc)
+            
+            """
+            chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
+                ref_energy, 
+                ddg_array, 
+                chem_affinities,
+                partitioned_and_coded_rnds_and_seqs.validation,
+                dna_conc, 
+                prot_conc)
+            """
             
             summary = ""
             #summary = "\n%s\n" % str(b-a)
@@ -516,6 +537,7 @@ def estimate_dg_matrix_with_adadelta(
                 #"Train: %s (%i)" % (train_lhd, train_index),
                 #"Validation: %s" % validation_lhd,
                 "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
+                "Delta X L1 Norm: %.2f" % (np.abs(avg_delta_x)).sum(),
                 "Real Lhd: %s" % unpenalized_validation_lhd
                 ))
 
@@ -536,7 +558,7 @@ def estimate_dg_matrix_with_adadelta(
             energy_diffs = ddg_array.max(1) - ddg_array.min(1)
             max_diff_index = energy_diffs.argmax()
             print i, zeroing_base_thresh, max_diff_index, energy_diffs
-            if i%100 == 0 and i <= 1000:
+            if i%100 == 0 and i <= num_burn_in_iter:
                 for j in xrange(2):
                     energy_diffs = ddg_array.max(1) - ddg_array.min(1)
                     max_diff_index = energy_diffs.argmax()
@@ -553,17 +575,20 @@ def estimate_dg_matrix_with_adadelta(
             x0 = pack_data_into_array(
                 x0, ref_energy, ddg_array, chem_affinities)
             
-            train_lhds.append(0)
+            train_lhds.append(unpenalized_validation_lhd) #train_lhd)
             validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
-            min_iter = 20*len(partitioned_and_coded_rnds_and_seqs.train)
+            min_iter = 100 
             print "Stop Crit:", unpenalized_validation_lhd, best, rounds_since_update, min_iter
-            if i > max(1000, 2*min_iter):
+            if i > num_burn_in_iter + 10:
                 if np.isfinite(unpenalized_validation_lhd) \
                    and unpenalized_validation_lhd > best: 
                     best = unpenalized_validation_lhd
                     rounds_since_update = 0
                 rounds_since_update += 1
+                #if ( math.sqrt((delta_x**2).sum()) < 0.01 
+                #     and rounds_since_update > min_iter ):
+                #    break
                 if rounds_since_update > min_iter:
                     break
         
@@ -713,7 +738,7 @@ def progressively_fit_model(
     #log_lhd.numerical_log_lhd = log_lhd.numerical_log_lhd_factory()
 
     pyTFbindtools.log("Compiling likelihood function", 'VERBOSE')
-    (log_lhd.calc_log_lhd, log_lhd.calc_grad, log_lhd.calc_log_unbnd_frac
+    (log_lhd.calc_log_lhd, log_lhd.calc_grad, log_lhd.calc_hessian, log_lhd.calc_log_unbnd_frac
      ) = log_lhd.theano_log_lhd_factory(
         partitioned_and_coded_rnds_and_seqs.train[0])
 
