@@ -425,8 +425,8 @@ def estimate_dg_matrix_with_adadelta(
         #ref_energy += d_ref_energy
         # normalzie the gradient to penaliuze updates for bases with 
         # big differentials
-        ddg_array += d_ddg_array/(
-            np.exp(ddg_array.max(1) - ddg_array.min(1))[:,None] )
+        ddg_array += d_ddg_array#/(
+        # np.exp(ddg_array.max(1) - ddg_array.min(1))[:,None] )
         #chem_affinities += d_chem_affinities
 
         # normalize the energies so that the consensus sequence has
@@ -457,7 +457,8 @@ def estimate_dg_matrix_with_adadelta(
             self.v = self.beta2*self.v + (1-self.beta2)*(grad**2)
             #self.v /= (1-self.beta2**self.t)
 
-            return -self.alpha*self.m/(np.sqrt(self.v) + self.eps)
+            return -(self.alpha/math.log(self.t+2))*self.m/(
+                np.sqrt(self.v) + self.eps)
 
     def line_search_update(x, data, e):
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
@@ -552,7 +553,7 @@ def estimate_dg_matrix_with_adadelta(
         random.shuffle(valid_train_indices)
         adam_opt = AdamOptimizer(x0)
         for i in xrange(MAX_NUM_ITER):
-            if True:
+            if False:
                 if len(valid_train_indices) == 0:
                     valid_train_indices = range(
                         len(partitioned_and_coded_rnds_and_seqs.train))
@@ -587,9 +588,10 @@ def estimate_dg_matrix_with_adadelta(
             #    x0, partitioned_and_coded_rnds_and_seqs.validation, False)
             #validation_lhd = -f_dg(
             #    x0, partitioned_and_coded_rnds_and_seqs.validation)
-            train_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            #train_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
             unpenalized_validation_lhd = f_dg(x0, data, True)
+            train_lhd = unpenalized_validation_lhd
             
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
 
@@ -605,7 +607,6 @@ def estimate_dg_matrix_with_adadelta(
             print delta_x[-len(chem_affinities):].round(2)
             """
             
-            """
             chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
                 ref_energy, 
                 ddg_array, 
@@ -613,17 +614,16 @@ def estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs.validation,
                 dna_conc, 
                 prot_conc)
-            """
             
             summary = "\n\n"
             summary += "Delta x\n" + str( 
-                delta_x[1:-len(chem_affinities)].reshape(
+                avg_delta_x[1:-len(chem_affinities)].reshape(
                     ddg_array.shape).round(6)) + "\n"
             summary += ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
-                #"Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
-                "Train: %s (%i)" % (train_lhd, train_index),
+                "Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
+                #"Train: %s (%i)" % (train_lhd, train_index),
                 #"Validation: %s" % validation_lhd,
                 #"Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
                 "Delta X L1 Norm: %.4f" % (np.abs(avg_delta_x)).sum(),
@@ -675,15 +675,15 @@ def estimate_dg_matrix_with_adadelta(
                    and unpenalized_validation_lhd > best: 
                     best = unpenalized_validation_lhd
                     rounds_since_update = 0
-                if ( np.abs(avg_delta_x).sum() < 0.01 
-                     and abs(unpenalized_validation_lhd - validation_lhds[-1]) < 1):
+                if ( np.abs(avg_delta_x).sum() < 0.01 ):
+                    #and abs(validation_lhds[-2] - validation_lhds[-1]) < 1):
                     rounds_since_update += 1
                 #if ( math.sqrt((delta_x**2).sum()) < 0.01 
                 #     and rounds_since_update > min_iter ):
                 #    break
                 if rounds_since_update > min_iter:
                     break
-        
+
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
     
@@ -883,8 +883,13 @@ def progressively_fit_model(
                              new_validation_lhd)
 
         if ( curr_mo.motif_len >= MAX_BS_LEN
-             or curr_mo.motif_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+             or curr_mo.motif_len+2 >= partitioned_and_coded_rnds_and_seqs.seq_length):
             break
+        # extend the mnodel twice to break palindrome symmetry
+        curr_mo = extend_binding_model(
+            curr_mo, 
+            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
         curr_mo = extend_binding_model(
             curr_mo, 
             partitioned_and_coded_rnds_and_seqs.validation.last_rnd,

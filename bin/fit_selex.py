@@ -303,7 +303,7 @@ def parse_arguments():
     parser.add_argument( '--starting-energy-model', type=file,
                          help='An energy model to start from.')    
     
-    parser.add_argument( '--initial-binding-site-len', type=int, default=6,
+    parser.add_argument( '--initial-binding-site-len', type=int, default=7,
         help='The starting length of the binding site (this will grow)')
 
     parser.add_argument( '--random-seed', type=int,

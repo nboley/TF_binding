@@ -11,6 +11,9 @@ from scipy.signal import convolve
 import theano
 import theano.tensor as TT
 from theano.tensor.signal.conv import conv2d as theano_conv2d
+#from theano.tensor.nnet.conv import conv2d as theano_conv2d
+#from theano.tensor.nnet.conv3d2d import conv3d as theano_conv2d
+
 from theano.tensor.extra_ops import (
     cumsum as theano_cumsum, 
     diff as theano_diff,
@@ -359,11 +362,11 @@ def numerical_log_lhd_factory():
 
     return calc_log_lhd
 
-def softmax(x):
-    scale_factor = x.max(axis=1, keepdims=True)
+def softmax(x, axis):
+    scale_factor = x.max(axis=axis, keepdims=True)
     e_x = TT.exp(x - scale_factor)
-    weights = e_x/e_x.sum(axis=1, keepdims=True)
-    return (x*weights).sum(1)
+    weights = e_x/e_x.sum(axis=axis, keepdims=True)
+    return (x*weights).sum(axis)
 
 def theano_calc_affinities(seqs, ref_energy, ddg):
     # ignore the A's in the forward direction by using seqs[:,:,1:]
@@ -376,8 +379,8 @@ def theano_calc_affinities(seqs, ref_energy, ddg):
     # for the reverse complement affinities
     rc_bs_affinities = ref_energy + theano_conv2d(seqs, ddg)[:,:,0]
     # stack the affinities, and then take the min at each bing site
-    bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0)
-    seq_affinities = -softmax(-bs_affinities) # bs_affinities.min(1)
+    bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0) 
+    seq_affinities = -softmax(-bs_affinities, axis=1) # bs_affinities.min(1)
     return seq_affinities
 
 #def theano_calc_occs(affinities, chem_pot):
@@ -565,7 +568,7 @@ def theano_build_lhd_and_grad_fns(n_rounds):
         lhd 
         #- 100*TT.sum(log_unbnd_imbalance**2)
         - 100*TT.exp((-3-mean_energy)**2)
-        #- 100*TT.sum(TT.exp(TT.std(ddg, axis=1)))
+        - 100*TT.sum(TT.exp(TT.max(ddg, axis=1) - TT.min(ddg, axis=1)))
     )
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
