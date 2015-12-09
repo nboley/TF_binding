@@ -7,7 +7,7 @@ from itertools import izip, chain
 from collections import defaultdict, namedtuple
 
 import numpy as np
-np.set_printoptions(precision=2)
+np.set_printoptions(precision=4)
 np.random.seed(0)
 
 from scipy.optimize import brentq, approx_fprime, bracket, minimize_scalar
@@ -356,7 +356,7 @@ def estimate_dg_matrix_with_adadelta(
             prot_conc,
             penalized)
         #penalty = calc_penalty(ref_energy, ddg_array)
-        return -rv # + penalty
+        return rv # + penalty
 
     def f_analytic_grad(x, data):
         """Calculate the loss.
@@ -402,6 +402,7 @@ def estimate_dg_matrix_with_adadelta(
 
     def f_hessian(x, data):
         ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+        grad = f_grad(x, data)
         hessian = log_lhd.calc_hessian(
             ref_energy, 
             ddg_array, 
@@ -409,7 +410,10 @@ def estimate_dg_matrix_with_adadelta(
             data,
             dna_conc, 
             prot_conc)
-        return hessian
+        rv = np.zeros((x.size, x.size), dtype='float32')
+        np.fill_diagonal(rv, grad**2, wrap=False)
+        rv[1:1+ddg_array.size,1:1+ddg_array.size] = hessian
+        return rv
     
     def update_x(x, delta_x, max_update=0.20):
         if np.abs(delta_x).max() > max_update:
@@ -433,17 +437,96 @@ def estimate_dg_matrix_with_adadelta(
         x = pack_data_into_array(x, ref_energy, ddg_array, chem_affinities)
         return x
 
-    def line_search_update(x0, grad, data, e):
-        h = hessian(x0, lambda x: f_grad(x, data), e)
-        #h = np.ones((x0.size, x0.size), dtype='float32')
+    class AdamOptimizer():
+        def __init__(self, x0, alpha=0.01, beta1=0.9, beta2=0.999, eps=1e-8):
+            self.alpha = alpha
+            self.beta1 = beta1
+            self.beta2 = beta2
+            self.eps = eps
+            
+            self.m = np.zeros(x0.size, dtype='float32')
+            self.v = np.zeros(x0.size, dtype='float32')
+            self.t = 0
+        
+        def __call__(self, grad):
+            self.t += 1
+            
+            self.m = self.beta1*self.m + (1-self.beta1)*grad
+            #self.m /= (1-self.beta1**self.t)
+
+            self.v = self.beta2*self.v + (1-self.beta2)*(grad**2)
+            #self.v /= (1-self.beta2**self.t)
+
+            return -self.alpha*self.m/(np.sqrt(self.v) + self.eps)
+
+    def line_search_update(x, data, e):
+        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
+        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
+            ref_energy, 
+            ddg_array, 
+            chem_affinities,
+            data,
+            dna_conc, 
+            prot_conc)
+        
+        if log_lhd.calc_hessian is None:
+            ddg_hessian = np.eye(ddg_grad.size)
+        else:
+            ddg_hessian = log_lhd.calc_hessian(
+                ref_energy, 
+                ddg_array, 
+                chem_affinities,
+                data,
+                dna_conc, 
+                prot_conc)
+
+        max_update = 0.2
+        inverse_hessian = np.linalg.inv(
+            ddg_hessian + 1*np.eye(ddg_hessian.shape[0]))
+        inverse_hessian_times_grad = inverse_hessian.dot(ddg_grad.ravel())
+        #inverse_hessian_times_grad = ddg_grad.ravel()
+        if np.abs(inverse_hessian_times_grad).max() > max_update:
+            inverse_hessian_times_grad = max_update*inverse_hessian_times_grad.copy()/np.abs(
+                inverse_hessian_times_grad).max()
+        
         def f(a): 
-            step = np.zeros(x0.size) + a
-            delta_x = -(step*grad + step.dot(h)*step)
-            return f_dg(x0 + delta_x, data)
-        rv = minimize_scalar(f, bounds=[1e-12, 10*e], method='bounded')
+            rv = log_lhd.calc_log_lhd(
+                ref_energy, 
+                ddg_array-(a*inverse_hessian_times_grad).reshape(ddg_array.shape), 
+                chem_affinities,
+                data,
+                dna_conc, 
+                prot_conc,
+                True)
+            rv = rv if np.isfinite(rv) else float('-inf')
+            #print a, rv
+            return rv
+            #return -rv
+
+        a = 1.0 #0.2/np.abs(inverse_hessian_times_grad).max()
+        f_0 = f(0)
+        f_curr = f(a)
+        #print "="*40
+        #print a, f_0, f_curr, f_curr > f_0
+        while f_curr < f_0 and a > e:
+            #print a, f_curr
+            a /= 2
+            f_curr = f(a)
+
+        #rv = minimize_scalar(
+        #    f, bounds=[e, 0.1], method='bounded', options={'ftol': 1.0})
         #print rv
-        step = np.zeros(x0.size) + (rv.x if np.isfinite(rv.fun) else e)
-        return -(step*grad + step.dot(h)*step)
+        
+        #assert False
+        #step = np.zeros(ddg_grad.size) + e #(rv.x if np.isfinite(rv.fun) else e)
+        #ddg_update = (
+        #    e*inverse_hessian_times_grad
+        #    #-(step*ddg_grad.ravel() + step.dot(ddg_hessian)*step)
+        #).reshape(ddg_array.shape)
+        rv = (np.zeros(1, dtype='float32'), 
+              a*inverse_hessian_times_grad,
+              np.zeros(chem_affinities.shape, dtype='float32').ravel())
+        return np.concatenate(rv).ravel()
 
     # ada delta
     validation_lhds = []
@@ -451,11 +534,11 @@ def estimate_dg_matrix_with_adadelta(
     xs = []
     def ada_delta(x0):
         # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-6
-        p = 0.50
-        grad = np.zeros(len(x0), dtype='float32')
-        grad_sq = np.zeros(len(x0), dtype='float32')
-        delta_x_sq = np.ones(len(x0), dtype='float32')
+        e = 1e-2
+        #p = 0.50
+        #grad = np.zeros(len(x0), dtype='float32')
+        #grad_sq = np.zeros(len(x0), dtype='float32')
+        #delta_x_sq = np.ones(len(x0), dtype='float32')
         avg_delta_x = np.zeros(len(x0), dtype='float32')
 
         old_validation_lhd = float('-inf')
@@ -467,8 +550,9 @@ def estimate_dg_matrix_with_adadelta(
         valid_train_indices = range(
             len(partitioned_and_coded_rnds_and_seqs.train))
         random.shuffle(valid_train_indices)
+        adam_opt = AdamOptimizer(x0)
         for i in xrange(MAX_NUM_ITER):
-            if False:
+            if True:
                 if len(valid_train_indices) == 0:
                     valid_train_indices = range(
                         len(partitioned_and_coded_rnds_and_seqs.train))
@@ -479,30 +563,33 @@ def estimate_dg_matrix_with_adadelta(
             else:
                 data = partitioned_and_coded_rnds_and_seqs.data
 
-            grad = f_grad(x0.astype('float32'), data)
-
             # use the hessian informed line search
             if False:
-                delta_x = line_search_update(x0, grad, data, e )
+                delta_x = line_search_update(x0, data, e )
+            # use Adam
+            if True:
+                delta_x = adam_opt(f_grad(x0, data))
             # use Ada delta
-            else:
+            if False:
+                grad = f_grad(x0, data)            
+                hessian = f_hessian(x0, data)
                 #grad = 0.95*grad + 0.05*new_grad
                 grad_sq = p*grad_sq + (1-p)*(grad**2)
                 delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
                 delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)            
             
+            #x0 -= delta_x
+            # print delta_x
             x0 = update_x(x0, delta_x)
             avg_delta_x = 0.95*avg_delta_x + 0.05*delta_x
-            hessian = f_hessian(x0, data)
-            print hessian
 
             #unpenalized_validation_lhd = -f_dg(
             #    x0, partitioned_and_coded_rnds_and_seqs.validation, False)
             #validation_lhd = -f_dg(
             #    x0, partitioned_and_coded_rnds_and_seqs.validation)
-            #train_lhd = -f_dg(
-            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            unpenalized_validation_lhd = -f_dg(x0, data, False)
+            train_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            unpenalized_validation_lhd = f_dg(x0, data, True)
             
             ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
 
@@ -528,16 +615,18 @@ def estimate_dg_matrix_with_adadelta(
                 prot_conc)
             """
             
-            summary = ""
-            #summary = "\n%s\n" % str(b-a)
+            summary = "\n\n"
+            summary += "Delta x\n" + str( 
+                delta_x[1:-len(chem_affinities)].reshape(
+                    ddg_array.shape).round(6)) + "\n"
             summary += ddg_array.summary_str(ref_energy)
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
                 #"Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
-                #"Train: %s (%i)" % (train_lhd, train_index),
+                "Train: %s (%i)" % (train_lhd, train_index),
                 #"Validation: %s" % validation_lhd,
-                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
-                "Delta X L1 Norm: %.2f" % (np.abs(avg_delta_x)).sum(),
+                #"Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
+                "Delta X L1 Norm: %.4f" % (np.abs(avg_delta_x)).sum(),
                 "Real Lhd: %s" % unpenalized_validation_lhd
                 ))
 
@@ -558,7 +647,7 @@ def estimate_dg_matrix_with_adadelta(
             energy_diffs = ddg_array.max(1) - ddg_array.min(1)
             max_diff_index = energy_diffs.argmax()
             print i, zeroing_base_thresh, max_diff_index, energy_diffs
-            if i%100 == 0 and i <= num_burn_in_iter:
+            if i%(num_burn_in_iter/5) == 0 and i <= num_burn_in_iter:
                 for j in xrange(2):
                     energy_diffs = ddg_array.max(1) - ddg_array.min(1)
                     max_diff_index = energy_diffs.argmax()
@@ -566,6 +655,7 @@ def estimate_dg_matrix_with_adadelta(
                         break
                     ref_energy += ddg_array[max_diff_index,:].mean()
                     ddg_array[max_diff_index,:] = 0
+
             #if energy_diffs[max_diff_index] > zeroing_base_thresh: 
             #    ref_energy += ddg_array[max_diff_index,:].mean()
             #    ddg_array[max_diff_index,:] = 0
@@ -575,7 +665,7 @@ def estimate_dg_matrix_with_adadelta(
             x0 = pack_data_into_array(
                 x0, ref_energy, ddg_array, chem_affinities)
             
-            train_lhds.append(unpenalized_validation_lhd) #train_lhd)
+            train_lhds.append(train_lhd) #train_lhd)
             validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
             min_iter = 100 
@@ -585,7 +675,9 @@ def estimate_dg_matrix_with_adadelta(
                    and unpenalized_validation_lhd > best: 
                     best = unpenalized_validation_lhd
                     rounds_since_update = 0
-                rounds_since_update += 1
+                if ( np.abs(avg_delta_x).sum() < 0.01 
+                     and abs(unpenalized_validation_lhd - validation_lhds[-1]) < 1):
+                    rounds_since_update += 1
                 #if ( math.sqrt((delta_x**2).sum()) < 0.01 
                 #     and rounds_since_update > min_iter ):
                 #    break
@@ -602,7 +694,7 @@ def estimate_dg_matrix_with_adadelta(
                   + len(init_chem_affinities), 
                   dtype=theano.config.floatX)
     x0 = pack_data_into_array(
-        x0, init_ref_energy, init_ddg_array, init_chem_affinities)
+        x0, init_ref_energy, init_ddg_array, init_chem_affinities)    
 
     x = ada_delta(x0)
     ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
@@ -748,7 +840,7 @@ def progressively_fit_model(
         i = curr_mo.motif_len
         prev_validation_lhd = log_lhd.calc_log_lhd(
             curr_mo.ref_energy, curr_mo.ddg_array, chem_affinities,
-            partitioned_and_coded_rnds_and_seqs.validation,
+            partitioned_and_coded_rnds_and_seqs.data, # validation
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_validation_lhd, 'VERBOSE')
         
