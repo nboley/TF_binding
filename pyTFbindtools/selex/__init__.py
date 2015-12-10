@@ -37,7 +37,7 @@ EXPECTED_MEAN_ENERGY = -3.0
 CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 6.0
 
-USE_SHAPE = False
+USE_SHAPE = True
 
 MAX_BS_LEN = 18
 
@@ -84,6 +84,12 @@ class CodedSeqs(object):
         self.shape_coded_fwd_seqs = shape_coded_fwd_seqs
         self.shape_coded_RC_seqs = shape_coded_RC_seqs
 
+        self.seqs = np.dstack([
+            self.one_hot_coded_seqs, 
+            self.shape_coded_fwd_seqs, 
+            self.shape_coded_RC_seqs
+        ])
+
     def iter_coded_seq_splits(self, n_partitions):
         for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
             ) in izip(self._array_split_or_none(self.one_hot_coded_seqs, n_partitions),
@@ -98,7 +104,7 @@ def code_seqs(seqs, include_shape):
 
     one_hot_coded_seqs = one_hot_encode_sequences(seqs)
     n_seqs = one_hot_coded_seqs.shape[0]
-    seq_length = one_hot_coded_seqs.shape[2]
+    seq_length = one_hot_coded_seqs.shape[1]
     if not include_shape:
         shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
     else:
