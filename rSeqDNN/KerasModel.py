@@ -48,14 +48,36 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
 
     return (-1e-6 -(1+beta*beta)*precision*recall)/(beta*beta*precision+recall+2e-6)
 
-def balance_matrices(X, labels):
+def balance_matrices(X, labels, balance_option='downsample'):
+    """
+    Create equal number of positive and negative examples.
+
+    Parameters
+    ----------
+    X : ndarray
+        Expected shape is (samples, input_dim).
+    labels : 1d array
+        Expects label of 1 for positives and 0 for negatives.
+    balance_option : string, optional
+        Method used to balance data.
+        Legal values: 'downsample', 'upsample'.
+    """
     pos_full = X[(labels == 1)]
     neg_full = X[(labels == 0)]
-    sample_size = min(pos_full.shape[0], neg_full.shape[0])
-    pos = pos_full[
-        np.random.choice(pos_full.shape[0], sample_size, replace=False)]
-    neg = neg_full[
-        np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+    if balance_option=='downsample':
+        sample_size = min(pos_full.shape[0], neg_full.shape[0])
+        pos = pos_full[
+            np.random.choice(pos_full.shape[0], sample_size, replace=False)]
+        neg = neg_full[
+            np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+    elif balance_option=='upsample':
+        sample_size = max(pos_full.shape[0], neg_full.shape[0])
+        pos = pos_full[
+            np.random.choice(pos_full.shape[0], sample_size, replace=True)]
+        neg = neg_full[
+            np.random.choice(neg_full.shape[0], sample_size, replace=True)]
+    else:
+        raise ValueError('invalid matrix balancing option!')
     return np.vstack((pos, neg)), np.array(
         [1]*sample_size + [0]*sample_size, dtype='float32')
 
