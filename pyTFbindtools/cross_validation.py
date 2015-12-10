@@ -298,7 +298,7 @@ def plot_pr_curve(y_true, y_pred_scores, ofname):
     matplotlib.pyplot.savefig('%s.pr_curve.png' % ofname)
     return
 
-def rank_convolutions(convolution_scores, y_true, y_pred):
+def rank_convolutions(convolution_scores, y_true, y_pred, rank_metric='auROC'):
     """
     Rank contribution of convolutions to classification of
     true positives, false positives, false negatives and true negatives.
@@ -311,24 +311,32 @@ def rank_convolutions(convolution_scores, y_true, y_pred):
         true labels.
     y_pred : 1d array
         predicted labels.
+    rank_metric: string, optional.
+        Metric used to rank convolutions. 
+        Legal values: 'auROC' (default), 'sensitivity', 'specificity'
     Returns
     -------
-    convolution_ranks : dictionary of rank lists
-        convolution_ranks['true_positives'][j] is the rank of convolution
-        j in classifying true_positives.
+    convolution_ranks : 1darray
+        convolution_ranks[j] is the rank of convolution j.
     """
     ## sum scores across maxpool windows for ranking
     sum_scores = np.sum(convolution_scores, axis=2)
-    subset_names = ['true_positives', 'false_positives',
-                    'false_negatives', 'true_negatives']
-    true_positives = (y_pred*y_true)==1
-    false_positives = (y_pred*(1-y_true))==1
-    false_negatives = ((1-y_pred)*y_true)==1
-    true_negatives = ((1-y_pred)*(1-y_true))==1
-    subset_indices = [true_positives, false_positives,
-                      false_negatives, true_negatives]
-    ## sum scores over subset for subset-specific ranking
-    subset_ranks = [rankdata(sum_scores[indx].sum(axis=0)) for indx in subset_indices]
-    convolution_ranks = dict(zip(subset_names, subset_ranks))
-
-    return convolution_ranks
+    if rank_metric=='auROC':
+        auroc_scores = [roc_auc_score(y_true, sum_score) for sum_score in sum_scores.T]
+        return rankdata(np.array(auroc_scores))
+    elif rank_metric=='sensitivity':
+        true_positives = (y_pred*y_true)==1
+        false_negatives = ((1-y_pred)*y_true)==1
+        tp_scores = sum_scores[true_positives].sum(axis=0)
+        fn_scores = sum_scores[false_negatives].sum(axis=0)
+        sensitivity_scores = tp_scores - fn_scores
+        return rankdata(sensitivity_scores)
+    elif rank_metric=='specificity':
+        true_negatives = ((1-y_pred)*(1-y_true))==1
+        false_positives = (y_pred*(1-y_true))==1
+        tn_scores = sum_scores[true_negatives].sum(axis=0)
+        fp_scores = sum_scores[false_positives].sum(axis=0)
+        specificity_scores = -(tn_scores - fp_scores)
+        return rankdata(specificity_scores)
+    else:
+        raise ValueError('Invalid rank option!')
