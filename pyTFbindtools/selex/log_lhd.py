@@ -368,19 +368,26 @@ def softmax(x, axis):
     weights = e_x/e_x.sum(axis=axis, keepdims=True)
     return (x*weights).sum(axis)
 
-def theano_calc_affinities(seqs, ref_energy, ddg):
+def theano_calc_affinities(
+        seqs, ref_energy, ddg, ddg_shape_cont):    
     # ignore the A's in the forward direction by using seqs[:,:,1:]
     # flip the convolution along both axis to give the forward convolution
     # (because it's a true convolution, which means it's in the reverse
     #  direction...)
     fwd_bs_affinities = (
-        ref_energy + theano_conv2d(seqs, ddg[::-1,::-1])[:,:,0])
+        ref_energy + theano_conv2d(seqs[:,:,0:4], ddg[::-1,::-1])[:,:,0])
     # ignore the RC A's by ignoring the forward T's by using seqs[:,:,:3]
     # for the reverse complement affinities
-    rc_bs_affinities = ref_energy + theano_conv2d(seqs, ddg)[:,:,0]
+    rc_bs_affinities = ref_energy + theano_conv2d(seqs[:,:,0:4], ddg)[:,:,0]
     # stack the affinities, and then take the min at each bing site
     bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0) 
     seq_affinities = -softmax(-bs_affinities, axis=1) # bs_affinities.min(1)
+
+    #fwd_bs_shape_affinities = theano_conv2d(
+    #    fwd_shape_seqs, ddg_shape_cont[::-1,::-1])[:,:,0]
+    #rc_bs_shape_affinities = theano_conv2d(
+    #    rc_shape_seqs, ddg_shape_cont)[:,:,0]
+
     return seq_affinities
 
 #def theano_calc_occs(affinities, chem_pot):
@@ -406,39 +413,16 @@ def theano_log_sum_log_occs(log_occs):
     centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
     return centered_rv + scale_factor.flatten()
 
-def reduce_to_vector(*args):
-    # Reduce all inputs to vector
-    join_args = []
-    for i,arg in enumerate(args):
-       if arg.type.ndim: # it is not a scalar
-            join_args.append(arg.flatten())
-       else:
-            join_args.append( TT.shape_padleft(arg))
-    # join them into a vector
-    return TT.join(0, *join_args)  
-
-    g_all  = reduce_to_vector(*penalized_lhd_grad)
-    H, updates = theano.scan( 
-        lambda i,g_all,m,v,s: reduce_to_vector( 
-            TT.grad(g_all[i], ref_energy),  
-            TT.grad(g_all[i], ddg), 
-            TT.grad(g_all[i], chem_affinities) ), 
-        sequences = TT.arange(g_all.shape[0]), 
-        non_sequences= [g_all, ref_energy, ddg, chem_affinities]
-    )
-
-    print reduce_to_vector(ddg)
-    penalized_lhd_hessian = hessian(
-        penalized_lhd, 
-        wrt=reduce_to_vector(ddg))
-    print penalized_lhd_hessian
-    assert False
-
 def relu(x):
     return (x + abs(x))/2
 
 
-def theano_build_lhd_and_grad_fns(n_rounds):    
+def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
+    if use_shape:
+        n_features_per_base = 4
+    else:
+        n_features_per_base = 10
+    
     dna_conc = TT.scalar(dtype=theano.config.floatX)
     prot_conc = TT.scalar(dtype=theano.config.floatX)
 
@@ -447,11 +431,16 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     n_bg_seqs = bg_seqs.shape[0]
     
     ddg_flat = TT.vector(name='ddg', dtype=theano.config.floatX)
-    motif_len = ddg_flat.shape[0]/4
-    ddg = ddg_flat.reshape((motif_len, 4))
-    
+    motif_len = ddg_flat.shape[0]/n_features_per_base
+    ddg = ddg_flat.reshape((motif_len, n_features_per_base))
+    ddg_base_portion = ddg[:,:4]
+    ddg_shape_cont = ddg[:,4:]
+
     ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
     chem_affinities = TT.vector(dtype=theano.config.floatX)
+
+    #ddg_shape_cont = TT.matrix(
+    #    name='ddg_shape_cont', dtype=theano.config.floatX)
 
     rnd_seqs = [
         TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
@@ -463,8 +452,11 @@ def theano_build_lhd_and_grad_fns(n_rounds):
     
     # calculate the sequence affinities
     rnds_seq_affinities = [
-        theano_calc_affinities(seqs, ref_energy, ddg) for seqs in rnd_seqs ]
-    bg_seq_affinities = theano_calc_affinities(bg_seqs, ref_energy, ddg)
+        theano_calc_affinities(
+            seqs, ref_energy, ddg_base_portion, ddg_shape_cont) 
+        for seqs in rnd_seqs ]
+    bg_seq_affinities = theano_calc_affinities(
+        bg_seqs, ref_energy, ddg_base_portion, ddg_shape_cont)
 
     # calculate the lhd numerators
     rnd_numerators = TT.zeros_like(chem_affinities)
@@ -563,12 +555,13 @@ def theano_build_lhd_and_grad_fns(n_rounds):
 
     print_mean_energy = theano.printing.Print('mean_energy')
     #mean_energy = print_mean_energy(bg_seq_affinities.sum()/n_bg_seqs)
-    mean_energy = ref_energy+ddg.sum()/4
+    mean_energy = ref_energy+ddg_base_portion.sum()/4
     penalized_lhd = ( 
         lhd 
         #- 100*TT.sum(log_unbnd_imbalance**2)
         - 100*TT.exp((-3-mean_energy)**2)
-        - 100*TT.sum(TT.exp(TT.max(ddg, axis=1) - TT.min(ddg, axis=1)))
+        - 100*TT.sum(TT.exp(TT.max(ddg_base_portion, axis=1) 
+                            - TT.min(ddg_base_portion, axis=1)))
     )
     #penalized_lhd = lhd
     penalized_lhd_grad = jacobian(
@@ -621,7 +614,8 @@ def theano_log_lhd_factory(initial_coded_seqs):
       theano_calc_penalized_grad,
       theano_calc_penalized_hessian,
       theano_calc_log_unbnd_imbalance
-    ) = theano_build_lhd_and_grad_fns(max(rnds))
+    ) = theano_build_lhd_and_grad_fns(
+        max(rnds), initial_coded_seqs.have_shape_features)
     
     def calc_lhd(ref_energy, ddg_array, chem_affinities, 
                  coded_seqs, 

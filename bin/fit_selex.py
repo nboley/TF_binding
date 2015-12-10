@@ -21,7 +21,7 @@ from pyTFbindtools.selex import (
     progressively_fit_model, find_pwm, sample_random_seqs,
     estimate_chem_affinities_for_selex_experiment)
 
-INCLUDE_SHAPE = False
+INCLUDE_SHAPE = True
 
 """
 SELEX and massively parallel sequencing  
@@ -461,7 +461,6 @@ def main():
     print calc_lhd(x0.T, chem_affinities)
     return
     """
-        
     fit_model(
         rnds_and_seqs, background_seqs, 
         initial_model,

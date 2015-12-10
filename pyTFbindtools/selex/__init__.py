@@ -92,16 +92,18 @@ class CodedSeqs(object):
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
         
-def code_seqs(seqs):
+def code_seqs(seqs, include_shape):
     # materialize for now, until we fix the following to work with generator
     seqs = list(seqs)
 
     one_hot_coded_seqs = one_hot_encode_sequences(seqs)
     n_seqs = one_hot_coded_seqs.shape[0]
     seq_length = one_hot_coded_seqs.shape[2]
-    shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
-    #( shape_coded_fwd_seqs, shape_coded_RC_seqs 
-    #  ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
+    if not include_shape:
+        shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
+    else:
+        ( shape_coded_fwd_seqs, shape_coded_RC_seqs 
+            ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
     return CodedSeqs(
         one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
 
@@ -217,6 +219,10 @@ class SelexData(_SelexData):
     def first_rnd(self):
         return self.rnd_seqs[self.first_rnd_index]
 
+    @property
+    def have_shape_features(self):
+        return self.bg_seqs.shape_coded_fwd_seqs is not None
+
 class PartitionedAndCodedSeqs(object):
     @property
     def max_rnd(self):
@@ -242,9 +248,9 @@ class PartitionedAndCodedSeqs(object):
         # store the full coded sequence arrays
         self.coded_seqs = {}
         for rnd, seqs in rnds_and_seqs.iteritems():
-            self.coded_seqs[rnd] = code_seqs(seqs)
+            self.coded_seqs[rnd] = code_seqs(seqs, USE_SHAPE)
             assert self.seq_length == self.coded_seqs[rnd].seq_length
-        self.coded_bg_seqs = code_seqs(background_seqs)
+        self.coded_bg_seqs = code_seqs(background_seqs, USE_SHAPE)
         assert self.seq_length == self.coded_bg_seqs.seq_length
         self.data = SelexData(
             self.coded_bg_seqs, self.coded_seqs)
@@ -542,7 +548,7 @@ def estimate_dg_matrix(
     validation_lhds = []
     train_lhds = []
     xs = []
-    def ada_delta(x0):
+    def fit(x0):
         avg_delta_x = np.zeros(len(x0), dtype='float32')
 
         old_validation_lhd = float('-inf')
@@ -649,7 +655,7 @@ def estimate_dg_matrix(
 
     x0 = PackedModelParams(
         init_ref_energy, init_ddg_array, init_chem_affinities)
-    x = ada_delta(x0)
+    x = fit(x0)
     ref_energy, ddg_array, chem_affinities = x.extract()
     validation_lhd = log_lhd.calc_log_lhd(
         ref_energy, 
