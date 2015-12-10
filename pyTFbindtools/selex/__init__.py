@@ -514,15 +514,14 @@ def estimate_dg_matrix(
     
     def zero_energies(x, max_num_zeros=2, zeroing_base_thresh=1.0):
         ref_energy, ddg_array, chem_affinities = x.extract()
-        energy_diffs = ddg_array.max(1) - ddg_array.min(1)
-        max_diff_index = energy_diffs.argmax()
         for j in xrange(2):
-            energy_diffs = ddg_array.max(1) - ddg_array.min(1)
+            energy_diffs = (
+                ddg_array.base_portion.max(1) - ddg_array.base_portion.min(1) )
             max_diff_index = energy_diffs.argmax()
             if energy_diffs[max_diff_index] < zeroing_base_thresh: 
                 break
-            ref_energy += ddg_array[max_diff_index,:].mean()
-            ddg_array[max_diff_index,:] = 0
+            ref_energy += ddg_array.base_portion[max_diff_index,:].mean()
+            ddg_array.base_portion[max_diff_index,:] = 0
         x.update(ref_energy, ddg_array, chem_affinities)
         return x
     
@@ -537,8 +536,8 @@ def estimate_dg_matrix(
 
         # normalize the base contributions
         ref_energy, ddg_array, chem_affinities = x.extract()
-        ref_energy = ref_energy + ddg_array[:,:4].min(1).sum()
-        ddg_array[:,:4] -= ddg_array[:,:4].min(1)[:,None]
+        ref_energy = ref_energy + ddg_array.base_portion.min(1).sum()
+        ddg_array.base_portion[:,:] -= ddg_array.base_portion.min(1)[:,None]
         
         # update the parameter values
         return x.update(ref_energy, ddg_array, chem_affinities)
@@ -571,7 +570,7 @@ def estimate_dg_matrix(
         ada_delta_opt = AdaDeltaOptimizer(x0)
         line_search_opt = LineSearchOptimizer(x0)
         for i in xrange(MAX_NUM_ITER):
-            if False:
+            if True:
                 if len(valid_train_indices) == 0:
                     valid_train_indices = range(
                         len(partitioned_and_coded_rnds_and_seqs.train))
@@ -624,7 +623,9 @@ def estimate_dg_matrix(
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(x0.chem_affinities.round(2))),
                 "Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
-                "Energy Diffs: %s" % (x0.ddg_array.max(1)-x0.ddg_array.min(1)),
+                "Energy Diffs: %s" % (
+                    x0.ddg_array.base_portion.max(1)
+                    -x0.ddg_array.base_portion.min(1)),
                 "Train: %s (%s)" % (train_lhd, train_index),
                 #"Validation: %s" % validation_lhd,
                 #"Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),

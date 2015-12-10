@@ -383,7 +383,7 @@ def theano_calc_affinities(seqs, ref_energy, ddg, ddg_shape_cont):
     fwd_bs_shape_affinities = theano_conv2d(
         seqs[:,:,4:10], ddg_shape_cont[::-1,::-1])[:,:,0]
     rc_bs_shape_affinities = theano_conv2d(
-        seqs[:,:,10:16], ddg_shape_cont)[:,:,0]
+        seqs[:,:,10:16], ddg_shape_cont)[::-1,:,0]
 
     bs_affinities = TT.stack(
         fwd_bs_base_affinities + fwd_bs_shape_affinities, 
