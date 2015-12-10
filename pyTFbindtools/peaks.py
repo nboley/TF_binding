@@ -133,7 +133,7 @@ class PeaksAndLabels():
             )
 
     def remove_ambiguous_labeled_entries(self):
-        '''return subset of data wityh nonzero labels
+        '''return subset of data without -1 labels
         '''
         return PeaksAndLabels(
                 pk_and_label for pk_and_label in self 

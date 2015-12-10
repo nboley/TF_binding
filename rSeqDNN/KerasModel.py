@@ -7,7 +7,6 @@ import scipy.misc
 import os
 
 from pyTFbindtools.sequence import code_seq
-from pyTFbindtools.peaks import FastaPeaksAndLabels
 from pyTFbindtools.cross_validation import (
     ClassificationResult, 
     find_optimal_ambiguous_peak_threshold, 
@@ -323,7 +322,7 @@ class KerasModel(KerasModelBase):
         self._fit(X_train, y_train, X_validation, y_validation,
                   unbalanced_train_epochs, ofname)
 
-        if not isinstance(data, FastaPeaksAndLabels):
+        if any(data.labels==-1):
             # build predictor matrices with  ambiguous labels
             print("Setting the ambiguous labels peak threshold.")
             X_train, y_train = self.build_predictor_and_label_matrices(
