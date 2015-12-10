@@ -4,7 +4,6 @@ sys.setrecursionlimit(50000)
 import cPickle as pickle
 import numpy as np
 import scipy.misc
-import json
 import os
 
 from pyTFbindtools.sequence import code_seq
@@ -27,11 +26,9 @@ from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute)
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.models import model_from_yaml
+from keras.models import model_from_json
 from keras.callbacks import EarlyStopping
 from keras.regularizers import l1
-
-from sklearn.metrics import precision_recall_curve
 
 import theano.tensor as T
     
@@ -83,8 +80,11 @@ def add_reverse_complements(X, y):
     return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
 
 def load_model(fname):
-    with open(fname) as fp:
-        return pickle.load(fp)
+    try:
+        with open(fname) as fp:
+            return pickle.load(fp)
+    except:
+        return model_from_json(open(fname, 'r').read())
 
 def set_ambiguous_labels(labels, scores, threshold):
     ambig_labels = (labels == -1)

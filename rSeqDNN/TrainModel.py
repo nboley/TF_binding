@@ -45,6 +45,10 @@ def parse_args():
     train_parser.add_argument('--use-cached-model',
                         default=False, action='store_true',
         help='pickle model during training to avoid recompiling.')
+    train_parser.add_argument('--model-file', default=None, type=str,
+        help='pickled model architecture to train')
+    train_parser.add_argument('--weights-file', type=str, default=None,
+        help='model weights to finetune')
     test_parser.add_argument('--model-file', default=None, type=str,
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
@@ -103,7 +107,9 @@ def parse_args():
                   args.include_model_report)
     if args.command=='train':
         command_args = ( args.model_prefix,
-                         args.use_cached_model)
+                         args.use_cached_model,
+                         args.model_file,
+                         args.weights_file)
     elif args.command=='test':
         command_args = ( args.model_file,
                          args.weights_file)
@@ -117,7 +123,10 @@ def main_train(main_args, train_args):
       single_celltype,
       validation_contigs,
       include_model_report ) = main_args
-    model_ofname_prefix, use_cached_model = train_args
+    ( model_ofname_prefix,
+      use_cached_model,
+      model_fname,
+      weights_fname ) = train_args
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -125,6 +134,10 @@ def main_train(main_args, train_args):
     validation_data = OrderedDict()
     model = KerasModel(peaks_and_labels,
                        use_cached_model=use_cached_model)
+    if model_fname is not None:
+        model.model = load_model(model_fname)
+    if weights_fname is not None:
+        model.model.load_weights(weights_fname)
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
