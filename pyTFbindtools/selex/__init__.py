@@ -403,10 +403,11 @@ class PackedModelParams(np.ndarray):
     data into a natural representation.
     """
     def __new__(cls, ref_energy, ddg_array, chem_affinities):
-        return np.zeros(
+        rv = np.zeros(
             1 + ddg_array.size + chem_affinities.size, 
             dtype='float32').view(cls)
-
+        return rv
+    
     def __init__(self, ref_energy, ddg_array, chem_affinities):
         self._ddg_array_size = ddg_array.size
         self._ddg_array_shape = ddg_array.shape
@@ -418,12 +419,12 @@ class PackedModelParams(np.ndarray):
 
     @property
     def ddg_array(self):
-        return self[1:self._ddg_array_size+1].copy().reshape(
-            self._ddg_array_shape).view(DeltaDeltaGArray)
+        return self[1:self._ddg_array_size+1].reshape(
+            self._ddg_array_shape).view(DeltaDeltaGArray).copy()
 
     @property
     def chem_affinities(self):
-        return self[1+self._ddg_array_size:].copy()
+        return np.array(self[1+self._ddg_array_size:]).copy()
     
     def extract(self):
         return self.ref_energy, self.ddg_array, self.chem_affinities
@@ -433,10 +434,10 @@ class PackedModelParams(np.ndarray):
         self[1:1+self._ddg_array_size] = ddg_array.ravel()
         self[1+self._ddg_array_size:] = chem_affinities
         return self
-        #output[0] = ref_energy
-        #output[1:1+len(ddg_array.ravel())] = ddg_array.ravel()
-        #output[1+len(ddg_array.ravel()):] = chem_affinities
-        #return output
+
+    def copy(self):
+        return PackedModelParams(
+            self.ref_energy, self.ddg_array, self.chem_affinities)
 
 def estimate_dg_matrix(
         partitioned_and_coded_rnds_and_seqs,

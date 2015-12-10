@@ -422,7 +422,7 @@ def fit_model(rnds_and_seqs, background_seqs,
         model_meta_data['prev_validation_lhd'] = float(mo.prev_validation_lhd)
         model_meta_data['new_validation_lhd'] = float(mo.new_validation_lhd)
 
-        fit_models.append(mo)
+        fit_models.append(mo.energetic_model)
         if output_fname_prefix != None:
             ofname = "%s.FITMO.BSLEN%i.yaml" % (
                 output_fname_prefix, mo.energetic_model.ddg_array.motif_len)
