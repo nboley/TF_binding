@@ -460,74 +460,80 @@ def estimate_dg_matrix_with_adadelta(
             return -(self.alpha/math.log(self.t+2))*self.m/(
                 np.sqrt(self.v) + self.eps)
 
-    def line_search_update(x, data, e):
-        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
-            ref_energy, 
-            ddg_array, 
-            chem_affinities,
-            data,
-            dna_conc, 
-            prot_conc)
-        
-        if log_lhd.calc_hessian is None:
-            ddg_hessian = np.eye(ddg_grad.size)
-        else:
-            ddg_hessian = log_lhd.calc_hessian(
-                ref_energy, 
-                ddg_array, 
-                chem_affinities,
-                data,
-                dna_conc, 
-                prot_conc)
+    class AdaDeltaOptimizer():
+        def __init__(self, x0, p=0.50, e=1e-6):
+            self.p = p
+            self.e = e
+            
+            self.grad_sq = np.zeros(x0.size, dtype='float32')
+            self.delta_x_sq = np.zeros(x0.size, dtype='float32')
+            self.t = 0
 
-        max_update = 0.2
-        inverse_hessian = np.linalg.inv(
-            ddg_hessian + 1*np.eye(ddg_hessian.shape[0]))
-        inverse_hessian_times_grad = inverse_hessian.dot(ddg_grad.ravel())
-        #inverse_hessian_times_grad = ddg_grad.ravel()
-        if np.abs(inverse_hessian_times_grad).max() > max_update:
-            inverse_hessian_times_grad = max_update*inverse_hessian_times_grad.copy()/np.abs(
-                inverse_hessian_times_grad).max()
+        def __call__(self, grad):
+            self.t += 1
+            self.grad_sq = self.p*self.grad_sq + (1-self.p)*(grad**2)
+            delta_x = -grad*np.sqrt(
+                self.delta_x_sq + self.e)/np.sqrt(grad_sq + e)
+            self.delta_x_sq = self.p*self.delta_x_sq + (1-self.p)*(delta_x**2)
+            return delta_x
+    
+    class LineSearchOptimizer():
+        def __init__(self, x0, e=1e-4, max_update=0.2):
+            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
+            self.e = e
+            self._ddg_array_size = ddg_array.size
         
-        def f(a): 
-            rv = log_lhd.calc_log_lhd(
-                ref_energy, 
-                ddg_array-(a*inverse_hessian_times_grad).reshape(ddg_array.shape), 
-                chem_affinities,
-                data,
-                dna_conc, 
-                prot_conc,
-                True)
-            rv = rv if np.isfinite(rv) else float('-inf')
-            #print a, rv
-            return rv
-            #return -rv
+        def __call__(self, grad, ddg_hessian=None):
+            if hessian is None:
+                # initialize it to 0, because ones will be added in the inverse 
+                ddg_hessian = 0
+            inverse_hessian = np.linalg.inv(
+                ddg_hessian + np.eye(ddg_array.size, dtype='float32'))
+            inverse_hessian_times_grad = inverse_hessian.dot(ddg_grad.ravel())
 
-        a = 1.0 #0.2/np.abs(inverse_hessian_times_grad).max()
-        f_0 = f(0)
-        f_curr = f(a)
-        #print "="*40
-        #print a, f_0, f_curr, f_curr > f_0
-        while f_curr < f_0 and a > e:
-            #print a, f_curr
-            a /= 2
+            # normalize the update 
+            if np.abs(inverse_hessian_times_grad).max() > self.max_update:
+                inverse_hessian_times_grad = (
+                    self.max_update*inverse_hessian_times_grad.copy()
+                    /np.abs(inverse_hessian_times_grad).max()
+                )
+
+            def f(a): 
+                rv = log_lhd.calc_log_lhd(
+                    ref_energy, 
+                    ddg_array-(a*inverse_hessian_times_grad).reshape(ddg_array.shape), 
+                    chem_affinities,
+                    data,
+                    dna_conc, 
+                    prot_conc,
+                    True)
+                rv = rv if np.isfinite(rv) else float('-inf')
+                #print a, rv
+                return rv
+                #return -rv
+
+            ## Stupid descent algorithm - reduces over fitting from a proper 
+            ## line search
+            a = 1.0
+            f_0 = f(0)
             f_curr = f(a)
+            while f_curr < f_0 and a > e:
+                a /= 2
+                f_curr = f(a)
+            rv = (np.zeros(1, dtype='float32'), 
+                  a*inverse_hessian_times_grad,
+                  np.zeros(chem_affinities.shape, dtype='float32').ravel())
+            return np.concatenate(rv).ravel()
 
-        #rv = minimize_scalar(
-        #    f, bounds=[e, 0.1], method='bounded', options={'ftol': 1.0})
-        #print rv
-        
-        #assert False
-        #step = np.zeros(ddg_grad.size) + e #(rv.x if np.isfinite(rv.fun) else e)
-        #ddg_update = (
-        #    e*inverse_hessian_times_grad
-        #    #-(step*ddg_grad.ravel() + step.dot(ddg_hessian)*step)
-        #).reshape(ddg_array.shape)
-        rv = (np.zeros(1, dtype='float32'), 
-              a*inverse_hessian_times_grad,
-              np.zeros(chem_affinities.shape, dtype='float32').ravel())
-        return np.concatenate(rv).ravel()
+            ## Proper line search
+            #rv = minimize_scalar(
+            #    f, bounds=[e, 0.1], method='bounded', options={'ftol': 1.0})
+            #print rv
+            #step = np.zeros(ddg_grad.size) + e #(rv.x if np.isfinite(rv.fun) else e)
+            #ddg_update = (
+            #    e*inverse_hessian_times_grad
+            #    #-(step*ddg_grad.ravel() + step.dot(ddg_hessian)*step)
+            #).reshape(ddg_array.shape)
 
     # ada delta
     validation_lhds = []
@@ -552,8 +558,10 @@ def estimate_dg_matrix_with_adadelta(
             len(partitioned_and_coded_rnds_and_seqs.train))
         random.shuffle(valid_train_indices)
         adam_opt = AdamOptimizer(x0)
+        ada_delta_opt = AdaDeltaOptimizer(x0)
+        line_search_opt = LineSearchOptimizer(x0)
         for i in xrange(MAX_NUM_ITER):
-            if False:
+            if True:
                 if len(valid_train_indices) == 0:
                     valid_train_indices = range(
                         len(partitioned_and_coded_rnds_and_seqs.train))
@@ -565,48 +573,23 @@ def estimate_dg_matrix_with_adadelta(
                 data = partitioned_and_coded_rnds_and_seqs.data
 
             # use the hessian informed line search
+            grad = f_grad(x0, data)
             if False:
-                delta_x = line_search_update(x0, data, e )
+                delta_x = line_search_opt(x0, data, 1e-2 )
             # use Adam
             if True:
-                delta_x = adam_opt(f_grad(x0, data))
+                delta_x = adam_opt()
             # use Ada delta
             if False:
-                grad = f_grad(x0, data)            
-                hessian = f_hessian(x0, data)
-                #grad = 0.95*grad + 0.05*new_grad
-                grad_sq = p*grad_sq + (1-p)*(grad**2)
-                delta_x = -grad*np.sqrt(delta_x_sq + e)/np.sqrt(grad_sq + e)
-                delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)            
-            
-            #x0 -= delta_x
-            # print delta_x
+                delta_x = ada_delta_opt(f_grad(x0, data))
+
+            # update the parameter 
             x0 = update_x(x0, delta_x)
+            # store a running average to decide when we can stop
             avg_delta_x = 0.95*avg_delta_x + 0.05*delta_x
 
-            #unpenalized_validation_lhd = -f_dg(
-            #    x0, partitioned_and_coded_rnds_and_seqs.validation, False)
-            #validation_lhd = -f_dg(
-            #    x0, partitioned_and_coded_rnds_and_seqs.validation)
-            #train_lhd = -f_dg(
-            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            unpenalized_validation_lhd = f_dg(x0, data, True)
-            train_lhd = unpenalized_validation_lhd
-            
-            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
-
-            """
-            print grad[0].round(2)
-            print grad[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).round(2)
-            print grad[-len(chem_affinities):].round(2)
-            print 
-            print delta_x[0].round(2)
-            print delta_x[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).round(2)
-            print delta_x[-len(chem_affinities):].round(2)
-            """
-            
+            # calcualte the chemical affinity imbalance to decide if they need
+            # to be updated
             chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
                 ref_energy, 
                 ddg_array, 
@@ -614,7 +597,18 @@ def estimate_dg_matrix_with_adadelta(
                 partitioned_and_coded_rnds_and_seqs.validation,
                 dna_conc, 
                 prot_conc)
+
+            #unpenalized_validation_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.validation, False)
+            #validation_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.validation)
+            train_lhd = -f_dg(
+                x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
+            unpenalized_validation_lhd = f_dg(x0, data, True)
+            #train_lhd = unpenalized_validation_lhd
             
+            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
+                        
             summary = "\n\n"
             summary += "Delta x\n" + str( 
                 avg_delta_x[1:-len(chem_affinities)].reshape(
@@ -623,7 +617,7 @@ def estimate_dg_matrix_with_adadelta(
             summary += "\n" + "\n".join((
                 "Chem Affinities: %s" % (str(chem_affinities.round(2))),
                 "Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
-                #"Train: %s (%i)" % (train_lhd, train_index),
+                "Train: %s (%i)" % (train_lhd, train_index),
                 #"Validation: %s" % validation_lhd,
                 #"Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
                 "Delta X L1 Norm: %.4f" % (np.abs(avg_delta_x)).sum(),
@@ -668,7 +662,7 @@ def estimate_dg_matrix_with_adadelta(
             train_lhds.append(train_lhd) #train_lhd)
             validation_lhds.append(unpenalized_validation_lhd)
             xs.append(x0)
-            min_iter = 100 
+            min_iter = 500 
             print "Stop Crit:", unpenalized_validation_lhd, best, rounds_since_update, min_iter
             if i > num_burn_in_iter + 10:
                 if np.isfinite(unpenalized_validation_lhd) \
