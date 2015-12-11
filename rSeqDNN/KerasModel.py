@@ -12,11 +12,10 @@ from pyTFbindtools.cross_validation import (
     find_optimal_ambiguous_peak_threshold, 
     plot_ambiguous_peaks,
     plot_peak_ranks,
-    plot_pr_curve,
-    rank_convolutions )
-from matplotlib import (
-    pyplot as plt,
-    image as mpimg )
+    plot_pr_curve )
+from ScoreModel import (
+    score_convolutions, rank_convolutions,
+    plot_convolutions )
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -345,91 +344,6 @@ class KerasModel(KerasModelBase):
 
         return self
 
-    def score_convolutions(
-            self, X):
-        """
-        score convolutions using deepLifft on maxpooling layer.
-        Parameters
-        ----------
-        X : 4d array
-            one hot encoded sequences.
-        Returns
-        -------
-        convolution_scores : 3d array
-            (N, K, L) array with scores on N sequences of K convolutions
-            with L maxpool windows.
-        """
-        scripts_dir = os.environ.get("ENHANCER_SCRIPTS_DIR")
-        sys.path.insert(0, "%s/featureSelector/deepLIFFT" % scripts_dir)
-        from modelSaver import CNNMaxPoolIPModel
-        import layers
-        conv_weights, conv_biases = self.model.layers[0].get_weights()
-        maxpool_size = self.model.layers[1].pool_size[1]
-        ip_weights = self.model.layers[-1].get_weights()[0].T
-        ip_biases = self.model.layers[-1].get_weights()[1]
-        prop = CNNMaxPoolIPModel(conv_weights, conv_biases,
-                                 True, None, maxpool_size, True,
-                                 ip_weights, ip_biases,
-                                 layers.OutputActivations.sigmoid)
-        blobName = "pool1"
-        prop.setFirstInputBlobsToTrackNames([blobName])
-        deepLifft_score_list = []
-        for start in xrange(0, len(X), self.batch_size):
-            if (start+self.batch_size)>len(X):
-                end  = len(X)
-            else:
-                end = start + self.batch_size
-            prop.updateInputLayers(np.expand_dims(X[start:end, :, :, :], axis=0))
-            prop.performFprop()
-            prop.performBackprop()
-            outputBlobName = prop.globalBlobsLookup.outputBlobToTrackName
-            outputBlob = prop.globalBlobsLookup.getBlob(outputBlobName)
-            blob = prop.globalBlobsLookup.getBlob(blobName)
-            deepLifft_scores, _, _ = layers.getVariousDeepLifftScoresFromBlob_batch(
-                blob, outputBlob, prop.inputBlobNameToOutputActivation[outputBlobName])
-            deepLifft_score_list.append(deepLifft_scores.squeeze(axis=(1,3)))
-        convolution_scores = np.concatenate(tuple(deepLifft_score_list))
-        return convolution_scores
-
-    def plot_convolutions(
-            self, ofname, convolution_ranks=None):
-        """
-        plot convolutions and their ranks (optional).
-        Parameters
-        ----------
-        ofname : output filename prefix
-        convolution_ranks : dictionary of rank lists
-            convolution_ranks['true_positives'][j] is the rank of convolution
-            j in classifying true_positives.
-        """
-        scripts_dir = os.environ.get("UTIL_SCRIPTS_DIR")
-        weights, biases = self.model.layers[0].get_weights()
-        num_conv, _, _, conv_width = weights.shape
-        reshaped_weights = np.reshape(weights, (num_conv, 4, conv_width))
-        temp_fname = "tempFile.txt"
-        for i in xrange(num_conv):
-            plt.clf()
-            plt.figure(figsize=(12, 12))
-            plt.axis('off')
-            np.savetxt(temp_fname, reshaped_weights[i].T, delimiter='\t')
-            png_fname = "%s.%s.png" % (ofname, str(i))
-            os.system("Rscript %s/logoViz/plotConvFilter.R %s %s %s" % (
-                scripts_dir, temp_fname, png_fname, str(biases[i])))
-            plt.imshow(mpimg.imread(png_fname))
-            if convolution_ranks is not None:
-                rank_strings = [' : '.join(
-                    [subset,str(convolution_ranks[subset][i])])
-                    for subset in convolution_ranks.keys()]
-                plt.title("Convolution %s \n%s" %
-                          (str(i), '\n'.join(rank_strings)) )
-            else:
-                plt.title("Convolution %s" % str(i))
-            plt.savefig("%s.convolution_%s.png" % (ofname, str(i)))
-            os.system("rm %s" % png_fname)
-        os.system("rm %s" % temp_fname)
-
-        return self
-
     def classification_report(
             self, data, genome_fasta, ofname, filter_ambiguous_labels=True):
         '''plots TP, FP, FN, TN peaks
@@ -445,9 +359,12 @@ class KerasModel(KerasModelBase):
         plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname)
         plot_pr_curve(y_true, y_pred_scores, ofname)
         print 'ranking convolutions...'
-        convolution_scores = self.score_convolutions(X)
-        convolution_ranks = rank_convolutions(convolution_scores, y_true, y_pred)
+        convolution_scores = score_convolutions(self.model, X, self.batch_size)
+        rank_metrics = ['auROC', 'sensitivity', 'specificity']
+        ranks = [rank_convolutions(convolution_scores, y_true, y_pred, metric)
+                 for metric in rank_metrics]
+        rank_dictionary = dict(zip(rank_metrics, ranks))
         print 'plotting convolutions...'
-        self.plot_convolutions(ofname, convolution_ranks)
+        plot_convolutions(self.model, ofname, rank_dictionary)
 
         return self
