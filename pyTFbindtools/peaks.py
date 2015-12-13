@@ -57,7 +57,19 @@ class PeaksAndLabelsThreadSafeIterator(object):
         else:
             raise StopIteration()
 
-PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label', 'score'])
+PeakAndLabelData = namedtuple('PeakAndLabel', ['peak', 'sample', 'label', 'score'])
+class PeakAndLabel(PeakAndLabelData):
+    def jitter(self, jitter):
+        """
+        Returns PeakAndLabel with jittered NarrowPeak.
+        """
+        pk, sample, label, score  = self
+        jittered_pk = NarrowPeak(
+            pk.contig, pk.start, pk.stop, pk.summit,
+            pk.score, pk.signalValue, pk.pValue, pk.qValue, pk.idrValue, pk.seq)
+
+        return PeakAndLabel(jittered_pk, sample, label, score)
+
 class PeaksAndLabels():
     def __getitem__(self, index):
         return PeakAndLabel(
@@ -147,6 +159,24 @@ class PeaksAndLabels():
                 validation_contigs, single_celltype):
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
+
+    def jitter_peaks(self, jitter):
+        """
+        Jitter peak locations.
+        Signal and label attributes remain unchanged.
+
+        Paramters
+        ---------
+        jitter : int
+            Jittering peaks by this distance.
+
+        Returns
+        -------
+        PeaksAndLabels object with jittered peak locations.
+        """
+        return PeaksAndLabels(
+            pk_and_label.jitter(jitter) for pk_and_label in self
+        )
 
 class FastaPeaksAndLabels(PeaksAndLabels):
     @staticmethod
