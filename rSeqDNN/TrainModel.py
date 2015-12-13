@@ -49,6 +49,8 @@ def parse_args():
         help='pickled model architecture to train')
     train_parser.add_argument('--weights-file', type=str, default=None,
         help='model weights to finetune')
+    train_parser.add_argument('--jitter-peaks-by', type=str, default=None,
+                              help='10,-15,5 will jitter peaks by 10, -15, and 5 ')
     test_parser.add_argument('--model-file', default=None, type=str,
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
@@ -57,6 +59,13 @@ def parse_args():
     args = parser.parse_args()
     if args.validation_contigs is not None:
         args.validation_contigs = set(args.validation_contigs.split(','))
+    if args.command == 'train':
+        if args.jitter_peaks_by is not None:
+            try:
+                args.jitter_peaks_by = map(int, args.jitter_peaks_by.split(','))
+            except Exception as e:
+                raise ValueError('invalid jitter values, jitters must be integers!')
+                raise e
     assert args.annotation_id is not None or args.genome_fasta is not None, \
         "Must set either --annotation-id or --genome-fasta"
     if args.genome_fasta is None:
@@ -109,7 +118,8 @@ def parse_args():
         command_args = ( args.model_prefix,
                          args.use_cached_model,
                          args.model_file,
-                         args.weights_file)
+                         args.weights_file,
+                         args.jitter_peaks_by)
     elif args.command=='test':
         command_args = ( args.model_file,
                          args.weights_file)
@@ -126,7 +136,8 @@ def main_train(main_args, train_args):
     ( model_ofname_prefix,
       use_cached_model,
       model_fname,
-      weights_fname ) = train_args
+      weights_fname,
+      jitter_peaks_by) = train_args
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -147,7 +158,8 @@ def main_train(main_args, train_args):
         fit_model = model.train(
             train,
             genome_fasta,
-            '%s.%i.hd5.fit_weights.obj' % (model_ofname_prefix, fold_index+1))
+            '%s.%i.hd5.fit_weights.obj' % (model_ofname_prefix, fold_index+1),
+            jitter_peaks_by)
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid,
             genome_fasta,

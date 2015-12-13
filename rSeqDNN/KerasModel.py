@@ -13,6 +13,7 @@ from pyTFbindtools.cross_validation import (
     plot_ambiguous_peaks,
     plot_peak_ranks,
     plot_pr_curve )
+from pyTFbindtools.peaks import merge_peaks_and_labels
 from ScoreModel import (
     score_convolutions, rank_convolutions,
     plot_convolutions )
@@ -303,10 +304,16 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(weights_ofname)
         return self
 
-    def train(self, data, genome_fasta, ofname,
+    def train(self, data, genome_fasta, ofname, jitter_peaks_by,
               balanced_train_epochs=3, unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
+        if jitter_peaks_by is not None:
+            data_fitting_positives = data_fitting.filter_by_label(1)
+            jittered_positives = merge_peaks_and_labels(
+                data_fitting_positives.jitter_peaks(jitter)
+                for jitter in jitter_peaks_by)
+            data_fitting = data_fitting.add_peaks_and_labels(jittered_positives)
         X_validation, y_validation = self.build_predictor_and_label_matrices(
             data_stopping, genome_fasta, filter_ambiguous_labels=True)
 
