@@ -1,7 +1,7 @@
 import os
 import gzip
 from collections import namedtuple
-from itertools import izip
+from itertools import izip, chain
 import random
 import cPickle as pickle
 
@@ -152,6 +152,22 @@ class PeaksAndLabels():
                 if pk_and_label.label != -1
             )
 
+    def filter_by_label(self, label):
+        """
+        Keep subset of data with specified label.
+        """
+        return PeaksAndLabels(
+            pk_and_label for pk_and_label in self
+            if pk_and_label.label == label
+        )
+
+    def add_peaks_and_labels(self, peaks_and_labels):
+        """
+        Append entries in peaks_and_labels.
+        """
+        return PeaksAndLabels(
+            chain.from_iterable([self, peaks_and_labels]))
+
     def iter_train_validation_subsets(
             self, validation_contigs=None, single_celltype=False):
         for train_indices, valid_indices in iter_train_validation_splits(
@@ -177,6 +193,12 @@ class PeaksAndLabels():
         return PeaksAndLabels(
             pk_and_label.jitter(jitter) for pk_and_label in self
         )
+
+def merge_peaks_and_labels(*peaks_and_labels_iterable):
+    """
+    Merge multiple PeaksAndLabels into a single PeaksAndLabels.
+    """
+    return PeaksAndLabels(chain.from_iterable(*peaks_and_labels_iterable))
 
 class FastaPeaksAndLabels(PeaksAndLabels):
     @staticmethod
