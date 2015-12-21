@@ -114,7 +114,8 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels,  use_cached_model=False,
+    def __init__(self, peaks_and_labels,
+                 use_cached_model=False, target_metric='recall_at_05_fdr',
                  batch_size=200, num_conv=15, conv_height=4, conv_width=15,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
@@ -123,6 +124,7 @@ class KerasModelBase():
         self.use_cached_model = use_cached_model
         self.seq_len = peaks_and_labels.max_peak_width
         self.ambiguous_peak_threshold = None
+        self.target_metric = target_metric
 
         print 'building default rSeqDNN architecture...'
         num_conv_outputs = ((self.seq_len - conv_width) + 1)
@@ -280,7 +282,7 @@ class KerasModel(KerasModelBase):
         print("Compiling model with cross entropy loss.")
         self.compile('binary_crossentropy', Adam())
         res = self.evaluate(X_validation, y_validation)
-        best_recall_at_05_fdr = res.recall_at_05_fdr
+        best_target_metric = getattr(res, self.target_metric)
         self.model.save_weights(weights_ofname, overwrite=True)
 
         for epoch in xrange(numEpochs):
@@ -294,10 +296,11 @@ class KerasModel(KerasModelBase):
             res = self.evaluate(X_validation, y_validation)
             print res
 
-            if (res.recall_at_05_fdr > best_recall_at_05_fdr):
-                print("highest recall at 0.05 FDR so far. Saving weights.")
+            current_target_metric = getattr(res, self.target_metric)
+            if (current_target_metric > best_target_metric):
+                print("highest %s so far. Saving weights." % self.target_metric)
                 self.model.save_weights(weights_ofname, overwrite=True)
-                best_recall_at_05_fdr = res.recall_at_05_fdr
+                best_target_metric = current_target_metric
 
         # load and return the best model
         print "Loading best model"

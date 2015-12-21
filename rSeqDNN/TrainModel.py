@@ -15,7 +15,9 @@ from pyTFbindtools.peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 )
 
-from pyTFbindtools.cross_validation import ClassificationResults
+from pyTFbindtools.cross_validation import (
+    ClassificationResult, ClassificationResults
+)
 
 from KerasModel import (
     KerasModel,
@@ -51,6 +53,10 @@ def parse_args():
         help='model weights to finetune')
     train_parser.add_argument('--jitter-peaks-by', type=str, default=None,
                               help='10,-15,5 will jitter peaks by 10, -15, and 5 ')
+    train_parser.add_argument('--target-metric', type=str, default='recall_at_05_fdr',
+                              help='metric used for model selection. '\
+                              'supported options: auROC, auPRC, F1, recall_at_05_fdr'\
+                              'recall_at_10_fdr, recall_at_05_fdr.')
     test_parser.add_argument('--model-file', default=None, type=str,
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
@@ -66,6 +72,8 @@ def parse_args():
             except Exception as e:
                 raise ValueError('invalid jitter values, jitters must be integers!')
                 raise e
+        assert (args.target_metric in ClassificationResult._fields), \
+            "Invalid target metric, see supported metrics."
     assert args.annotation_id is not None or args.genome_fasta is not None, \
         "Must set either --annotation-id or --genome-fasta"
     if args.genome_fasta is None:
@@ -119,7 +127,8 @@ def parse_args():
                          args.use_cached_model,
                          args.model_file,
                          args.weights_file,
-                         args.jitter_peaks_by)
+                         args.jitter_peaks_by,
+                         args.target_metric)
     elif args.command=='test':
         command_args = ( args.model_file,
                          args.weights_file)
@@ -137,14 +146,16 @@ def main_train(main_args, train_args):
       use_cached_model,
       model_fname,
       weights_fname,
-      jitter_peaks_by) = train_args
+      jitter_peaks_by,
+      target_metric) = train_args
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
     training_data = OrderedDict()
     validation_data = OrderedDict()
     model = KerasModel(peaks_and_labels,
-                       use_cached_model=use_cached_model)
+                       use_cached_model=use_cached_model,
+                       target_metric=target_metric)
     if model_fname is not None:
         model.model = load_model(model_fname)
     if weights_fname is not None:

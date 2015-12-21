@@ -115,8 +115,9 @@ class ClassificationResult(object):
         return "\t".join(rv)
 
 def find_optimal_ambiguous_peak_threshold(
-        mo, predictors, labels, peak_scores, num_thresh):
-    """Find the threshold that maximizes the F1 score.
+        mo, predictors, labels, peak_scores, num_thresh,
+        target_metric='recall_at_05_fdr'):
+    """Find the threshold that maximizes the target metric.
 
     """
     # make a copy of the original ambiguous label set so that we can
@@ -138,7 +139,7 @@ def find_optimal_ambiguous_peak_threshold(
     labels[ambiguous_peaks] = 1.0
     # for each threshold, change the labels and evaluate the model's 
     # performance
-    best_recall_at_05_fdr = 0.0
+    best_target_metric = 0.0
     best_thresh = None
     for i, thresh in enumerate(ambiguous_thresholds):
         print "Testing thresh %i/%i" % (i+1, len(ambiguous_thresholds))
@@ -146,8 +147,9 @@ def find_optimal_ambiguous_peak_threshold(
             ambiguous_peaks&(peak_scores <= thresh))
         labels[ambig_peaks_below_threshold] = 0
         res = mo.evaluate(predictors, labels)
-        if res.recall_at_05_fdr > best_recall_at_05_fdr:
-            best_recall_at_05_fdr = res.recall_at_05_fdr
+        current_target_metric = getattr(res, target_metric)
+        if current_target_metric > best_target_metric:
+            best_target_metric = current_target_metric
             best_thresh = thresh
 
     return best_thresh
