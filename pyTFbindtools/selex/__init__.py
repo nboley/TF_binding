@@ -7,22 +7,23 @@ from itertools import izip, chain
 from collections import defaultdict, namedtuple
 
 import numpy as np
-np.set_printoptions(precision=2)
+np.set_printoptions(precision=4)
 np.random.seed(0)
 
-from scipy.optimize import brentq, approx_fprime
+from scipy.optimize import brentq, approx_fprime, bracket, minimize_scalar
 from scipy.stats import ttest_ind
 
 import theano
 
 from pyDNAbinding.binding_model import (
-    FixedLengthDNASequences, est_chem_potential )
-
+    FixedLengthDNASequences, est_chem_potential_from_affinities, calc_occ,
+    EnergeticDNABindingModel, DeltaDeltaGArray )
+from pyDNAbinding.sequence import CodedDNASeq
 
 import pyTFbindtools
 
 from pyTFbindtools.motif_tools import (
-    load_motifs, logistic, R, T, ReducedDeltaDeltaGArray, 
+    load_motifs, logistic, R, T,
     Motif, load_motif_from_text)
 import pyTFbindtools.sequence
 from pyTFbindtools.shape import code_seqs_shape_features
@@ -36,9 +37,7 @@ EXPECTED_MEAN_ENERGY = -3.0
 CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 6.0
 
-USE_SHAPE = False
-
-MAX_BS_LEN = 18
+MAX_BS_LEN = 12
 
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
@@ -68,6 +67,10 @@ class CodedSeqs(object):
             return [None]*n_partitions
         return np.array_split(array, n_partitions)
 
+    def iter_one_hot_coded_seqs(self):
+        for seq in self.one_hot_coded_seqs:
+            yield seq.view(CodedDNASeq)
+
     def __init__(self, 
                  one_hot_coded_seqs, 
                  shape_coded_fwd_seqs=None, 
@@ -79,6 +82,16 @@ class CodedSeqs(object):
         self.shape_coded_fwd_seqs = shape_coded_fwd_seqs
         self.shape_coded_RC_seqs = shape_coded_RC_seqs
 
+        if self.shape_coded_fwd_seqs is not None:
+            assert self.shape_coded_fwd_seqs is not None 
+            self.seqs = np.dstack([
+                self.one_hot_coded_seqs, 
+                self.shape_coded_fwd_seqs, 
+                self.shape_coded_RC_seqs
+            ])
+        else:
+            self.seqs = self.one_hot_coded_seqs
+
     def iter_coded_seq_splits(self, n_partitions):
         for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
             ) in izip(self._array_split_or_none(self.one_hot_coded_seqs, n_partitions),
@@ -87,26 +100,39 @@ class CodedSeqs(object):
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
         
-def code_seqs(seqs):
+def code_seqs(seqs, include_shape):
     # materialize for now, until we fix the following to work with generator
     seqs = list(seqs)
 
     one_hot_coded_seqs = one_hot_encode_sequences(seqs)
     n_seqs = one_hot_coded_seqs.shape[0]
-    seq_length = one_hot_coded_seqs.shape[2]
-    shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
-    #( shape_coded_fwd_seqs, shape_coded_RC_seqs 
-    #  ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
+    seq_length = one_hot_coded_seqs.shape[1]
+    if not include_shape:
+        shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
+    else:
+        ( shape_coded_fwd_seqs, shape_coded_RC_seqs 
+            ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
     return CodedSeqs(
         one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
 
 def estimate_chem_affinities_for_selex_experiment(
-        background_seqs, num_rounds, binding_model, dna_conc, prot_conc):
+        bg_seqs, num_rounds, binding_model, dna_conc, prot_conc):
+    # if this is a numpy array, assume that they're one hot encoded seqs
+    if isinstance(bg_seqs, CodedSeqs):
+        affinities = -(np.array(
+            binding_model.score_seqs_binding_sites(bg_seqs, 'MAX')).max(1))
+    else:
+        bg_seqs = FixedLengthDNASequences(bg_seqs)
+        affinities = -(bg_seqs.score_binding_sites(binding_model, 'MAX').max(1))
+    
     all_chem_affinities = []
-    pool = FixedLengthDNASequences(background_seqs)
+    weights = np.ones(len(affinities), dtype=float)
     for i in xrange(num_rounds):
-        all_chem_affinities.append(
-            est_chem_potential( pool, binding_model, dna_conc, prot_conc ) )
+        weights /= weights.sum()
+        chem_pot = est_chem_potential_from_affinities(
+            affinities, dna_conc, prot_conc, weights )
+        weights *= calc_occ(chem_pot, affinities)
+        all_chem_affinities.append(chem_pot)
     return np.array(all_chem_affinities, dtype=theano.config.floatX)
 
 def enumerate_binding_sites(seq, bs_len):
@@ -141,7 +167,7 @@ def find_pwm_from_starting_alignment(seqs, counts, max_num_seqs=5000):
 
     # iterate over the alignments
     prev_counts = counts.copy()
-    for i in xrange(10):
+    for i in xrange(50):
         # upadte the counts
         for bss, weights in izip(all_binding_sites, all_weights):
             for bs, weight in izip(bss, weights):
@@ -181,7 +207,6 @@ def find_pwm(rnds_and_seqs, bs_len):
     pwm = find_pwm_from_starting_alignment(
         rnds_and_seqs[min(rnds_and_seqs.keys())], counts)
     pyTFbindtools.log("Found initial model")
-
     return pwm
 
 _SelexData = namedtuple('SelexData', ['bg_seqs', 'rnd_seqs'])
@@ -202,6 +227,10 @@ class SelexData(_SelexData):
     def first_rnd(self):
         return self.rnd_seqs[self.first_rnd_index]
 
+    @property
+    def have_shape_features(self):
+        return self.bg_seqs.shape_coded_fwd_seqs is not None
+
 class PartitionedAndCodedSeqs(object):
     @property
     def max_rnd(self):
@@ -210,6 +239,7 @@ class PartitionedAndCodedSeqs(object):
     def __init__(self, 
                  rnds_and_seqs, 
                  background_seqs, 
+                 include_shape_features,
                  use_full_background_for_part_fn=True, 
                  n_partitions=None):
         # set the sequence length
@@ -227,10 +257,12 @@ class PartitionedAndCodedSeqs(object):
         # store the full coded sequence arrays
         self.coded_seqs = {}
         for rnd, seqs in rnds_and_seqs.iteritems():
-            self.coded_seqs[rnd] = code_seqs(seqs)
+            self.coded_seqs[rnd] = code_seqs(seqs, include_shape_features)
             assert self.seq_length == self.coded_seqs[rnd].seq_length
-        self.coded_bg_seqs = code_seqs(background_seqs)
+        self.coded_bg_seqs = code_seqs(background_seqs, include_shape_features)
         assert self.seq_length == self.coded_bg_seqs.seq_length
+        self.data = SelexData(
+            self.coded_bg_seqs, self.coded_seqs)
         
         # store views to partitioned subsets of the data 
         self._partitioned_data = [{} for i in xrange(self.n_partitions)]
@@ -256,204 +288,419 @@ class PartitionedAndCodedSeqs(object):
             for i in xrange(2, self.n_partitions)
         ]
 
-def estimate_dg_matrix_with_adadelta(
+class AdamOptimizer():
+    def __init__(self, x0, alpha=0.01, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.alpha = alpha
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+
+        self.m = np.zeros(x0.size, dtype='float32')
+        self.v = np.zeros(x0.size, dtype='float32')
+        self.t = 0
+
+    def __call__(self, grad):
+        self.t += 1
+
+        self.m = self.beta1*self.m + (1-self.beta1)*grad
+        #self.m /= (1-self.beta1**self.t)
+
+        self.v = self.beta2*self.v + (1-self.beta2)*(grad**2)
+        #self.v /= (1-self.beta2**self.t)
+
+        return -(self.alpha/math.log(self.t+2))*self.m/(
+            np.sqrt(self.v) + self.eps)
+
+class AdaDeltaOptimizer():
+    # from http://arxiv.org/pdf/1212.5701.pdf
+    def __init__(self, x0, p=0.50, e=1e-6):
+        self.p = p
+        self.e = e
+
+        self.grad_sq = np.zeros(x0.size, dtype='float32')
+        self.delta_x_sq = np.zeros(x0.size, dtype='float32')
+        self.t = 0
+
+    def __call__(self, grad):
+        self.t += 1
+        self.grad_sq = self.p*self.grad_sq + (1-self.p)*(grad**2)
+        delta_x = -grad*np.sqrt(
+            self.delta_x_sq + self.e)/np.sqrt(grad_sq + e)
+        self.delta_x_sq = self.p*self.delta_x_sq + (1-self.p)*(delta_x**2)
+        return delta_x
+
+class LineSearchOptimizer():
+    def __init__(self, x0, e=1e-4, max_update=0.2):
+        ref_energy, ddg_array, chem_affinities = x0.extract()
+        self.e = e
+        self._ddg_array_size = ddg_array.size
+
+    def __call__(self, grad, ddg_hessian=None):
+        if hessian is None:
+            # initialize it to 0, because ones will be added in the inverse 
+            ddg_hessian = 0
+        inverse_hessian = np.linalg.inv(
+            ddg_hessian + np.eye(ddg_array.size, dtype='float32'))
+        inverse_hessian_times_grad = inverse_hessian.dot(ddg_grad.ravel())
+
+        # normalize the update 
+        if np.abs(inverse_hessian_times_grad).max() > self.max_update:
+            inverse_hessian_times_grad = (
+                self.max_update*inverse_hessian_times_grad.copy()
+                /np.abs(inverse_hessian_times_grad).max()
+            )
+
+        def f(a): 
+            rv = log_lhd.calc_log_lhd(
+                ref_energy, 
+                ddg_array-(a*inverse_hessian_times_grad).reshape(ddg_array.shape), 
+                chem_affinities,
+                data,
+                dna_conc, 
+                prot_conc,
+                True)
+            rv = rv if np.isfinite(rv) else float('-inf')
+            #print a, rv
+            return rv
+            #return -rv
+
+        ## Stupid descent algorithm - reduces over fitting from a proper 
+        ## line search
+        a = 1.0
+        f_0 = f(0)
+        f_curr = f(a)
+        while f_curr < f_0 and a > e:
+            a /= 2
+            f_curr = f(a)
+        rv = (np.zeros(1, dtype='float32'), 
+              a*inverse_hessian_times_grad,
+              np.zeros(chem_affinities.shape, dtype='float32').ravel())
+        return np.concatenate(rv).ravel()
+
+        ## Proper line search
+        #rv = minimize_scalar(
+        #    f, bounds=[e, 0.1], method='bounded', options={'ftol': 1.0})
+        #print rv
+        #step = np.zeros(ddg_grad.size) + e #(rv.x if np.isfinite(rv.fun) else e)
+        #ddg_update = (
+        #    e*inverse_hessian_times_grad
+        #    #-(step*ddg_grad.ravel() + step.dot(ddg_hessian)*step)
+        #).reshape(ddg_array.shape)
+
+
+def hessian(x, jac, epsilon=1e-6):
+    """Numerical approximation to the Hessian
+    Parameters
+    ------------
+    x: array-like
+        The evaluation point
+    jac: 
+        jacobian of the function
+    epsilon: float
+        The size of the step
+    """
+    N = x.size
+    h = np.zeros((N,N))
+    df_0 = jac(x)
+    for i in xrange(N):
+        xx0 = 1.*x[i]
+        x[i] = xx0 + epsilon
+        df_1 = jac(x)
+        h[i,:] = (df_1 - df_0)/epsilon
+        x[i] = xx0
+    return h
+
+class PackedModelParams(np.ndarray):
+    """Store packed model parameters. 
+    
+    Most optimization routines require an unraveled array of model parameters. 
+    This class stores such an array, and contains methods to unpack/pack the
+    data into a natural representation.
+    """
+    def __new__(cls, ref_energy, ddg_array, chem_affinities):
+        rv = np.zeros(
+            1 + ddg_array.size + chem_affinities.size, 
+            dtype='float32').view(cls)
+        return rv
+    
+    def __init__(self, ref_energy, ddg_array, chem_affinities):
+        self._ddg_array_size = ddg_array.size
+        self._ddg_array_shape = ddg_array.shape
+        self.update(ref_energy, ddg_array, chem_affinities)
+
+    @property
+    def ref_energy(self):
+        return self[0]
+
+    @property
+    def ddg_array(self):
+        return self[1:self._ddg_array_size+1].reshape(
+            self._ddg_array_shape).view(DeltaDeltaGArray).copy()
+
+    @property
+    def chem_affinities(self):
+        return np.array(self[1+self._ddg_array_size:]).copy()
+    
+    def extract(self):
+        return self.ref_energy, self.ddg_array, self.chem_affinities
+
+    def update(self, ref_energy, ddg_array, chem_affinities):
+        self[0] = ref_energy
+        self[1:1+self._ddg_array_size] = ddg_array.ravel()
+        self[1+self._ddg_array_size:] = chem_affinities
+        return self
+
+    def copy(self):
+        return PackedModelParams(
+            self.ref_energy, self.ddg_array, self.chem_affinities)
+
+def estimate_dg_matrix(
         partitioned_and_coded_rnds_and_seqs,
         init_ddg_array, init_ref_energy, init_chem_affinities,
         dna_conc, prot_conc,
         ftol=1e-12):    
-    max_rnd = partitioned_and_coded_rnds_and_seqs.max_rnd
-
-    def calc_penalty(ref_energy, ddg_array):
-        penalty = 0
-        
-        # Penalize models with non-physical mean affinities
-        new_mean_energy = ref_energy + ddg_array.sum()/3
-        if CONSTRAIN_MEAN_ENERGY:
-            penalty += (new_mean_energy - EXPECTED_MEAN_ENERGY)**2
-
-        # Penalize non-physical differences in base affinities
-        if CONSTRAIN_BASE_ENERGY_DIFF:
-            base_conts = ddg_array.calc_base_contributions()
-            energy_diff = base_conts.max(1) - base_conts.min(1)
-            penalty += (energy_diff[
-                (energy_diff > MAX_BASE_ENERGY_DIFF)]**2).sum()
-        #return 0
-        return penalty
-
-    def extract_data_from_array(x):
-        ref_energy = x[0]
-        num_ddg_entries = init_ddg_array.shape[0]*init_ddg_array.shape[1]
-        ddg_array = x[1:1+num_ddg_entries].reshape(
-            init_ddg_array.shape).astype('float32').view(
-            ReducedDeltaDeltaGArray)
-        chem_affinities = x[1+num_ddg_entries:] #np.array([-11.0]*max_rnd, dtype='float32')
-        return ref_energy, ddg_array, chem_affinities
-    
-    def f_dg(x, data):
+    def f_dg(x, data, penalized=True):
         """Calculate the loss.
         
         """
-        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
         rv = log_lhd.calc_log_lhd(
-            ref_energy, 
-            ddg_array, 
-            chem_affinities,
+            x.ref_energy, 
+            x.ddg_array, 
+            x.chem_affinities,
+            data,
+            dna_conc, 
+            prot_conc,
+            penalized)
+        return rv
+
+    def f_analytic_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
+            x.ref_energy, 
+            x.ddg_array, 
+            x.chem_affinities,
             data,
             dna_conc, 
             prot_conc)
-        penalty = calc_penalty(ref_energy, ddg_array)
-        return -rv # + penalty
+        return PackedModelParams(ref_energy_grad, ddg_grad, chem_pot_grad)
+
+    def f_FD_grad(x, data):
+        """Calculate the loss.
+        
+        """
+        return approx_fprime(
+            x, f_dg, 1e-3, data).astype('float32')
 
     def f_grad(x, data):
         """Calculate the loss.
         
         """
-        ref_energy, ddg_array, chem_affinities = extract_data_from_array(x)
-        ref_energy_grad, ddg_grad, chem_pot_grad = log_lhd.calc_grad(
-            ref_energy, 
-            ddg_array, 
-            chem_affinities,
+        #return f_FD_grad(x, data)
+        grad = f_analytic_grad(x, data)
+        assert np.isfinite(grad).all()
+        return grad
+
+    def f_hessian(x, data):
+        grad = f_grad(x, data)
+        hessian = log_lhd.calc_hessian(
+            x.ref_energy, 
+            x.ddg_array, 
+            x.chem_affinities,
             data,
             dna_conc, 
             prot_conc)
-        rv = np.array([ref_energy_grad.tolist(),] 
-                      + ddg_grad.ravel().tolist()
-                      + chem_pot_grad.tolist(), 
-                      dtype='float32')
-        return -rv
+        # np.fill_diagonal(rv, grad**2, wrap=False)
+        return PackedModelParams(
+            0.0, hessian, np.zeros(chem_affinities.shape, dtype='float32'))
+    
+    def zero_energies(x, max_num_zeros=2, zeroing_base_thresh=2.0):
+        ref_energy, ddg_array, chem_affinities = x.extract()
+        for j in xrange(2):
+            energy_diffs = (
+                ddg_array.base_portion.max(1) - ddg_array.base_portion.min(1) )
+            max_diff_index = energy_diffs.argmax()
+            if energy_diffs[max_diff_index] < zeroing_base_thresh: 
+                break
+            ref_energy += ddg_array.base_portion[max_diff_index,:].mean()
+            ddg_array.base_portion[max_diff_index,:] = 0
+        x.update(ref_energy, ddg_array, chem_affinities)
+        return x
+    
+    def update_x(x, delta_x, max_update=0.20):
+        if np.abs(delta_x).max() > max_update:
+            delta_x = max_update*delta_x.copy()/np.abs(delta_x).max()
+        # zero the reference energy and chem affinity updates
+        delta_x[0] = 0
+        delta_x[-len(x.chem_affinities):] = 0
+        # update x
+        x -= delta_x
 
-    def f_grad2(x, data):
-        """Calculate the loss.
+        # normalize the base contributions
+        ref_energy, ddg_array, chem_affinities = x.extract()
+        ref_energy = ref_energy + ddg_array.base_portion.min(1).sum()
+        ddg_array.base_portion[:,:] -= ddg_array.base_portion.min(1)[:,None]
         
-        """
-        return approx_fprime(
-            x0, f_dg, 1e-3, data).astype('float32')
+        # update the parameter values
+        return x.update(ref_energy, ddg_array, chem_affinities)
 
+    def estimate_chemical_affinities(x0):
+        mo = EnergeticDNABindingModel(x0.ref_energy, x0.ddg_array)
+        return estimate_chem_affinities_for_selex_experiment(
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs, 
+            partitioned_and_coded_rnds_and_seqs.max_rnd, 
+            mo, dna_conc, prot_conc)
+    
     # ada delta
     validation_lhds = []
     train_lhds = []
     xs = []
-    def ada_delta(x0, UPDATE_BASE_CONTS):
-        # from http://arxiv.org/pdf/1212.5701.pdf
-        e = 1e-6
-        p = 0.5
-        grad_sq = np.zeros(len(x0), dtype='float32')
-        delta_x_sq = np.zeros(len(x0), dtype='float32')
-        
-        eps = 1.0
-        num_small_decreases = 0
+    def fit(x0):
+        avg_delta_x = np.zeros(len(x0), dtype='float32')
+
+        old_validation_lhd = float('-inf')
+
+        num_burn_in_iter = 500
+        min_iter_for_convergence = 500 
+        rounds_since_update = 0        
+        best = float('-inf')
+        train_index = None
         valid_train_indices = range(
             len(partitioned_and_coded_rnds_and_seqs.train))
         random.shuffle(valid_train_indices)
+        adam_opt = AdamOptimizer(x0)
+        ada_delta_opt = AdaDeltaOptimizer(x0)
+        line_search_opt = LineSearchOptimizer(x0)
         for i in xrange(MAX_NUM_ITER):
-            if len(valid_train_indices) == 0:
-                valid_train_indices = range(
-                    len(partitioned_and_coded_rnds_and_seqs.train))
-                random.shuffle(valid_train_indices)
-            train_index = valid_train_indices.pop()
-            assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
-            grad = f_grad(
-                x0.astype('float32'), 
-                partitioned_and_coded_rnds_and_seqs.train[train_index])
-            grad_sq = p*grad_sq + (1-p)*(grad**2)
-            delta_x = -grad/np.sqrt(grad_sq + e) # np.sqrt(delta_x_sq + e) 
-            delta_x_sq = p*delta_x_sq + (1-p)*(delta_x**2)
-            x0[0] += delta_x.clip(-1, 1)[0] #grad #delta
-            if UPDATE_BASE_CONTS:
-                x0[1:-len(init_chem_affinities)] += delta_x.clip(
-                    -0.1, 0.1)[1:-len(init_chem_affinities)] 
-            #x0[-len(init_chem_affinities):] += delta_x.clip(
-            #    -1, 1)[-len(init_chem_affinities):] #grad #delta
-            train_lhd = -f_dg(
+            if True:
+                if len(valid_train_indices) == 0:
+                    valid_train_indices = range(
+                        len(partitioned_and_coded_rnds_and_seqs.train))
+                    random.shuffle(valid_train_indices)
+                train_index = valid_train_indices.pop()
+                assert train_index < len(partitioned_and_coded_rnds_and_seqs.train)
+                data = partitioned_and_coded_rnds_and_seqs.train[train_index]
+            else:
+                data = partitioned_and_coded_rnds_and_seqs.data
+
+            # use the hessian informed line search
+            grad = f_grad(x0, data)
+            if False:
+                delta_x = line_search_opt(grad)
+            # use Adam
+            if True:
+                delta_x = adam_opt(grad)
+            # use Ada delta
+            if False:
+                delta_x = ada_delta_opt(grad)
+
+            # update the parameter 
+            x0 = update_x(x0, delta_x)
+            # store a running average to decide when we can stop
+            avg_delta_x = 0.95*avg_delta_x + 0.05*delta_x
+
+            # calcualte the chemical affinity imbalance to decide if they need
+            # to be updated
+            chem_affinity_imbalance = log_lhd.calc_log_unbnd_frac(
+                x0.ref_energy, 
+                x0.ddg_array, 
+                x0.chem_affinities,
+                partitioned_and_coded_rnds_and_seqs.validation,
+                dna_conc, 
+                prot_conc)
+
+            #validation_lhd = -f_dg(
+            #    x0, partitioned_and_coded_rnds_and_seqs.validation)
+            train_lhd = 0 if train_index is None else -f_dg(
                 x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            validation_lhd = -f_dg(
-                x0, partitioned_and_coded_rnds_and_seqs.validation)
 
-            ref_energy, ddg_array, chem_affinities = extract_data_from_array(x0)
-            print
-            print grad[0].round(2)
-            print grad[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).T.round(2)
-            print grad[-len(chem_affinities):].round(2)
-            print 
-            print delta_x[0].round(2)
-            print delta_x[1:-len(chem_affinities)
-                ].reshape(ddg_array.shape).T.round(2)
-            print delta_x[-len(chem_affinities):].round(2)
-
-            #print f_grad2(
-            #    x0, partitioned_and_coded_rnds_and_seqs.train[train_index])
-            summary = ddg_array.summary_str(ref_energy)
+            unpenalized_validation_lhd = f_dg(x0, data, True)
+            #train_lhd = unpenalized_validation_lhd
+                                    
+            summary = "\n\n"
+            summary += "Delta x\n" + str( 
+                avg_delta_x[1:-len(x0.chem_affinities)].reshape(
+                    x0.ddg_array.shape).round(6)) + "\n"
+            summary += x0.ddg_array.summary_str(x0.ref_energy)
             summary += "\n" + "\n".join((
-                "Chem Affinities: %s" % (str(chem_affinities.round(2))),
-                "Train: %s (%i)" % (train_lhd, train_index),
-                "Validation: %s" % validation_lhd,
-                "Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum())
-                ))
-            
+                "Chem Affinities: %s" % (str(x0.chem_affinities.round(2))),
+                "Imbalance: %s" % (str(chem_affinity_imbalance.round(2))),
+                "Energy Diffs: %s" % (
+                    x0.ddg_array.base_portion.max(1)
+                    -x0.ddg_array.base_portion.min(1)),
+                "Train: %s (%s)" % (train_lhd, train_index),
+                #"Validation: %s" % validation_lhd,
+                #"Grad L2 Norm: %.2f" % math.sqrt((grad**2).sum()),
+                "Delta X L1 Norm: %.4f" % (np.abs(avg_delta_x)).sum(),
+                "Real Lhd: %s" % unpenalized_validation_lhd,
+                "%i Stop Crit: %.2f\t%.3f\t%i\t%i" % ( 
+                    i,
+                    unpenalized_validation_lhd, best, 
+                    rounds_since_update, min_iter_for_convergence)
+            ))
             pyTFbindtools.log(summary, 'DEBUG')
-            #raw_input()
-            train_lhds.append(train_lhd)
-            validation_lhds.append(validation_lhd)
-            xs.append(x0)
-            min_iter = 4*len(partitioned_and_coded_rnds_and_seqs.train)
-            best = float('-inf')
-            if i > 2*min_iter:
-                old_median = np.median(validation_lhds[-2*min_iter:-min_iter])
-                new_max = max(validation_lhds[-min_iter:])
-                if new_max > best: best = new_max
-                print "Stop Crit:", old_median, new_max, new_max-old_median, best
-                #if old_median - new_max > -1e-2 or best - 1e-2 > new_max:
-                #    break
+            
+            if i%(num_burn_in_iter/5) == 0 and i <= num_burn_in_iter:
+                x0 = zero_energies(x0)
+                        
+            train_lhds.append(train_lhd) #train_lhd)
+            validation_lhds.append(unpenalized_validation_lhd)
+            xs.append(x0.copy())
+            
+            if i > num_burn_in_iter + 10:
+                if np.isfinite(unpenalized_validation_lhd) \
+                   and unpenalized_validation_lhd > best: 
+                    best = unpenalized_validation_lhd
+                    rounds_since_update = 0
+                if ( np.abs(avg_delta_x).sum() < 0.01 ):
+                    rounds_since_update += 1
+                if rounds_since_update > min_iter_for_convergence:
+                    break
 
         x_hat_index = np.argmax(np.array(validation_lhds))
         return xs[x_hat_index]
     
     bs_len = init_ddg_array.motif_len    
 
-    x0 = init_ddg_array.copy().astype('float32')
-    x0 = np.insert(x0, 0, init_ref_energy)
-    x0 = np.append(x0, init_chem_affinities)
-    print x0
-    x = ada_delta(x0, True)
-    #x2 = ada_delta(x1, False)
-    #x = ada_delta(x2, True)
-    ref_energy, ddg_array = extract_data_from_array(x)
+    x0 = PackedModelParams(
+        init_ref_energy, init_ddg_array, init_chem_affinities)
+    x = fit(x0)
+    ref_energy, ddg_array, chem_affinities = x.extract()
     validation_lhd = log_lhd.calc_log_lhd(
         ref_energy, 
         ddg_array, 
+        chem_affinities,
         partitioned_and_coded_rnds_and_seqs.validation,
         dna_conc, 
         prot_conc)
 
-    return ddg_array, ref_energy, validation_lhds, validation_lhd
+    return ddg_array, ref_energy, chem_affinities, validation_lhds, validation_lhd
 
 def sample_random_seqs(n_sims, seq_len):
     return ["".join(random.choice('ACGT') for j in xrange(seq_len))
             for i in xrange(n_sims)]
 
-def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
+def find_best_shift(coded_seqs, binding_model, coded_bg_seqs=None):
     def find_flanking_base_cnts(seqs, base_offset):
         # calculate the ddg energies for all binding sites. We use this to align
         # the binding sities within the sequences
         # find the index of the best offset
-        energies = log_lhd.calc_binding_site_energies(seqs, ddg_array)
+        energies = np.array(
+            binding_model.score_seqs_binding_sites(seqs, 'MAX'))
         best_offsets = np.argmin(energies, 1)
-
+        
         ## find the binding sites which align to the sequence boundary. We must 
         ## remove these because the flanking sequence is not random, and so it
         ## will bias the results
         # deal with left shifts
         if base_offset > 0:
-            base_offset += (ddg_array.motif_len - 1)
+            base_offset += (binding_model.motif_len - 1)
         base_indices = best_offsets + base_offset
         # find which offsets fit inside of the random portion of the sequence
         valid_indices = (base_indices > 0)&(base_indices < seq_len)
         base_cnts = seqs.one_hot_coded_seqs[
-            valid_indices,:,base_indices[valid_indices]].sum(0)
-        # add in the A counts
-        base_cnts = np.insert(
-            base_cnts, 0, valid_indices.sum()-base_cnts.sum())
+            valid_indices,base_indices[valid_indices],:].sum(0)
         return base_cnts
 
     def calc_entropy(cnts):
@@ -485,8 +732,8 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
     #    np.random.choice(coded_bg_seqs.shape[0], sample_size),:,:]
     
     entropies_and_offsets = []
-    for offset in chain(xrange(max(-3, -seq_len+ddg_array.motif_len+1), 0), 
-                        xrange(1,min(4, seq_len-ddg_array.motif_len))):
+    for offset in chain(xrange(max(-3, -seq_len+binding_model.motif_len+1), 0), 
+                        xrange(1,min(4, seq_len-binding_model.motif_len))):
         cnts = find_flanking_base_cnts(coded_seqs, offset)
         bg_cnts = find_flanking_base_cnts(coded_bg_seqs, offset)
         t_stat, p_value = estimate_entropy_significance(cnts, bg_cnts)
@@ -514,36 +761,63 @@ def find_best_shift(coded_seqs, ddg_array, coded_bg_seqs=None):
     return 'LEFT'
 
 FitSelexModel = namedtuple("FitSelexModel", [
-    'ddg_array', 'ref_energy', 
+    'energetic_model', 
     'lhd_path', 'lhd_hat', 
     'prev_validation_lhd', 'new_validation_lhd']
 )
 
+def extend_binding_model(mo, seqs, bg_seqs):
+    pyTFbindtools.log("Finding best shift", 'VERBOSE')
+    shift_type = find_best_shift(seqs, mo, bg_seqs)
+    if shift_type == None:
+        return None
+
+    if shift_type == 'LEFT':
+        pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
+        ddg_array = np.vstack(
+            (np.zeros(mo.ddg_array.shape[1], dtype='float32'), 
+             mo.ddg_array)
+        ).view(DeltaDeltaGArray)
+    elif shift_type == 'RIGHT':
+        pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
+        ddg_array = np.vstack(
+            (mo.ddg_array, 
+             np.zeros(mo.ddg_array.shape[1], dtype='float32'))
+        ).view(DeltaDeltaGArray)
+    else:
+        assert False, "Unrecognized shift type '%s'" % shift_type
+    return EnergeticDNABindingModel(
+        mo.ref_energy, ddg_array, **mo.meta_data)
+
 def progressively_fit_model(
         partitioned_and_coded_rnds_and_seqs,
-        ddg_array, 
-        ref_energy, 
+        initial_model, 
         chem_affinities,
         dna_conc, 
         prot_conc):    
-    pyTFbindtools.log("Compiling likleihood function", 'VERBOSE')
-    log_lhd.calc_log_lhd, log_lhd.calc_grad = log_lhd.theano_log_lhd_factory(
-        partitioned_and_coded_rnds_and_seqs.train[0])
-    pyTFbindtools.log("Starting optimization", 'VERBOSE')
+    #pyTFbindtools.log("Compiling OLD likelihood function", 'VERBOSE')
+    #log_lhd.numerical_log_lhd = log_lhd.numerical_log_lhd_factory()
 
+    pyTFbindtools.log("Compiling likelihood function", 'VERBOSE')
+    (log_lhd.calc_log_lhd, log_lhd.calc_grad, log_lhd.calc_hessian, log_lhd.calc_log_unbnd_frac
+     ) = log_lhd.theano_log_lhd_factory(
+        partitioned_and_coded_rnds_and_seqs.train[0])
+
+    pyTFbindtools.log("Starting optimization", 'VERBOSE')
+    curr_mo = initial_model
     while True:
-        bs_len = ddg_array.motif_len
+        i = curr_mo.motif_len
         prev_validation_lhd = log_lhd.calc_log_lhd(
-            ref_energy, ddg_array, chem_affinities,
-            partitioned_and_coded_rnds_and_seqs.validation,
+            curr_mo.ref_energy, curr_mo.ddg_array, chem_affinities,
+            partitioned_and_coded_rnds_and_seqs.data, # validation
             dna_conc, prot_conc)
         pyTFbindtools.log("Starting lhd: %.2f" % prev_validation_lhd, 'VERBOSE')
         
         pyTFbindtools.log("Estimating energy model", 'VERBOSE')
-        ( ddg_array, ref_energy, lhd_path, lhd_hat 
-            ) = estimate_dg_matrix_with_adadelta(
+        ( ddg_array, ref_energy, chem_affinities, lhd_path, lhd_hat 
+            ) = estimate_dg_matrix(
                 partitioned_and_coded_rnds_and_seqs,
-                ddg_array, ref_energy, chem_affinities,
+                curr_mo.ddg_array, curr_mo.ref_energy, chem_affinities,
                 dna_conc, prot_conc)
 
         summary = ddg_array.summary_str(ref_energy)
@@ -568,40 +842,26 @@ def progressively_fit_model(
             new_validation_lhd-prev_validation_lhd
         ), 'VERBOSE')
 
-        yield FitSelexModel( ddg_array, 
-                             ref_energy, 
+        curr_mo = EnergeticDNABindingModel(
+            ref_energy, ddg_array, **initial_model.meta_data)
+
+        yield FitSelexModel( curr_mo, 
                              lhd_path, 
                              lhd_hat, 
                              prev_validation_lhd, 
                              new_validation_lhd)
-        
-        if ( bs_len >= MAX_BS_LEN
-             or bs_len+1 >= partitioned_and_coded_rnds_and_seqs.seq_length):
+
+        if ( curr_mo.motif_len >= MAX_BS_LEN
+             or curr_mo.motif_len+2 >= partitioned_and_coded_rnds_and_seqs.seq_length):
             break
-        
-        pyTFbindtools.log("Finding best shift", 'VERBOSE')
-        shift_type = find_best_shift(
+        # extend the mnodel twice to break palindrome symmetry
+        curr_mo = extend_binding_model(
+            curr_mo, 
             partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
-            ddg_array,
             partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
-        if shift_type == None:
-            pyTFbindtools.log("Model has finished fitting", 'VERBOSE')
-            break
-            
-        if shift_type == 'LEFT':
-            pyTFbindtools.log("Adding left base to motif", level='VERBOSE' )
-            ddg_array = np.hstack(
-                (np.zeros((ddg_array.shape[0], 1), dtype='float32'), 
-                 ddg_array)
-            ).view(ReducedDeltaDeltaGArray)
-        elif shift_type == 'RIGHT':
-            pyTFbindtools.log("Adding right base to motif", level='VERBOSE' )
-            ddg_array = np.hstack(
-                (ddg_array, 
-                 np.zeros((ddg_array.shape[0], 1), dtype='float32'))
-            ).view(ReducedDeltaDeltaGArray)
-        else:
-            assert False, "Unrecognized shift type '%s'" % shift_type
-        ref_energy = ref_energy
-        
+        curr_mo = extend_binding_model(
+            curr_mo, 
+            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
+            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
+
     return
