@@ -6,7 +6,7 @@ import numpy as np
 import json
 import os
 
-from pyTFbindtools.sequence import code_seq
+from pyTFbindtools.sequence import one_hot_encode_sequence
 from pyTFbindtools.peaks import FastaPeaksAndLabels
 from pyTFbindtools.cross_validation import (
     ClassificationResult, 
@@ -60,7 +60,7 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), 4, pk_width), dtype='float32')
+    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
     for i, pk in enumerate(peaks):
         if pk.seq is not None:
             seq = pk.seq
@@ -68,9 +68,10 @@ def encode_peaks_sequence_into_binary_array(peaks, fasta):
             seq = fasta.fetch(pk.contig, pk.start, pk.stop)
         # skip sequences overrunning the contig boundary
         if len(seq) != pk_width: continue
-        coded_seq = code_seq(seq)
-        data[i] = coded_seq[0:4,:]
-    return data
+        coded_seq = one_hot_encode_sequence(seq)
+        data[i] = coded_seq
+    # swap base and position axes
+    return data.swapaxes(1,2)
 
 def add_reverse_complements(X, y):
     return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
