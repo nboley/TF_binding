@@ -6,6 +6,7 @@ import random
 import cPickle as pickle
 
 import numpy as np
+from sklearn.cross_validation import StratifiedKFold
 
 from pysam import TabixFile
 
@@ -23,7 +24,8 @@ def getFileHandle(filename, mode="r"):
 
 NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 
-                   'score', 'signalValue', 'pValue', 'qValue', 'idrValue'])
+                   'score', 'signalValue', 'pValue', 'qValue', 'idrValue', 'seq'])
+NarrowPeakData.__new__.__defaults__ = (None,) * len(NarrowPeakData._fields)
 
 class NarrowPeak(NarrowPeakData):
     @property
@@ -86,7 +88,7 @@ class PeaksAndLabels():
     @property
     def max_peak_width(self):
         return max(self.peak_widths)
-    
+
     def __init__(self, peaks_and_labels):
         # split the peaks and labels into separate columns. Also
         # keep track of the distinct samples and contigs
@@ -121,19 +123,45 @@ class PeaksAndLabels():
                 and pk_and_label.peak.contig in contigs
             )
 
-    def remove_zero_labeled_entries(self):
+    def remove_data(self, sample_names, contigs):
+        '''return data not covering sample_names and contigs                                                                                                                             
+        '''
+        return PeaksAndLabels(
+                pk_and_label for pk_and_label in self
+                if pk_and_label.sample not in sample_names
+                and pk_and_label.peak.contig not in contigs
+            )
+
+    def remove_ambiguous_labeled_entries(self):
         '''return subset of data wityh nonzero labels
         '''
         return PeaksAndLabels(
                 pk_and_label for pk_and_label in self 
-                if pk_and_label.label != 0
+                if pk_and_label.label != -1
             )
 
-    def iter_train_validation_subsets(self):
+    def iter_train_validation_subsets(
+            self, validation_contigs=None, single_celltype=False):
         for train_indices, valid_indices in iter_train_validation_splits(
-                self.sample_ids, self.contigs):
+                self.sample_ids, self.contigs,
+                validation_contigs, single_celltype):
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
+
+class FastaPeaksAndLabels(PeaksAndLabels):
+    @staticmethod
+    def __name__():
+        return 'FastaPeaksAndLabels'
+
+    def subset_data(self, subset_indices):
+        return FastaPeaksAndLabels(
+            self[index] for index in subset_indices)
+
+    def iter_train_validation_subsets(self):
+        skf = StratifiedKFold(self.labels, n_folds=5)
+        for train_indices, valid_indices in skf:
+            yield (self.subset_data(train_indices),
+                   self.subset_data(valid_indices))
 
 def iter_summit_centered_peaks(original_peaks, half_peak_width):
     for peak in original_peaks:
@@ -181,10 +209,11 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
         except IndexError: qValue = -1.0
         # idr Value's dont exist in narrowPeakFiles
         idrValue = -1.0
+        seq = None
         
         yield NarrowPeak(
             chrm, start, stop, summit, 
-            score, signalValue, pValue, qValue, idrValue)
+            score, signalValue, pValue, qValue, idrValue, seq)
 
     return
 
@@ -200,6 +229,59 @@ def load_labeled_peaks_from_beds(
             yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
     return PeaksAndLabels(iter_all_pks())
 
+def iter_fasta(fp, max_n_peaks=None):
+    '''
+    convert fasta data into NarrowPeak
+    '''
+    if isinstance(fp, str):
+        raise ValueError, "Expecting filepointer"
+    
+    all_lines = [line for line in fp]
+    score = -1.0
+    signalValue = -1.0
+    pValue = -1.0
+    qValue = -1.0
+    idrValue = -1.0
+    start = 0
+    def parse_seq_list(seq_list, start=0):
+        seq = ''.join(seq_list)
+        stop = len(seq)
+        return seq, stop, int((stop-start)/2)
+    name, seq_list = None, []
+    for i, line in enumerate(all_lines):
+        if max_n_peaks != None and i > max_n_peaks:
+            break
+        line = line.rstrip()
+        if line.startswith(">"):
+            if name:
+                seq, stop, summit = parse_seq_list(seq_list)
+                yield NarrowPeak(
+                    name, start, stop, summit,
+                    score, signalValue, pValue, qValue, idrValue,
+                    seq)
+            name, seq_list = line, []
+        else:
+            seq_list.append(line)
+    if name is not None and (max_n_peaks == None or i > max_n_peaks):
+            seq, stop, summit = parse_seq_list(seq_list)
+            yield NarrowPeak(
+                name, start, stop, summit,
+                score, signalValue, pValue, qValue, idrValue, seq)
+
+def load_labeled_peaks_from_fastas(
+        pos_sequences_fp, neg_sequences_fp,
+        max_num_peaks_per_sample=None):
+    def iter_all_seqs():        
+        for pos_pk in iter_fasta(pos_sequences_fp, 
+                                 max_num_peaks_per_sample):
+            assert pos_pk.pk_width==len(pos_pk.seq)
+            yield PeakAndLabel(pos_pk, 'sample', 1, pos_pk.signalValue)
+        for neg_pk in iter_fasta(neg_sequences_fp,
+                                 max_num_peaks_per_sample):
+            assert neg_pk.pk_width==len(neg_pk.seq)
+            yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
+    peaks_and_labels = FastaPeaksAndLabels(iter_all_seqs())
+    return peaks_and_labels
 
 chipseq_peaks_tabix_file_cache = {}
 def label_and_score_peak_with_chipseq_peaks(
@@ -249,7 +331,7 @@ def label_and_score_peak_with_chipseq_peaks(
             labels.append(1)
             scores.append(score) # XXX
         else:
-            labels.append(-1)
+            labels.append(0)
             scores.append(0)
     return labels, scores
 
@@ -302,17 +384,17 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                 # set the label to zero if there is no clean peak set
                 # (in this case all peaks will be labeled -1 or 1 )
                 # aggregate labels by taking the max over all labels
-                label, score = -1, 0
+                label, score = 0, 0
                 if len(labels) > 0:
                     assert len(scores) > 0
                     label = max(labels)
                     score = max(scores)
-                if include_ambiguous_peaks and label == -1:
+                if include_ambiguous_peaks and label == 0:
                     (relaxed_labels, relaxed_scores
                          ) = label_and_score_peak_with_chipseq_peaks(
                              ambiguous_sample_chipseq_peak_fnames, pk)
                     if max(relaxed_labels) == 1:
-                        label = 0
+                        label = -1
                         score = max(relaxed_scores)
                 
                 yield PeakAndLabel(pk, sample_id, label, score)
