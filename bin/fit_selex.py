@@ -21,8 +21,6 @@ from pyTFbindtools.selex import (
     progressively_fit_model, find_pwm, sample_random_seqs,
     estimate_chem_affinities_for_selex_experiment)
 
-INCLUDE_SHAPE = True
-
 """
 SELEX and massively parallel sequencing  
 Sequence of the DNA ligand is described in Supplemental Table S3. The ligands 
@@ -243,12 +241,13 @@ def initialize_starting_motif(
         pwm_fp, 
         energy_mo_fp, 
         rnds_and_seqs,
-        initial_binding_site_len):
+        initial_binding_site_len,
+        include_shape):
     assert (pwm_fp is None) or (energy_mo_fp is None), \
         "Cant initialize a motif from both a pwm and energy model"
     if pwm_fp is not None:
         return load_binding_model(pwm_fp.name).build_energetic_model(
-            include_shape=INCLUDE_SHAPE)
+            include_shape=include_shape)
     elif energy_mo_fp is not None:
         return load_binding_model(energy_mo_fp.name)
     else:
@@ -258,7 +257,7 @@ def initialize_starting_motif(
         bs_len = initial_binding_site_len
         pwm = find_pwm(rnds_and_seqs, initial_binding_site_len)
         pwm_model = PWMBindingModel(pwm)
-        rv = pwm_model.build_energetic_model(include_shape=INCLUDE_SHAPE)
+        rv = pwm_model.build_energetic_model(include_shape=include_shape)
         return rv
     assert False
 
@@ -305,6 +304,8 @@ def parse_arguments():
     
     parser.add_argument( '--initial-binding-site-len', type=int, default=7,
         help='The starting length of the binding site (this will grow)')
+    parser.add_argument( '--include-shape', default=False, action='store_true',
+        help='Use shape features when estimating hte binding affinity')
 
     parser.add_argument( '--random-seed', type=int,
                          help='Set the random number generator seed.')
@@ -371,7 +372,8 @@ def parse_arguments():
         args.starting_pwm,
         args.starting_energy_model,
         rnds_and_seqs,
-        args.initial_binding_site_len)
+        args.initial_binding_site_len,
+        args.include_shape)
     # close the starting motif files
     if args.starting_pwm is not None: 
         args.starting_pwm.close()
@@ -401,6 +403,9 @@ def fit_model(rnds_and_seqs, background_seqs,
     partitioned_and_coded_rnds_and_seqs = PartitionedAndCodedSeqs(
         rnds_and_seqs, 
         background_seqs, 
+        include_shape_features = (
+            True if initial_model.encoding_type == 'ONE_HOT_PLUS_SHAPE' 
+            else False),
         use_full_background_for_part_fn=(not partition_background_seqs)
     )
     model_meta_data = dict(initial_model.meta_data.iteritems())

@@ -37,9 +37,7 @@ EXPECTED_MEAN_ENERGY = -3.0
 CONSTRAIN_BASE_ENERGY_DIFF = True
 MAX_BASE_ENERGY_DIFF = 6.0
 
-USE_SHAPE = True
-
-MAX_BS_LEN = 18
+MAX_BS_LEN = 12
 
 RC_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
 base_map_dict = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 0: 0, 1: 1, 2: 2, 3: 3}
@@ -84,11 +82,15 @@ class CodedSeqs(object):
         self.shape_coded_fwd_seqs = shape_coded_fwd_seqs
         self.shape_coded_RC_seqs = shape_coded_RC_seqs
 
-        self.seqs = np.dstack([
-            self.one_hot_coded_seqs, 
-            self.shape_coded_fwd_seqs, 
-            self.shape_coded_RC_seqs
-        ])
+        if self.shape_coded_fwd_seqs is not None:
+            assert self.shape_coded_fwd_seqs is not None 
+            self.seqs = np.dstack([
+                self.one_hot_coded_seqs, 
+                self.shape_coded_fwd_seqs, 
+                self.shape_coded_RC_seqs
+            ])
+        else:
+            self.seqs = self.one_hot_coded_seqs
 
     def iter_coded_seq_splits(self, n_partitions):
         for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
@@ -237,6 +239,7 @@ class PartitionedAndCodedSeqs(object):
     def __init__(self, 
                  rnds_and_seqs, 
                  background_seqs, 
+                 include_shape_features,
                  use_full_background_for_part_fn=True, 
                  n_partitions=None):
         # set the sequence length
@@ -254,9 +257,9 @@ class PartitionedAndCodedSeqs(object):
         # store the full coded sequence arrays
         self.coded_seqs = {}
         for rnd, seqs in rnds_and_seqs.iteritems():
-            self.coded_seqs[rnd] = code_seqs(seqs, USE_SHAPE)
+            self.coded_seqs[rnd] = code_seqs(seqs, include_shape_features)
             assert self.seq_length == self.coded_seqs[rnd].seq_length
-        self.coded_bg_seqs = code_seqs(background_seqs, USE_SHAPE)
+        self.coded_bg_seqs = code_seqs(background_seqs, include_shape_features)
         assert self.seq_length == self.coded_bg_seqs.seq_length
         self.data = SelexData(
             self.coded_bg_seqs, self.coded_seqs)
@@ -512,7 +515,7 @@ def estimate_dg_matrix(
         return PackedModelParams(
             0.0, hessian, np.zeros(chem_affinities.shape, dtype='float32'))
     
-    def zero_energies(x, max_num_zeros=2, zeroing_base_thresh=1.0):
+    def zero_energies(x, max_num_zeros=2, zeroing_base_thresh=2.0):
         ref_energy, ddg_array, chem_affinities = x.extract()
         for j in xrange(2):
             energy_diffs = (

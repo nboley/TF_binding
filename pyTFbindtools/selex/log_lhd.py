@@ -378,16 +378,21 @@ def theano_calc_affinities(seqs, ref_energy, ddg, ddg_shape_cont):
     # ignore the RC A's by ignoring the forward T's by using seqs[:,:,:3]
     # for the reverse complement affinities
     rc_bs_base_affinities = ref_energy + theano_conv2d(seqs[:,:,0:4], ddg)[:,:,0]
-    # stack the affinities, and then take the min at each bing site
 
-    fwd_bs_shape_affinities = theano_conv2d(
-        seqs[:,:,4:10], ddg_shape_cont[::-1,::-1])[:,:,0]
-    rc_bs_shape_affinities = theano_conv2d(
-        seqs[:,:,10:16], ddg_shape_cont)[::-1,:,0]
+    # stack the affinities, and then take the min at each binding site
+    if ddg_shape_cont is not None:
+        fwd_bs_shape_affinities = theano_conv2d(
+            seqs[:,:,4:10], ddg_shape_cont[::-1,::-1])[:,:,0]
+        fwd_bs_affinities = fwd_bs_base_affinities + fwd_bs_shape_affinities
 
-    bs_affinities = TT.stack(
-        fwd_bs_base_affinities + fwd_bs_shape_affinities, 
-        rc_bs_base_affinities + rc_bs_shape_affinities).min(0) 
+        rc_bs_shape_affinities = theano_conv2d(
+            seqs[:,:,10:16], ddg_shape_cont)[::-1,:,0]
+        rc_bs_affinities = rc_bs_base_affinities + rc_bs_shape_affinities
+    else:
+        fwd_bs_affinities = fwd_bs_base_affinities
+        rc_bs_affinities = rc_bs_base_affinities
+
+    bs_affinities = TT.stack(fwd_bs_affinities, rc_bs_affinities).min(0) 
     seq_affinities = -softmax(-bs_affinities, axis=1) # bs_affinities.min(1)
 
     return seq_affinities
@@ -562,8 +567,8 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
     penalized_lhd = ( 
         lhd 
         #- 100*TT.sum(log_unbnd_imbalance**2)
-        - 100*TT.exp((-3-mean_energy)**2)
-        - 100*TT.sum(TT.exp(TT.max(ddg_base_portion, axis=1) 
+        - 100*TT.exp((-6-mean_energy)**2)
+        - 100*TT.sum(TT.exp(-2+TT.max(ddg_base_portion, axis=1)
                             - TT.min(ddg_base_portion, axis=1)))
     )
     #penalized_lhd = lhd
