@@ -22,7 +22,8 @@ from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
 from keras.models import Sequential
 from keras.layers.core import (
-    Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute)
+    Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute,
+    Flatten )
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_json
@@ -116,7 +117,7 @@ def set_ambiguous_labels(labels, scores, threshold):
 class KerasModelBase():
     def __init__(self, peaks_and_labels,
                  use_cached_model=False, target_metric='recall_at_05_fdr',
-                 batch_size=200, num_conv=15, conv_height=4, conv_width=15,
+                 batch_size=200, num_conv=25, conv_height=4, conv_width=8,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
 
@@ -147,14 +148,14 @@ class KerasModelBase():
             stride=(1,maxpool_stride)
         ))
         if model_type=='cnn':
-            self.model.add(Reshape((num_conv*num_maxpool_outputs,)))
+            self.model.add(Flatten())
         elif model_type=='cnn-rnn-tdd':
             self.model.add(Reshape((num_conv,num_maxpool_outputs)))
             self.model.add(Permute((2,1)))
             # make the number of max pooling outputs the time dimension
             self.model.add(GRU(output_dim=gru_size,return_sequences=True))
             self.model.add(TimeDistributedDense(tdd_size,activation="relu"))
-            self.model.add(Reshape((tdd_size*num_maxpool_outputs,)))
+            self.model.add(Flatten())
         else:
             raise ValueError('invalid model type! supported choices are cnn,cnn-rnn-tdd') 
         self.model.add(Dense(1,activation='sigmoid'))
