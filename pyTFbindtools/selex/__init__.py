@@ -67,6 +67,9 @@ class CodedSeqs(object):
             return [None]*n_partitions
         return np.array_split(array, n_partitions)
 
+    def __iter__(self):
+        return self.iter_one_hot_coded_seqs()
+    
     def iter_one_hot_coded_seqs(self):
         for seq in self.one_hot_coded_seqs:
             yield seq.view(CodedDNASeq)
