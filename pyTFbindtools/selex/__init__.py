@@ -26,7 +26,7 @@ from pyTFbindtools.motif_tools import (
     load_motifs, logistic, R, T,
     Motif, load_motif_from_text)
 import pyTFbindtools.sequence
-from pyTFbindtools.shape import code_seqs_shape_features
+from pyDNAbinding.shape import code_seqs_shape_features
 import log_lhd
 
 MAX_NUM_ITER = 10000
