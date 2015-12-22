@@ -18,7 +18,7 @@ import theano
 from pyDNAbinding.binding_model import (
     FixedLengthDNASequences, est_chem_potential_from_affinities, calc_occ,
     EnergeticDNABindingModel, DeltaDeltaGArray )
-from pyDNAbinding.sequence import OneHotCodedDNASeq
+from pyDNAbinding.sequence import CodedDNASeq
 
 import pyTFbindtools
 
@@ -69,7 +69,7 @@ class CodedSeqs(object):
 
     def iter_one_hot_coded_seqs(self):
         for seq in self.one_hot_coded_seqs:
-            yield seq.view(OneHotCodedDNASeq)
+            yield seq.view(CodedDNASeq)
 
     def __init__(self, 
                  one_hot_coded_seqs, 
