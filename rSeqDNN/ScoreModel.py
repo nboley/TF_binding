@@ -9,6 +9,7 @@ from matplotlib import (
     pyplot as plt,
     image as mpimg )
 from pyTFbindtools.peaks import getFileHandle
+from plot import plot_bases
 
 ENCODE_MOTIFS_PATH =  os.path.join(os.getcwd(),'encode_motifs.txt.gz')
 
@@ -201,7 +202,7 @@ def get_encode_pwm_hits(model):
 
     return get_motif_matches(conv_weights, encode_pwms)
 
-def plot_convolutions(model, ofname, rank_dictionary=None):
+def plot_convolutions(model, ofname, rank_dictionary=None, hit_names=None):
     """
     plot convolutions and their ranks (optional).
 
@@ -213,24 +214,25 @@ def plot_convolutions(model, ofname, rank_dictionary=None):
     rank_dictionary : dictionary of ranks, optional
         rank_dictionary['auROC'][j] is the rank of convolution
         j based on contribution to auROC.
+    hit_names : list of string lists
+        hit_names[i][j] is pwn name for jth match to ith convolution
     """
-    scripts_dir = os.environ.get("UTIL_SCRIPTS_DIR")
-    weights, biases = model.layers[0].get_weights()
+    weights, _ = model.layers[0].get_weights()
     num_conv, _, _, conv_width = weights.shape
     if rank_dictionary is not None:
         assert all(len(ranks)==num_conv for ranks in rank_dictionary.values()), \
         "convolution ranks dont match number of convolutions"
-    reshaped_weights = np.reshape(weights, (num_conv, 4, conv_width))
-    temp_fname = "tempFile.txt"
-    for i in xrange(num_conv):
+    weights.squeeze()
+    if hit_names is not None:
+        text_title = '>Top encode pwm matches:\n\n'
+        text_pos = np.shape(weights)[-1] + 1
+    absolute_weights = np.absolute(weights)
+    for i, filter_weights in enumerate(absolute_weights):
         plt.clf()
-        plt.figure(figsize=(12, 12))
-        plt.axis('off')
-        np.savetxt(temp_fname, reshaped_weights[i].T, delimiter='\t')
-        png_fname = "%s.%s.png" % (ofname, str(i))
-        os.system("Rscript %s/logoViz/plotConvFilter.R %s %s %s" % (
-            scripts_dir, temp_fname, png_fname, str(biases[i])))
-        plt.imshow(mpimg.imread(png_fname))
+        plot_bases(filter_weights.T)
+        if hit_names is not None:
+            text_string = text_title+'\n'.join(hit_names[i])
+            plt.text(text_pos, 0, text_string)
         if rank_dictionary is not None:
             rank_strings = [' : '.join(
                 [metric, str(rank_dictionary[metric][i])])
@@ -239,7 +241,7 @@ def plot_convolutions(model, ofname, rank_dictionary=None):
                       (str(i), '\n'.join(rank_strings)) )
         else:
             plt.title("Convolution %s" % str(i))
-        plt.savefig("%s.convolution_%s.png" % (ofname, str(i)))
-        os.system("rm %s" % png_fname)
-    os.system("rm %s" % temp_fname)
+        figure = plt.gcf()
+        figure.savefig("%s.convolution_%s.png" % (ofname, str(i)),
+                       bbox_inches='tight')
     return
