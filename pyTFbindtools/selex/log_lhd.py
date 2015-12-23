@@ -149,6 +149,20 @@ def relu(x):
     return (x + abs(x))/2
 
 def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
+    chem_affinities = TT.vector(dtype=theano.config.floatX)
+
+    bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
+    n_bg_seqs = bg_seqs.shape[0]
+
+    seq_len = bg_seqs.shape[1]
+
+    rnd_seqs = [
+        TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
+        for i in xrange(n_rounds) ]    
+    n_seqs = TT.ones_like(chem_affinities)
+    for rnd in xrange(n_rounds):
+        n_seqs = TT.set_subtensor(n_seqs[rnd], rnd_seqs[rnd].shape[0])
+
     if use_shape:
         n_features_per_base = 10
     else:
@@ -156,11 +170,6 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
     
     dna_conc = TT.scalar(dtype=theano.config.floatX)
     prot_conc = TT.scalar(dtype=theano.config.floatX)
-
-    bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
-
-    seq_len = bg_seqs.shape[1]
-    n_bg_seqs = bg_seqs.shape[0]
     
     ddg_flat = TT.vector(name='ddg', dtype=theano.config.floatX)
     motif_len = ddg_flat.shape[0]/n_features_per_base
@@ -169,15 +178,7 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
     ddg_shape_cont = ddg[:,4:]
 
     ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
-    chem_affinities = TT.vector(dtype=theano.config.floatX)
 
-    rnd_seqs = [
-        TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
-        for i in xrange(n_rounds) ]
-    
-    n_seqs = TT.ones_like(chem_affinities)
-    for rnd in xrange(n_rounds):
-        n_seqs = TT.set_subtensor(n_seqs[rnd], rnd_seqs[rnd].shape[0])
     
     # calculate the sequence affinities
     rnds_seq_affinities = [
@@ -267,6 +268,7 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
     #        bg_seqs, ddg, ref_energy, chem_affinities, dna_conc, prot_conc],
     #    lhd_grad)
 
+    theano_calc_log_unbnd_imbalance = None
     print_bnd_frac = theano.printing.Print('bnd_frac')
     log_unbnd_imbalance = (  
         TT.log(prot_conc) 
@@ -305,7 +307,7 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
             bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         penalized_lhd,
         allow_input_downcast=True)
-    #theano_calc_penalized_lhd_grad = None
+    theano_calc_penalized_lhd_grad = None
     theano_calc_penalized_lhd_grad = theano.function(
         [seqs for seqs in rnd_seqs] + [
             bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
@@ -351,8 +353,16 @@ def theano_log_lhd_factory(initial_coded_seqs):
                   dna_conc, prot_conc):
         coded_seqs_args = []
         for i in sorted(rnds):
-            coded_seqs_args.append(coded_seqs.rnd_seqs[i].seqs)
-        coded_seqs_args.append(coded_seqs.bg_seqs.seqs)
+            coded_seqs_args.append(coded_seqs.rnd_seqs[i].one_hot_coded_seqs)
+            if coded_seqs.have_shape_features:
+                coded_seqs_args.append(coded_seqs.rnd_seqs[i].fwd_shape_features)
+                coded_seqs_args.append(coded_seqs.rnd_seqs[i].rc_shape_features)
+
+        coded_seqs_args.append(coded_seqs.bg_seqs.one_hot_coded_seqs)
+        if coded_seqs.have_shape_features:
+            coded_seqs_args.append(coded_seqs.bg_seqs.fwd_shape_features)
+            coded_seqs_args.append(coded_seqs.bg_seqs.rc_shape_features)
+
         ref_energy = np.array([ref_energy,], dtype='float32')[0]
         args = coded_seqs_args + [
             ddg_array.ravel(), ref_energy, chem_affinities, dna_conc, prot_conc]
@@ -398,7 +408,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs, 
             dna_conc, prot_conc):
         return theano_calc_log_unbnd_imbalance(
-            coded_seqs.bg_seqs.seqs, 
+            coded_seqs.bg_seqs.one_hot_coded_seqs, 
             ddg_array.ravel(), ref_energy, chem_affinities,
             dna_conc, prot_conc)
 

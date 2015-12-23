@@ -31,6 +31,8 @@ import log_lhd
 
 MAX_NUM_ITER = 10000
 
+SPLIT_DATA = False
+
 CONSTRAIN_MEAN_ENERGY = True
 EXPECTED_MEAN_ENERGY = -3.0
 
@@ -61,39 +63,11 @@ def one_hot_encode_sequences(seqs, n_seqs=None, ON_GPU=True):
     #coded_seqs = np.swapaxes(coded_seqs, 1, 2).copy()
     return coded_seqs.copy()
 
-class CodedSeqs(object):
+class SelexSeqs(FixedLengthDNASequences):
     def _array_split_or_none(self, array, n_partitions):
         if array is None: 
             return [None]*n_partitions
         return np.array_split(array, n_partitions)
-
-    def __iter__(self):
-        return self.iter_one_hot_coded_seqs()
-    
-    def iter_one_hot_coded_seqs(self):
-        for seq in self.one_hot_coded_seqs:
-            yield seq.view(CodedDNASeq)
-
-    def __init__(self, 
-                 one_hot_coded_seqs, 
-                 shape_coded_fwd_seqs=None, 
-                 shape_coded_RC_seqs=None):
-        self.n_seqs = one_hot_coded_seqs.shape[0]
-        self.seq_length = one_hot_coded_seqs.shape[1]
-
-        self.one_hot_coded_seqs = one_hot_coded_seqs
-        self.shape_coded_fwd_seqs = shape_coded_fwd_seqs
-        self.shape_coded_RC_seqs = shape_coded_RC_seqs
-
-        if self.shape_coded_fwd_seqs is not None:
-            assert self.shape_coded_fwd_seqs is not None 
-            self.seqs = np.dstack([
-                self.one_hot_coded_seqs, 
-                self.shape_coded_fwd_seqs, 
-                self.shape_coded_RC_seqs
-            ])
-        else:
-            self.seqs = self.one_hot_coded_seqs
 
     def iter_coded_seq_splits(self, n_partitions):
         for (one_hot_seqs, fwd_shape_seqs, RC_shape_seqs
@@ -104,24 +78,12 @@ class CodedSeqs(object):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
         
 def code_seqs(seqs, include_shape):
-    # materialize for now, until we fix the following to work with generator
-    seqs = list(seqs)
-
-    one_hot_coded_seqs = one_hot_encode_sequences(seqs)
-    n_seqs = one_hot_coded_seqs.shape[0]
-    seq_length = one_hot_coded_seqs.shape[1]
-    if not include_shape:
-        shape_coded_fwd_seqs, shape_coded_RC_seqs = None, None
-    else:
-        ( shape_coded_fwd_seqs, shape_coded_RC_seqs 
-            ) = code_seqs_shape_features(seqs, seq_length, n_seqs)
-    return CodedSeqs(
-        one_hot_coded_seqs, shape_coded_fwd_seqs, shape_coded_RC_seqs)
+    return SelexSeqs(seqs, include_shape)
 
 def estimate_chem_affinities_for_selex_experiment(
         bg_seqs, num_rounds, binding_model, dna_conc, prot_conc):
     # if this is a numpy array, assume that they're one hot encoded seqs
-    if isinstance(bg_seqs, CodedSeqs):
+    if isinstance(bg_seqs, SelexSeqs):
         affinities = -(np.array(
             binding_model.score_seqs_binding_sites(bg_seqs, 'MAX')).max(1))
     else:
@@ -232,7 +194,7 @@ class SelexData(_SelexData):
 
     @property
     def have_shape_features(self):
-        return self.bg_seqs.shape_coded_fwd_seqs is not None
+        return self.bg_seqs.have_shape_features
 
 class PartitionedAndCodedSeqs(object):
     @property
@@ -261,12 +223,13 @@ class PartitionedAndCodedSeqs(object):
         self.coded_seqs = {}
         for rnd, seqs in rnds_and_seqs.iteritems():
             self.coded_seqs[rnd] = code_seqs(seqs, include_shape_features)
-            assert self.seq_length == self.coded_seqs[rnd].seq_length
+            assert self.seq_length == self.coded_seqs[rnd].seq_len
         self.coded_bg_seqs = code_seqs(background_seqs, include_shape_features)
-        assert self.seq_length == self.coded_bg_seqs.seq_length
+        assert self.seq_length == self.coded_bg_seqs.seq_len
         self.data = SelexData(
             self.coded_bg_seqs, self.coded_seqs)
         
+        """ Unmaintained partitioning code
         # store views to partitioned subsets of the data 
         self._partitioned_data = [{} for i in xrange(self.n_partitions)]
         for rnd, coded_seqs in self.coded_seqs.iteritems():
@@ -281,7 +244,7 @@ class PartitionedAndCodedSeqs(object):
         else:
             self._partitioned_bg_data = list(
                 self.coded_bg_seqs.iter_coded_seq_splits(self.n_partitions))
-        
+
         self.test = SelexData(
             self._partitioned_bg_data[0], self._partitioned_data[0])
         self.validation = SelexData(
@@ -290,6 +253,7 @@ class PartitionedAndCodedSeqs(object):
             SelexData(self._partitioned_bg_data[i], self._partitioned_data[i])
             for i in xrange(2, self.n_partitions)
         ]
+        """
 
 class AdamOptimizer():
     def __init__(self, x0, alpha=0.01, beta1=0.9, beta2=0.999, eps=1e-8):
@@ -569,14 +533,16 @@ def estimate_dg_matrix(
         rounds_since_update = 0        
         best = float('-inf')
         train_index = None
-        valid_train_indices = range(
-            len(partitioned_and_coded_rnds_and_seqs.train))
-        random.shuffle(valid_train_indices)
+        valid_train_indices = None
+        if SPLIT_DATA:
+            valid_train_indices = range(
+                len(partitioned_and_coded_rnds_and_seqs.train))
+            random.shuffle(valid_train_indices)
         adam_opt = AdamOptimizer(x0)
         ada_delta_opt = AdaDeltaOptimizer(x0)
         line_search_opt = LineSearchOptimizer(x0)
         for i in xrange(MAX_NUM_ITER):
-            if True:
+            if SPLIT_DATA:
                 if len(valid_train_indices) == 0:
                     valid_train_indices = range(
                         len(partitioned_and_coded_rnds_and_seqs.train))
@@ -609,7 +575,9 @@ def estimate_dg_matrix(
                 x0.ref_energy, 
                 x0.ddg_array, 
                 x0.chem_affinities,
-                partitioned_and_coded_rnds_and_seqs.validation,
+                ( partitioned_and_coded_rnds_and_seqs.validation 
+                  if SPLIT_DATA else
+                  partitioned_and_coded_rnds_and_seqs.data),
                 dna_conc, 
                 prot_conc)
 
@@ -804,7 +772,7 @@ def progressively_fit_model(
     pyTFbindtools.log("Compiling likelihood function", 'VERBOSE')
     (log_lhd.calc_log_lhd, log_lhd.calc_grad, log_lhd.calc_hessian, log_lhd.calc_log_unbnd_frac
      ) = log_lhd.theano_log_lhd_factory(
-        partitioned_and_coded_rnds_and_seqs.train[0])
+         partitioned_and_coded_rnds_and_seqs.data)
 
     pyTFbindtools.log("Starting optimization", 'VERBOSE')
     curr_mo = initial_model
