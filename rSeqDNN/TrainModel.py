@@ -44,9 +44,6 @@ def parse_args():
     test_parser = subparsers.add_parser('test', help='testing help')
     train_parser.add_argument('--model-prefix', default='trainedmodel',
         help='Trained models will be written to (model_prefix).foldnum.h5"')
-    train_parser.add_argument('--use-cached-model',
-                        default=False, action='store_true',
-        help='pickle model during training to avoid recompiling.')
     train_parser.add_argument('--model-file', default=None, type=str,
         help='pickled model architecture to train')
     train_parser.add_argument('--weights-file', type=str, default=None,
@@ -124,7 +121,6 @@ def parse_args():
                   args.include_model_report)
     if args.command=='train':
         command_args = ( args.model_prefix,
-                         args.use_cached_model,
                          args.model_file,
                          args.weights_file,
                          args.jitter_peaks_by,
@@ -143,7 +139,6 @@ def main_train(main_args, train_args):
       validation_contigs,
       include_model_report ) = main_args
     ( model_ofname_prefix,
-      use_cached_model,
       model_fname,
       weights_fname,
       jitter_peaks_by,
@@ -154,7 +149,6 @@ def main_train(main_args, train_args):
     training_data = OrderedDict()
     validation_data = OrderedDict()
     model = KerasModel(peaks_and_labels,
-                       use_cached_model=use_cached_model,
                        target_metric=target_metric)
     if model_fname is not None:
         model.model = load_model(model_fname)
@@ -169,7 +163,7 @@ def main_train(main_args, train_args):
         fit_model = model.train(
             train,
             genome_fasta,
-            '%s.%i.hd5.fit_weights.obj' % (model_ofname_prefix, fold_index+1),
+            '%s.%i' % (model_ofname_prefix, fold_index+1),
             jitter_peaks_by)
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid,

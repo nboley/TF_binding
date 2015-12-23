@@ -116,14 +116,12 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels,
-                 use_cached_model=False, target_metric='recall_at_05_fdr',
+    def __init__(self, peaks_and_labels, target_metric='recall_at_05_fdr',
                  batch_size=200, num_conv=25, conv_height=4, conv_width=8,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
 
         self.batch_size = batch_size
-        self.use_cached_model = use_cached_model
         self.seq_len = peaks_and_labels.max_peak_width
         self.ambiguous_peak_threshold = None
         self.target_metric = target_metric
@@ -165,26 +163,17 @@ class KerasModelBase():
     def curr_model_config_hash(self):
         return abs(hash(str(self.model.get_config())))
 
-    def compile(self, loss='binary_crossentropy', optimizer=Adam(), class_mode="binary"):
+    def compile(self, ofname, loss, optimizer, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
-        fname = "MODEL.%s.%s.obj" % (self.curr_model_config_hash, loss_name)
-        if self.use_cached_model and os.path.exists(os.path.join(os.getcwd(),fname)):
-            try:
-                print "Loading pickled model '%s'" % fname
-                with open(fname, "rb") as fp:
-                    self.model = pickle.load(fp)
-                print "Finished loading pickled model."
-            except IOError:
-                raise ValueError("ERROR loading picked model!exiting!")
-        else:
-            print "compiling model..."
-            self.model.compile(loss=loss,
-                               optimizer=optimizer,
-                               class_mode=class_mode)
-            if self.use_cached_model:
-                print("Saving compiled model to pickle object." )
-                with open(fname, "w") as fp:
-                    pickle.dump(self.model, fp)
+        fname = "%s.MODEL.%s.%s.json" % (
+            ofname, self.curr_model_config_hash, loss_name)
+        print "compiling model..."
+        self.model.compile(loss,
+                           optimizer,
+                           class_mode)
+        print("Serializing compiled model." )
+        json_string = self.model.to_json()
+        open(fname, 'w').write(json_string)
 
     def predict(self, X_validation, verbose=False):
         preds = self.model.predict_classes(X_validation, verbose=int(verbose))
@@ -248,7 +237,7 @@ class KerasModelBase():
 
 class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
-            self, X_train, y_train, X_validation, y_validation, numEpochs):
+            self, X_train, y_train, X_validation, y_validation, ofname):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)
@@ -257,7 +246,7 @@ class KerasModel(KerasModelBase):
         print 'num training negatives: ', sum(b_y_train==0)
         
         print("Compiling model with binary cross entropy loss.")
-        self.compile('binary_crossentropy', Adam())
+        self.compile(ofname, 'binary_crossentropy', Adam())
         early_stopping = EarlyStopping(monitor='val_loss', patience=6)
         self.model.fit(
                 b_X_train, b_y_train,
@@ -272,7 +261,7 @@ class KerasModel(KerasModelBase):
         print self.evaluate(X_validation, y_validation)
         return self
 
-    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, weights_ofname):
+    def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, ofname):
         X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
@@ -280,12 +269,14 @@ class KerasModel(KerasModelBase):
         class_prbs = dict(zip([0, 1],
                               [len(y_train)/float(neg_class_cnt),
                                len(y_train)/float(pos_class_cnt)]))
-        print("Switiching to cross entropy loss function.")
+        print("Switiching to weighted cross entropy loss function.")
         print("Compiling model with cross entropy loss.")
-        self.compile('binary_crossentropy', Adam())
+        weights_ofname = "%s.%s" % (ofname, "fit_weights.hd5")
+        self.model.save_weights(weights_ofname, overwrite=True)
+        self.compile(ofname, 'binary_crossentropy', Adam())
+        self.model.load_weights(weights_ofname)
         res = self.evaluate(X_validation, y_validation)
         best_target_metric = getattr(res, self.target_metric)
-        self.model.save_weights(weights_ofname, overwrite=True)
 
         for epoch in xrange(numEpochs):
             self.model.fit(
@@ -310,7 +301,7 @@ class KerasModel(KerasModelBase):
         return self
 
     def train(self, data, genome_fasta, ofname, jitter_peaks_by,
-              balanced_train_epochs=3, unbalanced_train_epochs=12):
+              unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
         if jitter_peaks_by is not None:
@@ -327,7 +318,7 @@ class KerasModel(KerasModelBase):
 
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
-            X_train, y_train, X_validation, y_validation, balanced_train_epochs)
+            X_train, y_train, X_validation, y_validation, ofname)
 
         print("Fitting full training set with cross entropy loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
