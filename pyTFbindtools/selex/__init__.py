@@ -83,9 +83,11 @@ class SelexSeqs(FixedLengthDNASequences):
         # both the forward and rc shape features, when appropriate
         if self.shape_features is not None:
             self.coded_seqs = np.dstack((
-                self.one_hot_coded_seqs,
-                self.fwd_shape_features,
-                self.rc_shape_features))
+                    self.one_hot_coded_seqs,
+                    self.fwd_shape_features,
+                    self.rc_shape_features)
+            )
+        self.coded_seqs = theano.shared(self.coded_seqs)
 
 def code_seqs(seqs, include_shape):
     return SelexSeqs(seqs, include_shape)

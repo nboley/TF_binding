@@ -148,17 +148,22 @@ def theano_log_sum_log_occs(log_occs):
 def relu(x):
     return (x + abs(x))/2
 
-def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
+def theano_build_lhd_and_grad_fns(data):
+    use_shape = data.have_shape_features
     chem_affinities = TT.vector(dtype=theano.config.floatX)
 
-    bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
+    bg_seqs = data.bg_seqs.coded_seqs
+    #bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
     n_bg_seqs = bg_seqs.shape[0]
 
     seq_len = bg_seqs.shape[1]
 
-    rnd_seqs = [
-        TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
-        for i in xrange(n_rounds) ]    
+    rnd_seqs = [seqs.coded_seqs for seqs in data.rnd_seqs.values()]
+    n_rounds = len(rnd_seqs)
+    
+    #rnd_seqs = [
+    #    TT.tensor3(name='rnd_%iseqs' % (i+1), dtype=theano.config.floatX)
+    #    for i in xrange(n_rounds) ]    
     n_seqs = TT.ones_like(chem_affinities)
     for rnd in xrange(n_rounds):
         n_seqs = TT.set_subtensor(n_seqs[rnd], rnd_seqs[rnd].shape[0])
@@ -260,8 +265,7 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
 
     theano_calc_lhd, theano_calc_grad = None, None
     theano_calc_lhd = theano.function(
-        [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
+        [ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         lhd )
     #theano_calc_grad = theano.function(
     #    [seqs for seqs in rnd_seqs] + [
@@ -280,7 +284,7 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
         )
     )
     theano_calc_log_unbnd_imbalance = theano.function(
-        [bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
+        [ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         log_unbnd_imbalance,
         allow_input_downcast=True)
 
@@ -303,14 +307,12 @@ def theano_build_lhd_and_grad_fns(n_rounds, use_shape):
     
     #theano_calc_penalized_lhd = None
     theano_calc_penalized_lhd = theano.function(
-        [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
+        [ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         penalized_lhd,
         allow_input_downcast=True)
     theano_calc_penalized_lhd_grad = None
     theano_calc_penalized_lhd_grad = theano.function(
-        [seqs for seqs in rnd_seqs] + [
-            bg_seqs, ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
+        [ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         penalized_lhd_grad,
         allow_input_downcast=True
         #mode=NanGuardMode(nan_is_error=False, inf_is_error=False, big_is_error=False)
@@ -345,16 +347,15 @@ def theano_log_lhd_factory(initial_coded_seqs):
       theano_calc_penalized_grad,
       theano_calc_penalized_hessian,
       theano_calc_log_unbnd_imbalance
-    ) = theano_build_lhd_and_grad_fns(
-        max(rnds), initial_coded_seqs.have_shape_features)
+    ) = theano_build_lhd_and_grad_fns(initial_coded_seqs)
     
     def build_args(ref_energy, ddg_array, chem_affinities,
                   coded_seqs, 
                   dna_conc, prot_conc):
         coded_seqs_args = []
-        for i in sorted(rnds):
-            coded_seqs_args.append(coded_seqs.rnd_seqs[i].coded_seqs)
-        coded_seqs_args.append(coded_seqs.bg_seqs.coded_seqs)
+        #for i in sorted(rnds):
+        #    coded_seqs_args.append(coded_seqs.rnd_seqs[i].coded_seqs)
+        #coded_seqs_args.append(coded_seqs.bg_seqs.coded_seqs)
 
         ref_energy = np.array([ref_energy,], dtype='float32')[0]
         args = coded_seqs_args + [
@@ -401,7 +402,6 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs, 
             dna_conc, prot_conc):
         return theano_calc_log_unbnd_imbalance(
-            coded_seqs.bg_seqs.coded_seqs, 
             ddg_array.ravel(), ref_energy, chem_affinities,
             dna_conc, prot_conc)
 
