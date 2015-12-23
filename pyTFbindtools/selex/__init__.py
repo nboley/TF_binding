@@ -76,7 +76,17 @@ class SelexSeqs(FixedLengthDNASequences):
                       self._array_split_or_none(self.shape_coded_RC_seqs, n_partitions)
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
-        
+
+    def __init__(self, *args, **kwargs):
+        FixedLengthDNASequences.__init__(self, *args, **kwargs)
+        # override the FixedLengthDNASequences coded seqs attribute to include
+        # both the forward and rc shape features, when appropriate
+        if self.shape_features is not None:
+            self.coded_seqs = np.dstack((
+                self.one_hot_coded_seqs,
+                self.fwd_shape_features,
+                self.rc_shape_features))
+
 def code_seqs(seqs, include_shape):
     return SelexSeqs(seqs, include_shape)
 

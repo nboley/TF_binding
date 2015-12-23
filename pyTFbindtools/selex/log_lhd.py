@@ -353,15 +353,8 @@ def theano_log_lhd_factory(initial_coded_seqs):
                   dna_conc, prot_conc):
         coded_seqs_args = []
         for i in sorted(rnds):
-            coded_seqs_args.append(coded_seqs.rnd_seqs[i].one_hot_coded_seqs)
-            if coded_seqs.have_shape_features:
-                coded_seqs_args.append(coded_seqs.rnd_seqs[i].fwd_shape_features)
-                coded_seqs_args.append(coded_seqs.rnd_seqs[i].rc_shape_features)
-
-        coded_seqs_args.append(coded_seqs.bg_seqs.one_hot_coded_seqs)
-        if coded_seqs.have_shape_features:
-            coded_seqs_args.append(coded_seqs.bg_seqs.fwd_shape_features)
-            coded_seqs_args.append(coded_seqs.bg_seqs.rc_shape_features)
+            coded_seqs_args.append(coded_seqs.rnd_seqs[i].coded_seqs)
+        coded_seqs_args.append(coded_seqs.bg_seqs.coded_seqs)
 
         ref_energy = np.array([ref_energy,], dtype='float32')[0]
         args = coded_seqs_args + [
@@ -408,7 +401,7 @@ def theano_log_lhd_factory(initial_coded_seqs):
             coded_seqs, 
             dna_conc, prot_conc):
         return theano_calc_log_unbnd_imbalance(
-            coded_seqs.bg_seqs.one_hot_coded_seqs, 
+            coded_seqs.bg_seqs.coded_seqs, 
             ddg_array.ravel(), ref_energy, chem_affinities,
             dna_conc, prot_conc)
 
