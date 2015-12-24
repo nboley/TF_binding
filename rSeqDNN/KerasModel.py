@@ -144,7 +144,7 @@ class KerasModelBase():
         ))
         self.model.add(MaxPooling2D(
             pool_size=(1,maxpool_size),
-            stride=(1,maxpool_stride)
+            strides=(1,maxpool_stride)
         ))
         if model_type=='cnn':
             self.model.add(Flatten())
@@ -168,8 +168,8 @@ class KerasModelBase():
         fname = "%s.MODEL.%s.%s.json" % (
             ofname, self.curr_model_config_hash, loss_name)
         print "compiling model..."
-        self.model.compile(loss,
-                           optimizer,
+        self.model.compile(optimizer,
+                           loss,
                            class_mode)
         print("Serializing compiled model." )
         json_string = self.model.to_json()
