@@ -16,14 +16,17 @@ ENCODE_MOTIFS_PATH =  os.path.join(os.getcwd(),'encode_motifs.txt.gz')
 def score_convolutions(model, X, batch_size):
     """
     Score convolutions using deepLifft on maxpooling layer.
-    Limited to architectures consisting of convolution+maxpool+sigmoid.
 
     Parameters
     ----------
     model : keras model
-        Restricted to models consisting of convolution+maxpool+sigmoid 
+        Expects sequential model with 1st Convolution2D layer,
+        2nd MaxPooling2D layer, and final activation layer.
+        Note: assumes non-recurrent model and piece-wise linear
+        activations, otherwise scoring is not valid.
     X : 4d array
         one hot encoded sequences.
+    batch_size : int
 
     Returns
     -------
@@ -31,35 +34,30 @@ def score_convolutions(model, X, batch_size):
         (N, K, L) array with scores on N sequences of K convolutions
         with L maxpool windows.
     """
+    from keras.layers.convolutional import Convolution2D
+    from keras.layers.core import Activation
+    assert isinstance(model.layers[0], Convolution2D), \
+    "filter scoring requires initial Convolution2D layer!"
+    assert isinstance(model.layers[-1], Activation), \
+    "filter scoring requires final activation layer!"
     scripts_dir = os.environ.get("ENHANCER_SCRIPTS_DIR")
-    sys.path.insert(0, "%s/featureSelector/deepLIFFT" % scripts_dir)
-    from modelSaver import CNNMaxPoolIPModel
-    import layers
-    conv_weights, conv_biases = model.layers[0].get_weights()
-    maxpool_size = model.layers[1].pool_size[1]
-    ip_weights = model.layers[-1].get_weights()[0].T
-    ip_biases = model.layers[-1].get_weights()[1]
-    prop = CNNMaxPoolIPModel(conv_weights, conv_biases,
-                             True, None, maxpool_size, True,
-                             ip_weights, ip_biases,
-                             layers.OutputActivations.sigmoid)
-    blobName = "pool1"
-    prop.setFirstInputBlobsToTrackNames([blobName])
+    os.sys.path.insert(0, "%s/featureSelector/deepLIFFT/kerasBasedBackprop" % scripts_dir)
+    from deepLIFTonGPU import ScoreTypes, Activations_enum, OutLayerInfo, getScoreFunc
+
+    layers_to_score = [model.layers[1]]
+    output_layers = [OutLayerInfo(outLayNoAct=model.layers[-1],
+                                  activation=Activations_enum.sigmoid)]
+    scoring_function = getScoreFunc(model, layers_to_score, output_layers,
+                                    [ScoreTypes.deepLIFT])
     deepLifft_score_list = []
     for start in xrange(0, len(X), batch_size):
         if (start+batch_size)>len(X):
                 end  = len(X)
         else:
                 end = start + batch_size
-        prop.updateInputLayers(np.expand_dims(X[start:end, :, :, :], axis=0))
-        prop.performFprop()
-        prop.performBackprop()
-        outputBlobName = prop.globalBlobsLookup.outputBlobToTrackName
-        outputBlob = prop.globalBlobsLookup.getBlob(outputBlobName)
-        blob = prop.globalBlobsLookup.getBlob(blobName)
-        deepLifft_scores, _, _ = layers.getVariousDeepLifftScoresFromBlob_batch(
-                blob, outputBlob, prop.inputBlobNameToOutputActivation[outputBlobName])
-        deepLifft_score_list.append(deepLifft_scores.squeeze(axis=(1,3)))
+        scores = scoring_function([X[start:end, :, :, :]])
+        deepLifft_scores = scores['deepLIFT'][0][0][0]
+        deepLifft_score_list.append(deepLifft_scores.squeeze())
     convolution_scores = np.concatenate(tuple(deepLifft_score_list))
     return convolution_scores
 
