@@ -16,6 +16,7 @@ from pyTFbindtools.cross_validation import (
 from pyTFbindtools.peaks import merge_peaks_and_labels
 from ScoreModel import (
     score_convolutions, rank_convolutions,
+    get_encode_pwm_hits,
     plot_convolutions )
 
 from keras.preprocessing import sequence
@@ -362,13 +363,20 @@ class KerasModel(KerasModelBase):
         y_pred_scores = self.predict_proba(X).squeeze()
         plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname)
         plot_pr_curve(y_true, y_pred_scores, ofname)
+        print 'getting encode pwm matches...'
+        encode_pwm_hits = get_encode_pwm_hits(self.model)
+        encode_hit_names = [[hit[-1] for hit in hits] for hits in encode_pwm_hits]
         print 'ranking convolutions...'
-        convolution_scores = score_convolutions(self.model, X, self.batch_size)
-        rank_metrics = ['auROC', 'sensitivity', 'specificity']
-        ranks = [rank_convolutions(convolution_scores, y_true, y_pred, metric)
-                 for metric in rank_metrics]
-        rank_dictionary = dict(zip(rank_metrics, ranks))
+        try:
+            convolution_scores = score_convolutions(self.model, X, self.batch_size)
+            rank_metrics = ['auROC', 'sensitivity', 'specificity']
+            ranks = [rank_convolutions(convolution_scores, y_true, y_pred, metric)
+                     for metric in rank_metrics]
+            rank_dictionary = dict(zip(rank_metrics, ranks))
+        except:
+            'convolution ranking skipped!'
+            rank_dictionary = None
         print 'plotting convolutions...'
-        plot_convolutions(self.model, ofname, rank_dictionary)
+        plot_convolutions(self.model, ofname, rank_dictionary, encode_hit_names)
 
         return self
