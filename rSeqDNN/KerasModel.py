@@ -157,7 +157,8 @@ class KerasModelBase():
             self.model.add(Flatten())
         else:
             raise ValueError('invalid model type! supported choices are cnn,cnn-rnn-tdd') 
-        self.model.add(Dense(1,activation='sigmoid'))
+        self.model.add(Dense(1))
+        self.model.add(Activation('sigmoid'))
 
     @property
     def curr_model_config_hash(self):
