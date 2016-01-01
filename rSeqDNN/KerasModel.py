@@ -278,7 +278,7 @@ class KerasModel(KerasModelBase):
         self.compile(ofname, 'binary_crossentropy', Adam())
         self.model.load_weights(weights_ofname)
         res = self.evaluate(X_validation, y_validation)
-        best_target_metric = getattr(res, self.target_metric)
+        self.best_target_metric = getattr(res, self.target_metric)
 
         for epoch in xrange(numEpochs):
             self.model.fit(
@@ -292,17 +292,17 @@ class KerasModel(KerasModelBase):
             print res
 
             current_target_metric = getattr(res, self.target_metric)
-            if (current_target_metric > best_target_metric):
+            if (current_target_metric > self.best_target_metric):
                 print("highest %s so far. Saving weights." % self.target_metric)
                 self.model.save_weights(weights_ofname, overwrite=True)
-                best_target_metric = current_target_metric
+                self.best_target_metric = current_target_metric
 
         # load and return the best model
         print "Loading best model"
         self.model.load_weights(weights_ofname)
         return self
 
-    def train(self, data, genome_fasta, ofname, jitter_peaks_by,
+    def train(self, data, genome_fasta, ofname, jitter_peaks_by=None,
               unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
@@ -348,6 +348,8 @@ class KerasModel(KerasModelBase):
                       unbalanced_train_epochs, ofname)
 
         return self
+
+    def score(self): return self.best_target_metric
 
     def classification_report(
             self, data, genome_fasta, ofname, filter_ambiguous_labels=True):
