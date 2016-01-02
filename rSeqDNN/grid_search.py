@@ -25,7 +25,7 @@ class MOESearch(object):
     def __init__(self, estimator, param_grid, fixed_param=None, conditional_param=None):
         """
         MOE hyper parameter search. Limited to discrete parameters only.
-        
+
         Parameters
         ----------
         estimator : estimator classobj
@@ -38,9 +38,18 @@ class MOESearch(object):
         conditional_param : dict, optional
             Parameters conditional on the param_grid.
             For example, {maxpool_stride: 'maxpool_size/2'}.
-        """ 
+
+        Attributes
+        ----------
+        experiment : MOE experiment
+        grid_scores_ : list
+        grid_params_ : list of dicts
+        best_score_ : float
+        best_grid_params_ : dict
+        best_estimator_ : estimator
+        """
         self.estimator = estimator
-        assert all(len(value)==2 and value[1]>value[0] for key, value 
+        assert all(len(value)==2 and value[1]>value[0] for key, value
                    in param_grid.iteritems()), \
         "Invalid parameter grid!"
         self.param_grid = param_grid
@@ -48,11 +57,58 @@ class MOESearch(object):
         self.conditional_param = conditional_param if conditional_param is not None else {}
         # start MOE experiment
         self.experiment = Experiment(self.param_grid.values())
+        self.grid_scores_ = []
+        self.grid_params_ = []
+        self.best_score_ = None
+        self.best_grid_param_ = {}
+        self.best_estimator_ = None
+
+    def eval_conditional_param(self, curr_grid_param):
+        """
+        Returns evaluated conditional parameters.
+
+        Parameters
+        ----------
+        curr_param_grid : dict
+            param_grid names as keys and values as values.
+
+        Returns
+        -------
+        curr_conditional_param : dict
+        """
+        curr_conditional_param = self.conditional_param.copy()
+        for key, value in curr_conditional_param.iteritems():
+            for name in curr_grid_param.keys():
+                if name in value:
+                    value = value.replace(name, str(curr_grid_param[name]))
+            if is_valid_python(value):
+                curr_conditional_param[key] = eval(value)
+
+        return curr_conditional_param
+
+    def get_estimator_param(self, curr_grid_param):
+        """
+        Returns full dictionary of estimator parameters.
+
+        Parameters
+        ----------
+        curr_grid_param : dict
+
+        Returns
+        -------
+        estimator_param : dict
+        """
+        estimator_param = self.fixed_param.copy()
+        estimator_param.update(curr_grid_param)
+        curr_conditional_param = self.eval_conditional_param(curr_grid_param)
+        estimator_param.update(curr_conditional_param)
+
+        return estimator_param
 
     def fit(self, fit_method, fit_param, score_method, score_param, max_iter=2):
         """
         Runs MOE search over the parameter grid.
-        
+
         Parameters
         ----------
         fit_method : string or callable
@@ -69,38 +125,26 @@ class MOESearch(object):
         Returns
         -------
         self
-
-        Attributes
-        ----------
-        self.experiment : MOE experiment
         """
-        param_names = self.param_grid.keys()
         for i in xrange(max_iter):
-            estimator_param = self.fixed_param.copy()
-            # sample next search iteration with MOE
+            # sample next point, get estimator parameters
             next_point_to_sample = [int(round(i)) for i in gp_next_points(self.experiment)[0]]
-            search_param = dict(zip(param_names, next_point_to_sample))
-            # add sampled parameters
-            estimator_param.update(search_param)
-            # evaluate conditional parameters and add
-            curr_conditional_param = self.conditional_param.copy()
-            for key, value in curr_conditional_param.iteritems():
-                for name in param_names:
-                    if name in value:
-                        value = value.replace(name, str(search_param[name]))
-                curr_conditional_param[key] = eval(value)
-            estimator_param.update(curr_conditional_param)
+            curr_grid_param = dict(zip(self.param_grid.keys(), next_point_to_sample))
+            estimator_param = self.get_estimator_param(curr_grid_param)
             # initialize estimators with new parameters
             model = self.estimator(**estimator_param)
             # fit, score, store results
-            print fit_method
             fit = find_method(model, fit_method)
-            print fit
             fit_model = fit(**fit_param)
             score = find_method(fit_model, score_method)
             value_of_next_point = score(**score_param)
-            print 'value of next point: ', value_of_next_point
             self.experiment.historical_data.append_sample_points(
                 [SamplePoint(next_point_to_sample, value_of_next_point)])
+            self.grid_scores_.append(value_of_next_point)
+            self.grid_params_.append(curr_grid_param)
+            if value_of_next_point > self.best_score_:
+                self.best_score_ = value_of_next_point
+                self.best_grid_param_ = curr_grid_param
+                self.best_estimator_ = fit_model
 
         return self
