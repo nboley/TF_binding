@@ -148,6 +148,14 @@ def theano_log_sum_log_occs(log_occs):
 def relu(x):
     return (x + abs(x))/2
 
+def theano_round_log_occs(seq_affinities, chem_affinities, rnd):
+    rv = 0
+    for i in xrange(rnd+1):
+        rv += theano_calc_log_occs(
+            seq_affinities, chem_affinities[i]
+        ).sum()
+    return rv
+
 def theano_build_lhd_and_grad_fns(data):
     use_shape = data.have_shape_features
     chem_affinities = TT.vector(dtype=theano.config.floatX)
@@ -196,14 +204,12 @@ def theano_build_lhd_and_grad_fns(data):
     # calculate the lhd numerators
     rnd_numerators = TT.zeros_like(chem_affinities)
     for seq_rnd in xrange(n_rounds):
-        for i in xrange(seq_rnd+1) :
-            rnd_numerators = TT.inc_subtensor(
-                rnd_numerators[seq_rnd],
-                theano_calc_log_occs(
-                    rnds_seq_affinities[seq_rnd], chem_affinities[i]
-                ).sum()
-            )
-
+        rnd_numerators = TT.inc_subtensor(
+            rnd_numerators[seq_rnd],
+            theano_round_log_occs(
+                rnds_seq_affinities[seq_rnd], chem_affinities, seq_rnd)
+        )
+    
     # calculate the lhd denominator
     # calculate the log bound occupancies for each background sequence
     # for each chemical affinity
@@ -283,6 +289,7 @@ def theano_build_lhd_and_grad_fns(data):
             ).transpose()
         )
     )
+
     theano_calc_log_unbnd_imbalance = theano.function(
         [ddg_flat, ref_energy, chem_affinities, dna_conc, prot_conc],
         log_unbnd_imbalance,

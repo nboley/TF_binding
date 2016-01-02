@@ -211,7 +211,6 @@ def load_sequence_data(selex_db_conn,
     else:
         min_num_background_sequences = min_num_background_sequences
     """
-    
     background_seqs = None
     if background_seq_fp is not None:
         with optional_gzip_open(background_seq_fp.name) as fp:

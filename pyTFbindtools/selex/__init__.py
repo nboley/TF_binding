@@ -815,7 +815,7 @@ def progressively_fit_model(
             ref_energy, 
             ddg_array, 
             chem_affinities,
-            partitioned_and_coded_rnds_and_seqs.validation,
+            partitioned_and_coded_rnds_and_seqs.data, # validation
             dna_conc,
             prot_conc)
 
