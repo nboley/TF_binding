@@ -527,7 +527,7 @@ def estimate_dg_matrix(
     def estimate_chemical_affinities(x0):
         mo = EnergeticDNABindingModel(x0.ref_energy, x0.ddg_array)
         return estimate_chem_affinities_for_selex_experiment(
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs, 
+            partitioned_and_coded_rnds_and_seqs.data.bg_seqs, # validation 
             partitioned_and_coded_rnds_and_seqs.max_rnd, 
             mo, dna_conc, prot_conc)
     
@@ -701,7 +701,7 @@ def find_best_shift(coded_seqs, binding_model, coded_bg_seqs=None):
             calc_entropy(obs_samples)) 
         return stat, p_value
 
-    seq_len = coded_seqs.seq_length
+    seq_len = coded_seqs.seq_len
     if coded_bg_seqs == None:
         coded_bg_seqs = sample_random_coded_seqs(
             coded_seqs.shape[0], seq_len)
@@ -840,11 +840,11 @@ def progressively_fit_model(
         # extend the mnodel twice to break palindrome symmetry
         curr_mo = extend_binding_model(
             curr_mo, 
-            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
+            partitioned_and_coded_rnds_and_seqs.data.last_rnd, # validation
+            partitioned_and_coded_rnds_and_seqs.data.bg_seqs) # validation
         curr_mo = extend_binding_model(
             curr_mo, 
-            partitioned_and_coded_rnds_and_seqs.validation.last_rnd,
-            partitioned_and_coded_rnds_and_seqs.validation.bg_seqs)
+            partitioned_and_coded_rnds_and_seqs.data.last_rnd, # validation
+            partitioned_and_coded_rnds_and_seqs.data.bg_seqs) # validation
 
     return
