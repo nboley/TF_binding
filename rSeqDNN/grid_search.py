@@ -105,7 +105,8 @@ class MOESearch(object):
 
         return estimator_param
 
-    def fit(self, fit_method, fit_param, score_method, score_param, max_iter=2):
+    def fit(self, fit_method, fit_param, score_method, score_param,
+            minimize=False, max_iter=2):
         """
         Runs MOE search over the parameter grid.
 
@@ -119,6 +120,8 @@ class MOESearch(object):
         score_param : dict
             Dictionary with parameter names as keys and
             parameter values as values to pass to score_method
+        minimize : boolean
+            Minimizes score if true, otherwise maximizes it.
         max_iter : int, default=2
             Maximum number of search iterations.
 
@@ -138,11 +141,16 @@ class MOESearch(object):
             fit_model = fit(**fit_param)
             score = find_method(fit_model, score_method)
             value_of_next_point = score(**score_param)
-            self.experiment.historical_data.append_sample_points(
-                [SamplePoint(next_point_to_sample, value_of_next_point)])
+            if not minimize:
+               self.experiment.historical_data.append_sample_points(
+                  [SamplePoint(next_point_to_sample, -value_of_next_point)])
+            else:
+               self.experiment.historical_data.append_sample_points(
+                  [SamplePoint(next_point_to_sample, value_of_next_point)])
             self.grid_scores_.append(value_of_next_point)
             self.grid_params_.append(curr_grid_param)
-            if value_of_next_point > self.best_score_:
+            if (not minimize and value_of_next_point > self.best_score_)\
+                or (minimize and value_of_next_point < self.best_score_):
                 self.best_score_ = value_of_next_point
                 self.best_grid_param_ = curr_grid_param
                 self.best_estimator_ = fit_model
