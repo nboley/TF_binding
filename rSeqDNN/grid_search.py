@@ -22,9 +22,11 @@ def find_method(obj, method):
         raise e
 
 class MOESearch(object):
-    def __init__(self, estimator, param_grid, fixed_param=None, conditional_param=None):
+    def __init__(self, estimator, param_grid, param_types,
+                 fixed_param=None, conditional_param=None):
         """
-        MOE hyper parameter search. Limited to discrete parameters only.
+        MOE hyper parameter search.
+        Limited to continuous and discrete parameters only.
 
         Parameters
         ----------
@@ -33,6 +35,9 @@ class MOESearch(object):
         param_grid : dict
             Dictionary with parameter names as keys and lists of
             lower and upper bounds to search over as values.
+        param_types : dict
+            Dictionary with parameter names as keys and types as
+            values. Legal values: 'cont', 'disc'.
         fixed_param : dict, optional
             Parameters that remain fixed during the search.
         conditional_param : dict, optional
@@ -50,9 +55,12 @@ class MOESearch(object):
         """
         self.estimator = estimator
         assert all(len(value)==2 and value[1]>value[0] for key, value
-                   in param_grid.iteritems()), \
+                   in param_grid.iteritems() if param_types[key] in ['cont', 'disc']), \
         "Invalid parameter grid!"
         self.param_grid = param_grid
+        assert all(value in ['cont', 'disc'] for key, value in param_types.iteritems()), \
+        "Invalid parameter types!"
+        self.param_types = param_types
         self.fixed_param = fixed_param if fixed_param is not None else {}
         self.conditional_param = conditional_param if conditional_param is not None else {}
         # start MOE experiment
@@ -131,7 +139,8 @@ class MOESearch(object):
         """
         for i in xrange(max_iter):
             # sample next point, get estimator parameters
-            next_point_to_sample = [int(round(i)) for i in gp_next_points(self.experiment)[0]]
+            next_point_to_sample = [val if self.param_types.keys()[indx]=='cont' else int(round(val))\
+                                    for indx, val in enumerate(gp_next_points(self.experiment)[0])]
             curr_grid_param = dict(zip(self.param_grid.keys(), next_point_to_sample))
             estimator_param = self.get_estimator_param(curr_grid_param)
             # initialize estimators with new parameters
