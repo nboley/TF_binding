@@ -118,17 +118,44 @@ def set_ambiguous_labels(labels, scores, threshold):
 
 class KerasModelBase():
     def __init__(self, peaks_and_labels, target_metric='recall_at_05_fdr',
-                 batch_size=200, num_conv=25, conv_height=4, conv_width=8,
+                 batch_size=200, num_conv_layers=1, l1_decay=0,
+                 num_conv=25, conv_height=4, conv_width=8,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
+        """
+        Base class for Keras model objects.
 
+        Parameters
+        ----------
+        peaks_and_labels : PeaksAndLabels
+        target_metric : string, default: 'recall_at_05_fdr'
+            Metric used for model selection.
+            Expects an attribute of ClassificationResult.
+        batch_size : int, default: 200
+        num_conv_layers : int, default: 1
+            Number of convolution layers before pooling.
+        l1_decay : float, default: 0
+            L1 weight decay, applied to all convolutional
+            layers except for the first one.
+        num_conv : int, default: 25
+            Applies same number of convolutions in each layer.
+        conv_height : int, default: 4
+        conv_width : int, default: 8
+        maxpool_size : int, default: 35
+            must be integer multiple of maxpool_stride.
+        maxpool_stride : int, default: 35
+        gru_size: int, default: 35
+        tdd_size: int, default: 45
+        model_type, string, default: 'cnn'
+            Model type. Legal values: 'cnn', 'cnn-rnn'tdd'.
+        """
         self.batch_size = batch_size
         self.seq_len = peaks_and_labels.max_peak_width
         self.ambiguous_peak_threshold = None
         self.target_metric = target_metric
 
-        print 'building default rSeqDNN architecture...'
-        num_conv_outputs = ((self.seq_len - conv_width) + 1)
+        print 'building rSeqDNN architecture...'
+        num_conv_outputs = ((self.seq_len - num_conv_layers*conv_width) + num_conv_layers)
         num_maxpool_outputs = int(((num_conv_outputs-maxpool_size)/maxpool_stride)+1)
 
         # this fixes an implementation bug in Keras. If this is not true,
@@ -143,6 +170,13 @@ class KerasModelBase():
             activation="relu", init="he_normal",
             input_shape=(1, 4, self.seq_len)
         ))
+        for i in xrange(1, num_conv_layers):
+            self.model.add(Convolution2D(
+                num_conv,
+                1, conv_width,
+                activation="relu", init="he_normal",
+                W_regularizer=l1(l1_decay)
+                ))
         self.model.add(MaxPooling2D(
             pool_size=(1,maxpool_size),
             strides=(1,maxpool_stride)
