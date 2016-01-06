@@ -21,6 +21,20 @@ def find_method(obj, method):
         print method, 'method not found for object ', obj
         raise e
 
+def send_email(the_subject, the_to, the_from="av-mail-sender@stanford.edu", the_contents=""):
+   '''copied from av_scripts
+   '''
+   import smtplib
+   from email.mime.text import MIMEText
+   msg = MIMEText(the_contents)
+   msg['Subject'] = the_subject
+   msg['From'] = the_from
+   msg['To'] = ",".join(the_to)
+   s = smtplib.SMTP('smtp.stanford.edu')
+   s.starttls()
+   s.sendmail(the_from, the_to, msg.as_string())
+   s.quit()
+
 class MOESearch(object):
     def __init__(self, estimator, param_grid, param_types,
                  fixed_param=None, conditional_param=None):
@@ -114,7 +128,7 @@ class MOESearch(object):
         return estimator_param
 
     def fit(self, fit_method, fit_param, score_method, score_param,
-            minimize=False, max_iter=2):
+            minimize=False, max_iter=2, email_updates_to=None):
         """
         Runs MOE search over the parameter grid.
 
@@ -160,6 +174,12 @@ class MOESearch(object):
             self.grid_params_.append(curr_grid_param)
             if (not minimize and value_of_next_point > self.best_score_)\
                 or (minimize and value_of_next_point < self.best_score_):
+                if email_updates_to is not None:
+                   subject = 'grid search %s update' % self.estimator.__name__
+                   contents = '\n'.join(['iteration %i of %i' % (i, max_iter),
+                                         'new best score: '+str(value_of_next_point),
+                                         'previous best score: '+str(self.best_score_)])
+                   send_email(subject, email_updates_to, the_contents=contents)
                 self.best_score_ = value_of_next_point
                 self.best_grid_param_ = curr_grid_param
                 self.best_estimator_ = fit_model
