@@ -160,13 +160,13 @@ def theano_build_lhd_and_grad_fns(data):
     use_shape = data.have_shape_features
     chem_affinities = TT.vector(dtype=theano.config.floatX)
 
-    bg_seqs = data.bg_seqs.coded_seqs
+    bg_seqs = data.bg_seqs.fwd_and_rev_coded_seqs
     #bg_seqs = TT.tensor3(name='bg_seqs', dtype=theano.config.floatX)
     n_bg_seqs = bg_seqs.shape[0]
 
     seq_len = bg_seqs.shape[1]
 
-    rnd_seqs = [seqs.coded_seqs for seqs in data.rnd_seqs.values()]
+    rnd_seqs = [seqs.fwd_and_rev_coded_seqs for seqs in data.rnd_seqs.values()]
     n_rounds = len(rnd_seqs)
     
     #rnd_seqs = [

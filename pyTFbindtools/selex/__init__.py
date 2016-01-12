@@ -82,12 +82,15 @@ class SelexSeqs(FixedLengthDNASequences):
         # override the FixedLengthDNASequences coded seqs attribute to include
         # both the forward and rc shape features, when appropriate
         if self.shape_features is not None:
-            self.coded_seqs = np.dstack((
+            self.fwd_and_rev_coded_seqs = np.dstack((
                     self.one_hot_coded_seqs,
                     self.fwd_shape_features,
                     self.rc_shape_features)
             )
-        self.coded_seqs = theano.shared(self.coded_seqs)
+        else:
+            self.fwd_and_rev_coded_seqs = self.one_hot_coded_seqs
+        # XXX
+        self.fwd_and_rev_coded_seqs = theano.shared(self.fwd_and_rev_coded_seqs)
 
 def code_seqs(seqs, include_shape):
     return SelexSeqs(seqs, include_shape)
@@ -95,12 +98,17 @@ def code_seqs(seqs, include_shape):
 def estimate_chem_affinities_for_selex_experiment(
         bg_seqs, num_rounds, binding_model, dna_conc, prot_conc):
     # if this is a numpy array, assume that they're one hot encoded seqs
+    # XXX
     if isinstance(bg_seqs, SelexSeqs):
+        bg_seqs = FixedLengthDNASequences(bg_seqs.seqs)
         affinities = -(np.array(
-            binding_model.score_seqs_binding_sites(bg_seqs, 'MAX')).max(1))
+            bg_seqs.score_binding_sites(
+                binding_model.convolutional_filter_base_portion, 'MAX')).max(1))
     else:
         bg_seqs = FixedLengthDNASequences(bg_seqs)
-        affinities = -(bg_seqs.score_binding_sites(binding_model, 'MAX').max(1))
+        affinities = -(
+            bg_seqs.score_binding_sites(
+                binding_model.convolutional_filter_base_portion, 'MAX').max(1))
     
     all_chem_affinities = []
     weights = np.ones(len(affinities), dtype=float)
@@ -240,7 +248,6 @@ class PartitionedAndCodedSeqs(object):
         assert self.seq_length == self.coded_bg_seqs.seq_len
         self.data = SelexData(
             self.coded_bg_seqs, self.coded_seqs)
-        
         """ Unmaintained partitioning code
         # store views to partitioned subsets of the data 
         self._partitioned_data = [{} for i in xrange(self.n_partitions)]
@@ -670,7 +677,7 @@ def find_best_shift(coded_seqs, binding_model, coded_bg_seqs=None):
         # the binding sities within the sequences
         # find the index of the best offset
         energies = np.array(
-            binding_model.score_seqs_binding_sites(seqs, 'MAX'))
+            seqs.score_binding_sites(binding_model, 'MAX'))
         best_offsets = np.argmin(energies, 1)
         
         ## find the binding sites which align to the sequence boundary. We must 
