@@ -77,19 +77,20 @@ class SelexSeqs(FixedLengthDNASequences):
                 ):
             yield CodedSeqs(one_hot_seqs, fwd_shape_seqs, RC_shape_seqs)
 
-    def __init__(self, *args, **kwargs):
-        FixedLengthDNASequences.__init__(self, *args, **kwargs)
+    def __init__(self, seqs, include_shape):
+        FixedLengthDNASequences.__init__(self, seqs)
         # override the FixedLengthDNASequences coded seqs attribute to include
         # both the forward and rc shape features, when appropriate
-        if self.shape_features is not None:
+        if include_shape:
+            self.have_shape_features = True
             self.fwd_and_rev_coded_seqs = np.dstack((
                     self.one_hot_coded_seqs,
                     self.fwd_shape_features,
-                    self.rc_shape_features)
-            )
+                    self.rc_shape_features))
         else:
+            self.have_shape_features = False
             self.fwd_and_rev_coded_seqs = self.one_hot_coded_seqs
-        # XXX
+        
         self.fwd_and_rev_coded_seqs = theano.shared(self.fwd_and_rev_coded_seqs)
 
 def code_seqs(seqs, include_shape):
