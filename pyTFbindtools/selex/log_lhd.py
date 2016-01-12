@@ -188,10 +188,9 @@ def theano_build_lhd_and_grad_fns(data):
     motif_len = ddg_flat.shape[0]/n_features_per_base
     ddg = ddg_flat.reshape((motif_len, n_features_per_base))
     ddg_base_portion = ddg[:,:4]
-    ddg_shape_cont = ddg[:,4:]
+    ddg_shape_cont = None if not use_shape else ddg[:,4:]
 
     ref_energy = TT.scalar(name='ref_energy', dtype=theano.config.floatX)
-
     
     # calculate the sequence affinities
     rnds_seq_affinities = [
