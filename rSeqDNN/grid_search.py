@@ -21,7 +21,7 @@ def find_method(obj, method):
         print method, 'method not found for object ', obj
         raise e
 
-def send_email(the_subject, the_to, the_from="av-mail-sender@stanford.edu", the_contents=""):
+def send_email(the_subject, the_to, the_from="grid-search-sender@stanford.edu", the_contents=""):
    '''copied from av_scripts
    '''
    import smtplib
@@ -157,6 +157,7 @@ class MOESearch(object):
                                     for indx, val in enumerate(gp_next_points(self.experiment)[0])]
             curr_grid_param = dict(zip(self.param_grid.keys(), next_point_to_sample))
             estimator_param = self.get_estimator_param(curr_grid_param)
+            print 'sampling estimator parameters:\n%s' % str(estimator_param)
             # initialize estimators with new parameters
             model = self.estimator(**estimator_param)
             # fit, score, store results
@@ -178,7 +179,9 @@ class MOESearch(object):
                    subject = 'grid search %s update' % self.estimator.__name__
                    contents = '\n'.join(['iteration %i of %i' % (i, max_iter),
                                          'new best score: '+str(value_of_next_point),
-                                         'previous best score: '+str(self.best_score_)])
+                                         'new best parameters:\n'+str(curr_grid_param),
+                                         'previous best score: '+str(self.best_score_),
+                                         'previous best parameters:\n'+str(self.best_grid_param_)])
                    send_email(subject, email_updates_to, the_contents=contents)
                 self.best_score_ = value_of_next_point
                 self.best_grid_param_ = curr_grid_param
