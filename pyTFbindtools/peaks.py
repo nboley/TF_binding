@@ -9,6 +9,7 @@ import numpy as np
 from sklearn.cross_validation import StratifiedKFold
 
 from pysam import TabixFile
+from pybedtools import Interval
 
 from grit.lib.multiprocessing_utils import Counter
 
@@ -199,6 +200,12 @@ def merge_peaks_and_labels(*peaks_and_labels_iterable):
     Merge multiple PeaksAndLabels into a single PeaksAndLabels.
     """
     return PeaksAndLabels(chain.from_iterable(*peaks_and_labels_iterable))
+
+def get_intervals_from_peaks(peaks_and_labels):
+    '''returns list of pybedtools intervals
+    '''
+    return [Interval(pk.contig, pk.start, pk.stop)
+            for pk, sample, label, score in peaks_and_labels]
 
 class FastaPeaksAndLabels(PeaksAndLabels):
     @staticmethod
