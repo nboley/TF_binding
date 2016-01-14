@@ -72,7 +72,7 @@ def score_convolutions(model, X, batch_size):
     from deepLIFTonGPU import ScoreTypes, Activations_enum, OutLayerInfo, getScoreFunc
 
     layers_to_score = [model.layers[1]]
-    output_layers = [OutLayerInfo(outLayNoAct=model.layers[-1],
+    output_layers = [OutLayerInfo(outLayNoAct=model.layers[-2],
                                   activation=Activations_enum.sigmoid)]
     scoring_function = getScoreFunc(model, layers_to_score, output_layers,
                                     [ScoreTypes.deepLIFT])
