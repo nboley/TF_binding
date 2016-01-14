@@ -13,6 +13,33 @@ from plot import plot_bases
 
 ENCODE_MOTIFS_PATH =  os.path.join(os.getcwd(),'encode_motifs.txt.gz')
 
+def normalise_sequence_conv_weights(weights, bias, weights_height=4):
+    """
+    Normalization of sequence convolutions for scoring with deepLift.
+
+    Parameters
+    ----------
+    weights : 4d array
+        Expects single channeled weights.
+    bias : 1d array
+    weight_height : int, default: 4
+        height dimension of the weights (axis=2).
+
+    Returns
+    -------
+    renormalised_weights : 4d array
+    new_bias : 1d array
+    """
+    assert len(weights.shape)==4
+    assert weights.shape[1]==1
+    assert weights.shape[2]==weights_height
+    mean_weights_at_positions = np.mean(weights,axis=2)
+    new_bias = bias + np.sum(np.sum(mean_weights_at_positions, axis=2), axis=1)
+    mean_weights_at_positions = mean_weights_at_positions[:,:,None,:]
+    renormalised_weights = weights - mean_weights_at_positions
+
+    return renormalised_weights, new_bias
+
 def score_convolutions(model, X, batch_size):
     """
     Score convolutions using deepLifft on maxpooling layer.
