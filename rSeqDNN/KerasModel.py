@@ -13,11 +13,12 @@ from pyTFbindtools.cross_validation import (
     plot_ambiguous_peaks,
     plot_peak_ranks,
     plot_pr_curve )
-from pyTFbindtools.peaks import merge_peaks_and_labels
+from pyTFbindtools.peaks import merge_peaks_and_labels, get_intervals_from_peaks
 from ScoreModel import (
     score_convolutions, rank_convolutions,
     get_encode_pwm_hits,
     plot_convolutions )
+from extractors import BigwigExtractor
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -118,8 +119,8 @@ def set_ambiguous_labels(labels, scores, threshold):
 
 class KerasModelBase():
     def __init__(self, peaks_and_labels, target_metric='recall_at_05_fdr',
-                 batch_size=200, num_conv_layers=1, l1_decay=0,
-                 num_conv=25, conv_height=4, conv_width=8,
+                 batch_size=200, num_conv_layers=3, l1_decay=0,
+                 num_conv=25, conv_height=4, conv_width=15, dropout=0.2,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
         """
@@ -168,8 +169,9 @@ class KerasModelBase():
             num_conv,
             conv_height, conv_width,
             activation="relu", init="he_normal",
-            input_shape=(1, 4, self.seq_len)
+            input_shape=(1, conv_height, self.seq_len)
         ))
+        self.model.add(Dropout(dropout))
         for i in xrange(1, num_conv_layers):
             self.model.add(Convolution2D(
                 num_conv,
@@ -177,6 +179,7 @@ class KerasModelBase():
                 activation="relu", init="he_normal",
                 W_regularizer=l1(l1_decay)
                 ))
+            self.model.add(Dropout(dropout))
         self.model.add(MaxPooling2D(
             pool_size=(1,maxpool_size),
             strides=(1,maxpool_stride)
@@ -201,8 +204,7 @@ class KerasModelBase():
 
     def compile(self, ofname, loss, optimizer, class_mode="binary"):
         loss_name = loss if isinstance(loss, str) else loss.__name__
-        fname = "%s.MODEL.%s.%s.json" % (
-            ofname, self.curr_model_config_hash, loss_name)
+        fname = "%s.MODEL.%s.json" % (ofname, loss_name)
         print "compiling model..."
         self.model.compile(optimizer,
                            loss,
@@ -232,13 +234,15 @@ class KerasModelBase():
     def evaluate_peaks_and_labels(
             self, 
             data, 
-            genome_fasta,
+            genome_fasta=None,
             filter_ambiguous_labels=False,
+            bigwig_fnames=None,
             plot_fname=None):
         '''evaluate model
         '''
         X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data, genome_fasta, filter_ambiguous_labels=filter_ambiguous_labels)
+            data, genome_fasta,
+            filter_ambiguous_labels=filter_ambiguous_labels, bigwig_fnames=bigwig_fnames)
         # set the ambiguous labels
         if not filter_ambiguous_labels:
             if plot_fname is not None:
@@ -260,10 +264,26 @@ class KerasModelBase():
             return coded_seqs
 
     def build_predictor_and_label_matrices(
-            self, data, genome_fasta, filter_ambiguous_labels):
-        X = self._reshape_coded_seqs_array(
+            self, data, genome_fasta=None, bigwig_fname=None, filter_ambiguous_labels=True):
+        signal_arr_list = []
+        if genome_fasta is not None:
+            signal_arr_list.append(self._reshape_coded_seqs_array(
                 encode_peaks_sequence_into_binary_array(
-                    data.peaks, genome_fasta))
+                    data.peaks, genome_fasta)))
+        if bigwig_fname is not None:
+            print('loading features from bigwig...')
+            N = len(data.labels)
+            bigwig_batch_size = 1000
+            bw = BigwigExtractor(bigwig_fname)
+            pks, samples, labels, scores = data[:bigwig_batch_size]
+            bigwig_features = bw(get_intervals_from_peaks(zip(pks, samples, labels, scores)))
+            for start in xrange(bigwig_batch_size, N, bigwig_batch_size):
+                stop = min(start+bigwig_batch_size, N)
+                pks, samples, labels, scores = data[start:stop]
+                data_batch = zip(pks, samples, labels, scores)
+                bigwig_features = np.concatenate((bigwig_features, bw(get_intervals_from_peaks(data_batch))))
+            signal_arr_list.append(bigwig_features)
+        X = np.concatenate(tuple(signal_arr_list), axis=2)
         y = np.array(data.labels, dtype='float32')
         if filter_ambiguous_labels:
             X = X[y != -1,:,:,:]
@@ -336,8 +356,8 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(weights_ofname)
         return self
 
-    def train(self, data, genome_fasta, ofname, jitter_peaks_by=None,
-              unbalanced_train_epochs=12):
+    def train(self, data, ofname, genome_fasta=None,
+              bigwig_fname=None, jitter_peaks_by=None, unbalanced_train_epochs=12):
         # split into fitting and early stopping
         data_fitting, data_stopping = next(data.iter_train_validation_subsets())
         if jitter_peaks_by is not None:
@@ -347,10 +367,12 @@ class KerasModel(KerasModelBase):
                 for jitter in jitter_peaks_by)
             data_fitting = data_fitting.add_peaks_and_labels(jittered_positives)
         X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data_stopping, genome_fasta, filter_ambiguous_labels=True)
+            data_stopping, genome_fasta,
+            bigwig_fname, filter_ambiguous_labels=True)
 
         X_train, y_train = self.build_predictor_and_label_matrices(
-            data_fitting, genome_fasta, filter_ambiguous_labels=True)
+            data_fitting, genome_fasta,
+            bigwig_fname, filter_ambiguous_labels=True)
 
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
@@ -364,7 +386,7 @@ class KerasModel(KerasModelBase):
             # build predictor matrices with  ambiguous labels
             print("Setting the ambiguous labels peak threshold.")
             X_train, y_train = self.build_predictor_and_label_matrices(
-                data_fitting, genome_fasta, filter_ambiguous_labels=False)
+                data_fitting, genome_fasta, bigwig_fname, filter_ambiguous_labels=False)
             self.ambiguous_peak_threshold = \
                 self.find_optimal_ambiguous_peak_threshold(
                     X_train, y_train, data_fitting.scores)
@@ -372,7 +394,7 @@ class KerasModel(KerasModelBase):
                 y_train, data_fitting.scores, self.ambiguous_peak_threshold)
 
             X_validation, y_validation = self.build_predictor_and_label_matrices(
-                data_stopping, genome_fasta, filter_ambiguous_labels=False)
+                data_stopping, genome_fasta, bigwig_fname, filter_ambiguous_labels=False)
             y_validation = set_ambiguous_labels(
                 y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
             print self.evaluate(X_validation, y_validation)

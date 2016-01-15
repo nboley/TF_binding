@@ -24,6 +24,7 @@ from KerasModel import (
     encode_peaks_sequence_into_binary_array,
     load_model
 )
+from grid_search import MOESearch
 
 def parse_args():
     parser = init_prediction_script_argument_parser(
@@ -39,6 +40,11 @@ def parse_args():
                     help='to validate on chr1 and chr4, input chr1,chr4')
     parser.add_argument('--include-model-report', default=False, action='store_true',
                     help='plot model predictions')
+    parser.add_argument('--accessibility-track',  default=None, type=str,
+                        dest='bigwig_features',
+                        help='bigwig file to get features')
+    parser.add_argument('--exclude-sequence',  action='store_true',
+                        help='ignore sequence features')
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
     train_parser = subparsers.add_parser('train', help='training help')
     test_parser = subparsers.add_parser('test', help='testing help')
@@ -54,6 +60,8 @@ def parse_args():
                               help='metric used for model selection. '\
                               'supported options: auROC, auPRC, F1, recall_at_05_fdr'\
                               'recall_at_10_fdr, recall_at_05_fdr.')
+    train_parser.add_argument('--run-grid-search', default=False, action='store_true',
+                    help='performs large scale hyper parameter selection')
     test_parser.add_argument('--model-file', default=None, type=str,
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
@@ -80,6 +88,7 @@ def parse_args():
             load_genome_metadata(args.annotation_id).filename) 
     else:
         genome_fasta = args.genome_fasta
+    if args.exclude_sequence: genome_fasta=None
 
     if args.tf_id is not None:
         assert args.pos_regions is None and args.neg_regions is None, \
@@ -118,13 +127,15 @@ def parse_args():
                   args.random_seed,
                   args.single_celltype,
                   args.validation_contigs,
-                  args.include_model_report)
+                  args.include_model_report,
+                  args.bigwig_features)
     if args.command=='train':
         command_args = ( args.model_prefix,
                          args.model_file,
                          args.weights_file,
                          args.jitter_peaks_by,
-                         args.target_metric)
+                         args.target_metric,
+                         args.run_grid_search)
     elif args.command=='test':
         command_args = ( args.model_file,
                          args.weights_file)
@@ -137,12 +148,14 @@ def main_train(main_args, train_args):
       random_seed,
       single_celltype,
       validation_contigs,
-      include_model_report ) = main_args
+      include_model_report,
+      bigwig_features ) = main_args
     ( model_ofname_prefix,
       model_fname,
       weights_fname,
       jitter_peaks_by,
-      target_metric) = train_args
+      target_metric,
+      run_grid_search ) = train_args
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -160,14 +173,37 @@ def main_train(main_args, train_args):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
             validation_contigs, single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
-        fit_model = model.train(
-            train,
-            genome_fasta,
-            '%s.%i' % (model_ofname_prefix, fold_index+1),
-            jitter_peaks_by)
+        if run_grid_search:
+            param_grid  = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
+                                   [[1,5], [10, 60], [8, 30], [5,50], [0, 0.01], [0, 0.5]]))
+            param_types = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
+                                   ['disc', 'disc', 'disc', 'disc', 'cont', 'cont']))
+            fixed_param = dict(zip(['peaks_and_labels', 'target_metric'],[peaks_and_labels, target_metric]))
+            conditional_param = dict(zip(['maxpool_stride'],['maxpool_size']))
+            model_search = MOESearch(KerasModel, param_grid, param_types,
+                                           fixed_param=fixed_param, conditional_param=conditional_param)
+            fit_method = 'train'
+            fit_param = dict(zip(['data', 'genome_fasta', 'ofname', 'jitter_peaks_by'],
+                                 [train, genome_fasta, '%s.%i' % (model_ofname_prefix, fold_index+1), jitter_peaks_by]))
+            score_method = 'score'
+            score_param = {}
+            fit_model_search = model_search.fit(fit_method, fit_param, score_method, score_param, max_iter=60,
+                                                      minimize=False, email_updates_to='johnnyisraeli@gmail.com')
+            fit_model = fit_model_search.best_estimator_
+            print 'hyper parameters selected by grid search:'
+            print fit_model_search.best_grid_param_
+            print 'resulting in selection score: %f' % fit_model_search.best_score_
+        else:
+            fit_model = model.train(
+                train,
+                '%s.%i' % (model_ofname_prefix, fold_index+1),
+                genome_fasta=genome_fasta,
+                jitter_peaks_by=jitter_peaks_by,
+                bigwig_fname=bigwig_features)
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid,
-            genome_fasta,
+            genome_fasta=genome_fasta,
+            bigwig_fname=bigwig_features,
             filter_ambiguous_labels=True)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             clean_res.train_samples = train.sample_ids
@@ -179,6 +215,7 @@ def main_train(main_args, train_args):
             res = fit_model.evaluate_peaks_and_labels(
                 valid,
                 genome_fasta,
+                bigwig_fnames=bigwig_features,
                 filter_ambiguous_labels=False,
                 plot_fname=("ambig.fold%i.png" % fold_index))
             res.train_samples = train.sample_ids
@@ -209,7 +246,8 @@ def main_test(main_args, test_args):
       random_seed,
       single_celltype,
       validation_contigs,
-      include_model_report ) = main_args
+      include_model_report,
+      bigwig_features ) = main_args
     model_fname, weights_fname = test_args
     np.random.seed(random_seed) # fix random seed
     clean_results = ClassificationResults()
@@ -229,6 +267,7 @@ def main_test(main_args, test_args):
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid,
             genome_fasta,
+            bigwig_fnames=bigwig_features,
             filter_ambiguous_labels=True)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             clean_res.validation_samples = valid.sample_ids
