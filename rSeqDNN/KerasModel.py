@@ -99,7 +99,7 @@ def set_ambiguous_labels(labels, scores, threshold):
 class KerasModelBase():
     def __init__(self, peaks_and_labels, target_metric='recall_at_05_fdr',
                  batch_size=200, num_conv_layers=3, l1_decay=0,
-                 num_conv=25, conv_height=4, conv_width=15, dropout=0.2,
+                 num_conv=25, conv_height=5, conv_width=15, dropout=0.2,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
                  model_type='cnn'):
         """
@@ -295,7 +295,6 @@ class KerasModel(KerasModelBase):
         return self
 
     def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, ofname):
-        X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
