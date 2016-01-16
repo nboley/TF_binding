@@ -83,9 +83,6 @@ def balance_matrices(X, labels, balance_option='downsample'):
     return np.vstack((pos, neg)), np.array(
         [1]*sample_size + [0]*sample_size, dtype='float32')
 
-def add_reverse_complements(X, y):
-    return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
-
 def load_model(fname):
     try:
         with open(fname) as fp:
@@ -246,17 +243,26 @@ class KerasModelBase():
             return coded_seqs
 
     def build_predictor_and_label_matrices(
-            self, data, genome_fasta=None, bigwig_fname=None, filter_ambiguous_labels=True):
+            self, data, genome_fasta=None, bigwig_fname=None,
+            add_reverse_complements=True, filter_ambiguous_labels=True):
         signal_arr_list = []
         if genome_fasta is not None:
             print('loading features from fasta...')
-            signal_arr_list.append(self._reshape_coded_seqs_array(
-                encode_peaks_sequence_into_array(data.peaks, genome_fasta)))
+            fasta_array = self._reshape_coded_seqs_array(
+                encode_peaks_sequence_into_array(data.peaks, genome_fasta))
+            if add_reverse_complements:
+                fasta_array = np.concatenate((fasta_array, fasta_array[:, :, ::-1, ::-1]))
+            signal_arr_list.append(fasta_array)
         if bigwig_fname is not None:
             print('loading features from bigwig...')
-            signal_arr_list.append(encode_peaks_bigwig_into_array(data.peaks, bigwig_fname))
+            bigwig_array = encode_peaks_bigwig_into_array(data.peaks, bigwig_fname)
+            if add_reverse_complements:
+                bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
+            signal_arr_list.append(bigwig_array)
         X = np.concatenate(signal_arr_list, axis=2)
         y = np.array(data.labels, dtype='float32')
+        if add_reverse_complements:
+            y = np.concatenate((y, y))
         if filter_ambiguous_labels:
             X = X[y != -1,:,:,:]
             y = y[y != -1]
@@ -269,7 +275,6 @@ class KerasModel(KerasModelBase):
         b_X_validation, b_y_validation = balance_matrices(
             X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)
-        b_X_train, b_y_train = add_reverse_complements(b_X_train, b_y_train)
         print 'num training positives: ', sum(b_y_train==1)
         print 'num training negatives: ', sum(b_y_train==0)
         
