@@ -18,7 +18,7 @@ from ScoreModel import (
     score_convolutions, rank_convolutions,
     get_encode_pwm_hits,
     plot_convolutions )
-from get_signal import encode_peaks_sequence_into_binary_array, BigwigExtractor
+from get_signal import encode_peaks_sequence_into_array, encode_peaks_bigwig_into_array
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -249,23 +249,13 @@ class KerasModelBase():
             self, data, genome_fasta=None, bigwig_fname=None, filter_ambiguous_labels=True):
         signal_arr_list = []
         if genome_fasta is not None:
+            print('loading features from fasta...')
             signal_arr_list.append(self._reshape_coded_seqs_array(
-                encode_peaks_sequence_into_binary_array(
-                    data.peaks, genome_fasta)))
+                encode_peaks_sequence_into_array(data.peaks, genome_fasta)))
         if bigwig_fname is not None:
             print('loading features from bigwig...')
-            N = len(data.labels)
-            bigwig_batch_size = 1000
-            bw = BigwigExtractor(bigwig_fname)
-            pks, samples, labels, scores = data[:bigwig_batch_size]
-            bigwig_features = bw(get_intervals_from_peaks(zip(pks, samples, labels, scores)))
-            for start in xrange(bigwig_batch_size, N, bigwig_batch_size):
-                stop = min(start+bigwig_batch_size, N)
-                pks, samples, labels, scores = data[start:stop]
-                data_batch = zip(pks, samples, labels, scores)
-                bigwig_features = np.concatenate((bigwig_features, bw(get_intervals_from_peaks(data_batch))))
-            signal_arr_list.append(bigwig_features)
-        X = np.concatenate(tuple(signal_arr_list), axis=2)
+            signal_arr_list.append(encode_peaks_bigwig_into_array(data.peaks, bigwig_fname))
+        X = np.concatenate(signal_arr_list, axis=2)
         y = np.array(data.labels, dtype='float32')
         if filter_ambiguous_labels:
             X = X[y != -1,:,:,:]

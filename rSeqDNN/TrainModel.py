@@ -19,11 +19,7 @@ from pyTFbindtools.cross_validation import (
     ClassificationResult, ClassificationResults
 )
 
-from KerasModel import (
-    KerasModel,
-    encode_peaks_sequence_into_binary_array,
-    load_model
-)
+from KerasModel import KerasModel, load_model
 from grid_search import MOESearch
 
 def parse_args():

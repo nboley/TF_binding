@@ -2,14 +2,29 @@ import numpy as np
 from pybedtools import Interval
 import wWigIO
 from pyTFbindtools.sequence import one_hot_encode_sequence
+from pyTFbindtools.peaks import get_intervals_from_peaks
 
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
+def batch_iter(iterable, batch_size):
+    '''iterates in batches.
+    '''
+    it = iter(iterable)
+    try:
+        while True:
+            values = []
+            for n in xrange(batch_size):
+                values += (it.next(),)
+            yield values
+    except StopIteration:
+        # yield remaining values
+        yield values
+
+def encode_peaks_sequence_into_array(peaks, fasta):
     """
     Extracts sequence input arrays.
 
     Parameters
     ----------
-    peaks : PeaksAndLabels obj
+    peaks : sequence of NarrowPeak
     fasta : FastaFile
 
     Returns
@@ -78,3 +93,21 @@ class BigwigExtractor(object):
             return (data[:, 0, 0, -offset:-offset + width] - mean) / std
         else:
             return _bigwig_extractor(self._datafile, intervals, **kwargs)
+
+def encode_peaks_bigwig_into_array(peaks, bigwig_fname, batch_size=1000):
+    """
+    Extracts sequence input arrays.
+
+    Parameters
+    ----------
+    peaks : sequence of NarrowPeak
+    bigwig_fname : str
+    batch_size : int, default: 1000
+        Determines batching during bigwig loading.
+    """
+    bw = BigwigExtractor(bigwig_fname)
+    data_batches = [bw(get_intervals_from_peaks(peaks_batch))
+                    for peaks_batch in batch_iter(peaks, batch_size)]
+    data = np.concatenate(data_batches)
+
+    return data

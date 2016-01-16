@@ -194,11 +194,10 @@ def merge_peaks_and_labels(*peaks_and_labels_iterable):
     """
     return PeaksAndLabels(chain.from_iterable(*peaks_and_labels_iterable))
 
-def get_intervals_from_peaks(peaks_and_labels):
+def get_intervals_from_peaks(peaks):
     '''returns list of pybedtools intervals
     '''
-    return [Interval(pk.contig, pk.start, pk.stop)
-            for pk, sample, label, score in peaks_and_labels]
+    return [Interval(pk.contig, pk.start, pk.stop) for pk in peaks]
 
 class FastaPeaksAndLabels(PeaksAndLabels):
     @staticmethod
