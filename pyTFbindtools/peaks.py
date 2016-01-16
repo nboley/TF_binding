@@ -126,7 +126,7 @@ class PeaksAndLabels():
         self.labels.flags.writeable = False
         self.scores = np.array(self.scores, dtype='float32')
         self.scores.flags.writeable = False
-        
+
     def subset_data(self, sample_names, contigs):
         '''return data covering sample+names and contigs
         '''
@@ -161,13 +161,6 @@ class PeaksAndLabels():
             pk_and_label for pk_and_label in self
             if pk_and_label.label == label
         )
-
-    def add_peaks_and_labels(self, peaks_and_labels):
-        """
-        Append entries in peaks_and_labels.
-        """
-        return PeaksAndLabels(
-            chain.from_iterable([self, peaks_and_labels]))
 
     def iter_train_validation_subsets(
             self, validation_contigs=None, single_celltype=False):

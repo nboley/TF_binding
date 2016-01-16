@@ -18,7 +18,7 @@ from ScoreModel import (
     score_convolutions, rank_convolutions,
     get_encode_pwm_hits,
     plot_convolutions )
-from extractors import BigwigExtractor
+from get_signal import BigwigExtractor
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -365,7 +365,7 @@ class KerasModel(KerasModelBase):
             jittered_positives = merge_peaks_and_labels(
                 data_fitting_positives.jitter_peaks(jitter)
                 for jitter in jitter_peaks_by)
-            data_fitting = data_fitting.add_peaks_and_labels(jittered_positives)
+            data_fitting = merge_peaks_and_labels((data_fitting, jittered_positives))
         X_validation, y_validation = self.build_predictor_and_label_matrices(
             data_stopping, genome_fasta,
             bigwig_fname, filter_ambiguous_labels=True)
