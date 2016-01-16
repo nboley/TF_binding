@@ -18,7 +18,7 @@ from ScoreModel import (
     score_convolutions, rank_convolutions,
     get_encode_pwm_hits,
     plot_convolutions )
-from get_signal import BigwigExtractor
+from get_signal import encode_peaks_sequence_into_binary_array, BigwigExtractor
 
 from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
@@ -82,24 +82,6 @@ def balance_matrices(X, labels, balance_option='downsample'):
         raise ValueError('invalid matrix balancing option!')
     return np.vstack((pos, neg)), np.array(
         [1]*sample_size + [0]*sample_size, dtype='float32')
-
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
-    for i, pk in enumerate(peaks):
-        if pk.seq is not None:
-            seq = pk.seq
-        else:
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-        # skip sequences overrunning the contig boundary
-        if len(seq) != pk_width: continue
-        coded_seq = one_hot_encode_sequence(seq)
-        data[i] = coded_seq
-    # swap base and position axes
-    return data.swapaxes(1,2)
 
 def add_reverse_complements(X, y):
     return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
