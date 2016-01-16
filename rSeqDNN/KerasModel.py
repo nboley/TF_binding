@@ -214,14 +214,15 @@ class KerasModelBase():
             self, 
             data, 
             genome_fasta=None,
+            bigwig_fname=None,
             filter_ambiguous_labels=False,
-            bigwig_fnames=None,
             plot_fname=None):
         '''evaluate model
         '''
         X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data, genome_fasta,
-            filter_ambiguous_labels=filter_ambiguous_labels, bigwig_fnames=bigwig_fnames)
+            data, genome_fasta=genome_fasta, bigwig_fname=bigwig_fname,
+            add_reverse_complements=False,
+            filter_ambiguous_labels=filter_ambiguous_labels)
         # set the ambiguous labels
         if not filter_ambiguous_labels:
             if plot_fname is not None:

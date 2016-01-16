@@ -210,7 +210,7 @@ def main_train(main_args, train_args):
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             res = fit_model.evaluate_peaks_and_labels(
                 valid,
-                genome_fasta,
+                genome_fasta=genome_fasta,
                 bigwig_fnames=bigwig_features,
                 filter_ambiguous_labels=False,
                 plot_fname=("ambig.fold%i.png" % fold_index))
@@ -262,8 +262,8 @@ def main_test(main_args, test_args):
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid,
-            genome_fasta,
-            bigwig_fnames=bigwig_features,
+            genome_fasta=genome_fasta,
+            bigwig_fname=bigwig_features,
             filter_ambiguous_labels=True)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             clean_res.validation_samples = valid.sample_ids
