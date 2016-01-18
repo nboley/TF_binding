@@ -29,15 +29,15 @@ def encode_peaks_sequence_into_array(peaks, fasta):
 
     Returns
     -------
-    data : 3d array
-        shaped (N, 4, L) where L is number of sequence
+    data : 4d array
+        shaped (N, 1, 4, L) where N is number of sequences
         and L is sequence length.
     """
     # find the peak width
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
+    data = 0.25 * np.ones((len(peaks), 1, pk_width, 4), dtype='float32')
     for i, pk in enumerate(peaks):
         if pk.seq is not None:
             seq = pk.seq
@@ -48,7 +48,7 @@ def encode_peaks_sequence_into_array(peaks, fasta):
         coded_seq = one_hot_encode_sequence(seq)
         data[i] = coded_seq
     # swap base and position axes
-    data.swapaxes(1,2)
+    data = data.swapaxes(2,3)
 
     return data
 
@@ -111,3 +111,25 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fname, batch_size=1000):
     data = np.concatenate(data_batches)
 
     return data
+
+def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
+                            reverse_complement=False):
+    """
+    Get sequence of signal arrays.
+    """
+    signal_arrays = []
+    if genome_fasta is not None:
+        print('loading features from fasta...')
+        sequence_array = encode_peaks_sequence_into_array(peaks, genome_fasta)
+        if reverse_complement:
+            sequence_array = np.concatenate((sequence_array,
+                                             sequence_array[:, :, ::-1, ::-1]))
+        signal_arrays.append(sequence_array)
+    if bigwig_fname is not None:
+        print('loading features from bigwig...')
+        bigwig_array = encode_peaks_bigwig_into_array(peaks, bigwig_fname)
+        if reverse_complement:
+            bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
+        signal_arrays.append(bigwig_array)
+
+    return signal_arrays

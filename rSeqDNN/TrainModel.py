@@ -19,6 +19,7 @@ from pyTFbindtools.cross_validation import (
     ClassificationResult, ClassificationResults
 )
 
+from get_signal import get_peaks_signal_arrays
 from KerasModel import KerasModel, load_model
 from grid_search import MOESearch
 
@@ -58,7 +59,7 @@ def parse_args():
                               'recall_at_10_fdr, recall_at_05_fdr.')
     train_parser.add_argument('--run-grid-search', default=False, action='store_true',
                     help='performs large scale hyper parameter selection')
-    test_parser.add_argument('--model-file', default=None, type=str,
+    test_parser.add_argument('--model-file', type=str, required=True,
         help='pickled model file, defaults to default KerasModel')
     test_parser.add_argument('--weights-file', type=str, required=True,
         help='model weights file')
@@ -157,8 +158,6 @@ def main_train(main_args, train_args):
     clean_results = ClassificationResults()
     training_data = OrderedDict()
     validation_data = OrderedDict()
-    model = KerasModel(peaks_and_labels,
-                       target_metric=target_metric)
     if model_fname is not None:
         model.model = load_model(model_fname)
     if weights_fname is not None:
@@ -169,6 +168,25 @@ def main_train(main_args, train_args):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
             validation_contigs, single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
+        # preprocess peaks, get signal, initialize model, train, test
+        fitting_data, stopping_data = next(train.iter_train_validation_subsets())
+        # preprocess peaks
+        if jitter_peaks_by is not None:
+            fitting_data_positives = fitting_data.filter_by_label(1)
+            jittered_positives = merge_peaks_and_labels(
+                fitting_data_positives.jitter_peaks(jitter)
+                for jitter in jitter_peaks_by)
+            fitting_data = merge_peaks_and_labels((fitting_data, jittered_positives))
+        # get signal arrays
+        fitting_signal_arrays = get_peaks_signal_arrays(
+            fitting_data.peaks, genome_fasta, bigwig_features, reverse_complement=True)
+        fitting_labels = np.concatenate((fitting_data.labels, fitting_data.labels))
+        fitting_scores = np.concatenate((fitting_data.scores, fitting_data.scores))
+        stopping_signal_arrays = get_peaks_signal_arrays(
+            stopping_data.peaks, genome_fasta, bigwig_features, reverse_complement=False)
+        stopping_labels = stopping_data.labels
+        stopping_scores = stopping_data.scores
+        signal_arrays_shapes = [np.shape(signal_array) for signal_array in stopping_signal_arrays]
         if run_grid_search:
             param_grid  = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
                                    [[1,5], [10, 60], [8, 30], [5,50], [0, 0.01], [0, 0.5]]))
@@ -190,17 +208,19 @@ def main_train(main_args, train_args):
             print fit_model_search.best_grid_param_
             print 'resulting in selection score: %f' % fit_model_search.best_score_
         else:
+            model = KerasModel(signal_arrays_shapes, target_metric=target_metric)
             fit_model = model.train(
-                train,
-                '%s.%i' % (model_ofname_prefix, fold_index+1),
-                genome_fasta=genome_fasta,
-                jitter_peaks_by=jitter_peaks_by,
-                bigwig_fname=bigwig_features)
+                fitting_signal_arrays, fitting_labels, fitting_scores,
+                stopping_signal_arrays, stopping_labels, stopping_scores,
+                '%s.%i' % (model_ofname_prefix, fold_index+1))
+        valid_signal_arrays = get_peaks_signal_arrays(
+            valid.peaks, genome_fasta, bigwig_features, reverse_complement=False)
+        valid_labels = valid.labels
+        valid_scores = valid.scores
         clean_res = fit_model.evaluate_peaks_and_labels(
-            valid,
-            genome_fasta=genome_fasta,
-            bigwig_fname=bigwig_features,
-            filter_ambiguous_labels=True)
+            valid_signal_arrays,
+            valid_labels,
+            include_ambiguous_labels=False)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             clean_res.train_samples = train.sample_ids
             clean_res.train_chromosomes = train.contigs
@@ -209,10 +229,10 @@ def main_train(main_args, train_args):
         clean_results.append(clean_res)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             res = fit_model.evaluate_peaks_and_labels(
-                valid,
-                genome_fasta=genome_fasta,
-                bigwig_fnames=bigwig_features,
-                filter_ambiguous_labels=False,
+                valid_signal_arrays,
+                valid_labels,
+                include_ambiguous_labels=True,
+                scores=valid_scores,
                 plot_fname=("ambig.fold%i.png" % fold_index))
             res.train_samples = train.sample_ids
             res.train_chromosomes = train.contigs
@@ -221,10 +241,11 @@ def main_train(main_args, train_args):
             results.append(res)
             if include_model_report:
                 fit_model.classification_report(
-                    valid,
-                    genome_fasta,
+                    stopping_signal_arrays,
+                    stopping_labels,
                     "%s.fold%i" % (
-                        model_ofname_prefix, fold_index))
+                        model_ofname_prefix, fold_index),
+                    stopping_scores)
         if only_test_one_fold: break
     print 'CLEAN VALIDATION RESULTS'
     for res in clean_results:
@@ -248,11 +269,7 @@ def main_test(main_args, test_args):
     np.random.seed(random_seed) # fix random seed
     clean_results = ClassificationResults()
     validation_data = OrderedDict()
-    fit_model = KerasModel(peaks_and_labels)
-    if model_fname is not None:
-        fit_model.model = load_model(model_fname)
-    else:
-        fit_model.compile()
+    fit_model = KerasModel(model_fname=model_fname)
     fit_model.model.load_weights(weights_fname)
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
@@ -260,11 +277,14 @@ def main_test(main_args, test_args):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
             validation_contigs, single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
+        valid_signal_arrays = get_peaks_signal_arrays(
+            valid.peaks, genome_fasta, bigwig_features, reverse_complement=False)
+        valid_labels = valid.labels
+        valid_scores = valid.scores
         clean_res = fit_model.evaluate_peaks_and_labels(
-            valid,
-            genome_fasta=genome_fasta,
-            bigwig_fname=bigwig_features,
-            filter_ambiguous_labels=True)
+            valid_signal_arrays,
+            valid_labels,
+            include_ambiguous_labels=False)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
             clean_res.validation_samples = valid.sample_ids
             clean_res.validation_chromosomes = valid.contigs
