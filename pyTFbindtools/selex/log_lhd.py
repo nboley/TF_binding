@@ -300,8 +300,8 @@ def theano_build_lhd_and_grad_fns(data):
     penalized_lhd = ( 
         lhd 
         #- 100*TT.sum(log_unbnd_imbalance**2)
-        - 100*TT.exp((-6-mean_energy)**2)
-        - 100*TT.sum(TT.exp(-2+TT.max(ddg_base_portion, axis=1)
+        - 100*TT.exp((-2-mean_energy)**2)
+        - 100*TT.sum(TT.exp(TT.max(ddg_base_portion, axis=1)
                             - TT.min(ddg_base_portion, axis=1)))
     )
     #penalized_lhd = lhd
