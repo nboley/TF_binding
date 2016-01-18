@@ -234,40 +234,48 @@ class KerasModelBase():
         open(fname, 'w').write(json_string)
 
     def predict(self, X_validation, verbose=False):
-        preds = self.model.predict_classes(X_validation, verbose=int(verbose))
-        # move the predicted labels into 0, 1 space
-        preds[preds == 0] = 0
-        return preds
+        return self.model.predict_classes(X_validation, verbose=int(verbose))
 
     def predict_proba(self, predictors, verbose=False):
         return self.model.predict_proba(predictors, verbose=int(verbose))
-    
+
     def find_optimal_ambiguous_peak_threshold(self, X, y, scores):
         return find_optimal_ambiguous_peak_threshold(
             self, X, y, scores, 20, self.target_metric)
-    
+
     def evaluate(self, X_validation, y_validation):
         preds = self.predict(X_validation)
         pred_probs = self.predict_proba(X_validation)
         return ClassificationResult(y_validation, preds, pred_probs)
-    
-    def evaluate_peaks_and_labels(self, X, labels, include_ambiguous_labels=True,
+
+    def evaluate_peaks_and_labels(self, X, labels, include_ambiguous_labels=False,
                                   scores=None, plot_fname=None):
-        '''evaluate model
-        '''
+        """
+        Evaluate model performance.
+
+        Parameters
+        ----------
+        X : sequence of ndarray
+        labels : 1d array
+        include_ambiguous_labels : boolean, default: False
+        scores : 1d array, required if include_ambiguous_labels
+        plot_fname : str, optional
+
+        Returns
+        -------
+        ClassificationResult, optionally plots ambiguous examples.
+        """
         y_true = np.copy(labels)
         if include_ambiguous_labels:
+            assert scores is not None, \
+                "model evaluation with ambiguous labels: must include scores!"
+            y_true = set_ambiguous_labels(
+                y_true, scores, self.ambiguous_peak_threshold)
             if plot_fname is not None:
                 plot_ambiguous_peaks(
                     scores[y_true == -1],
                     self.predict_proba(X)[y_true == -1],
                     plot_fname)
-            if scores is not None:
-                y_true = set_ambiguous_labels(
-                    y_true, scores, self.ambiguous_peak_threshold)
-            else:
-                raise RuntimeError(
-                    "model evaluation with ambiguous labels: must include scores!")
         else:
             X = [X_arr[y_true != -1,:,:,:] for X_arr in X]
             y_true = y_true[y_true != -1]
