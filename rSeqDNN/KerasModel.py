@@ -348,15 +348,17 @@ class KerasModel(KerasModelBase):
               stopping_arrays, stopping_labels, stopping_scores, ofname,
               unbalanced_train_epochs=12):
         # filter ambiguous examples
+        y_train = np.copy(fitting_labels)
+        y_validation = np.copy(stopping_labels)
         if any(fitting_labels==-1) or any(stopping_labels==-1):
-            X_train_list = [X[fitting_labels != -1,:,:,:] for X in fitting_arrays]
-            y_train = fitting_labels[fitting_labels != -1]
-            X_validation_list = [X[stopping_labels != -1,:,:,:] for X in stopping_arrays]
-            y_validation = stopping_labels[stopping_labels != -1]
+            fitting_arrays = [X[fitting_labels != -1,:,:,:] for X in fitting_arrays]
+            y_train = y_train[y_train != -1]
+            stopping_arrays = [X[stopping_labels != -1,:,:,:] for X in stopping_arrays]
+            y_validation = y_validation[y_validation != -1]
         # optional array stacking, keeping sequence of array format
         if self.stack_arrays:
-            X_train = [np.concatenate(X_train_list, axis=2)]
-            X_validation = [np.concatenate(X_validation_list, axis=2)]
+            X_train = [np.concatenate(fitting_arrays, axis=2)]
+            X_validation = [np.concatenate(stopping_arrays, axis=2)]
         # fit calls with sequence of input arrays
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(
