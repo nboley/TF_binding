@@ -96,7 +96,7 @@ class BigwigExtractor(object):
 
 def encode_peaks_bigwig_into_array(peaks, bigwig_fname, batch_size=1000):
     """
-    Extracts sequence input arrays.
+    Extracts bigwig input arrays.
 
     Parameters
     ----------
@@ -104,7 +104,17 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fname, batch_size=1000):
     bigwig_fname : str
     batch_size : int, default: 1000
         Determines batching during bigwig loading.
+
+    Returns
+    -------
+    data : 4d array
+        shaped (N, 1, 1, L) where N is number of regions
+        and L is sequence length.
     """
+    # find the peak width
+    pk_width = peaks[0].pk_width
+    # make sure that the peaks are all the same width
+    assert all(pk.pk_width == pk_width for pk in peaks)
     bw = BigwigExtractor(bigwig_fname)
     data_batches = [bw(get_intervals_from_peaks(peaks_batch))
                     for peaks_batch in batch_iter(peaks, batch_size)]
