@@ -25,7 +25,7 @@ from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
 from keras.models import Sequential
 from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute,
-    Flatten )
+    Flatten, Merge )
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_json
@@ -181,8 +181,8 @@ class KerasModelBase():
         assert maxpool_size%maxpool_stride == 0
 
         # Define architecture
+        self.model = Sequential()
         if self.stack_arrays:
-            self.model = Sequential()
             stacked_height = sum(shape[-2] for shape in arrays_shapes)
             self.model.add(Convolution2D(
                 num_conv,
@@ -199,11 +199,40 @@ class KerasModelBase():
                     W_regularizer=l1(l1_decay)
                 ))
                 self.model.add(Dropout(dropout))
-            self.model.add(MaxPooling2D(
+        # TODO: multi-moding if stack_arrays is False
+        else:
+            unimodal_cnns = []
+            # build cnn for each mode
+            for i, shape in enumerate(arrays_shapes):
+                cnn = Sequential()
+                height = shape[-2]
+                cnn.add(Convolution2D(
+                    num_conv,
+                    height, conv_width,
+                    activation="relu", init="he_normal",
+                    input_shape=shape[1:]))
+                cnn.add(Dropout(dropout))
+                for i in xrange(1, num_conv_layers-1):
+                    cnn.add(Convolution2D(
+                        num_conv,
+                        1, conv_width,
+                        activation="relu", init="he_normal",
+                        W_regularizer=l1(l1_decay)))
+                    cnn.add(Dropout(dropout))
+                unimodal_cnns.append(cnn)
+            # concatenate unimodal cnns
+            self.model.add(Merge(unimodal_cnns, mode='concat', concat_axis=2))
+            # run conv layer on combined output
+            self.model.add(Convolution2D(
+                num_conv,
+                len(arrays_shapes), conv_width,
+                activation="relu", init="he_normal",
+                W_regularizer=l1(l1_decay)))
+            self.model.add(Dropout(dropout))
+        self.model.add(MaxPooling2D(
                 pool_size=(1,maxpool_size),
                 strides=(1,maxpool_stride)
             ))
-        # TODO: multi-moding if stack_arrays is False
         if model_type=='cnn':
             self.model.add(Flatten())
         elif model_type=='cnn-rnn-tdd':
@@ -359,6 +388,9 @@ class KerasModel(KerasModelBase):
         if self.stack_arrays:
             X_train = [np.concatenate(fitting_arrays, axis=2)]
             X_validation = [np.concatenate(stopping_arrays, axis=2)]
+        else:
+            X_train = fitting_arrays
+            X_validation = stopping_arrays
         # fit calls with sequence of input arrays
         print("Initializing model from balanced training set.")
         self._fit_with_balanced_data(

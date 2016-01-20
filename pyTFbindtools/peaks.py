@@ -270,13 +270,14 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
 
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
-        half_peak_width=None):
+        half_peak_width=None,
+        max_num_peaks_per_sample=None):
     def iter_all_pks():        
         for pos_pk in iter_summit_centered_peaks(
-                iter_narrow_peaks(pos_regions_fp), half_peak_width):
+                iter_narrow_peaks(pos_regions_fp, max_num_peaks_per_sample), half_peak_width):
             yield PeakAndLabel(pos_pk, 'sample', 1, pos_pk.signalValue)
         for neg_pk in iter_summit_centered_peaks(
-                iter_narrow_peaks(neg_regions_fp), half_peak_width):
+                iter_narrow_peaks(neg_regions_fp, max_num_peaks_per_sample), half_peak_width):
             yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
     return PeaksAndLabels(iter_all_pks())
 
