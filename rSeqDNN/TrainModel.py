@@ -51,6 +51,8 @@ def parse_args():
         help='pickled model architecture to train')
     train_parser.add_argument('--weights-file', type=str, default=None,
         help='model weights to finetune')
+    train_parser.add_argument('--multi-mode', action='store_true',
+                    help='treat different features as separate modes')
     train_parser.add_argument('--jitter-peaks-by', type=str, default=None,
                               help='10,-15,5 will jitter peaks by 10, -15, and 5 ')
     train_parser.add_argument('--target-metric', type=str, default='recall_at_05_fdr',
@@ -108,7 +110,8 @@ def parse_args():
             assert args.neg_regions != None, \
             "--neg-regions must be set"
             peaks_and_labels = load_labeled_peaks_from_beds(
-            args.pos_regions, args.neg_regions, args.half_peak_width)
+                args.pos_regions, args.neg_regions,
+                args.half_peak_width, args.max_num_peaks_per_sample)
         elif args.pos_sequences != None:
             assert args.neg_sequences != None, \
             "--neg-sequences must be set"
@@ -129,6 +132,7 @@ def parse_args():
     if args.command=='train':
         command_args = ( args.model_prefix,
                          args.model_file,
+                         args.multi_mode,
                          args.weights_file,
                          args.jitter_peaks_by,
                          args.target_metric,
@@ -150,6 +154,7 @@ def main_train(main_args, train_args):
     ( model_ofname_prefix,
       model_fname,
       weights_fname,
+      multi_mode,
       jitter_peaks_by,
       target_metric,
       run_grid_search ) = train_args
@@ -158,10 +163,6 @@ def main_train(main_args, train_args):
     clean_results = ClassificationResults()
     training_data = OrderedDict()
     validation_data = OrderedDict()
-    if model_fname is not None:
-        model.model = load_model(model_fname)
-    if weights_fname is not None:
-        model.model.load_weights(weights_fname)
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
@@ -208,7 +209,11 @@ def main_train(main_args, train_args):
             print fit_model_search.best_grid_param_
             print 'resulting in selection score: %f' % fit_model_search.best_score_
         else:
-            model = KerasModel(signal_arrays_shapes, target_metric=target_metric)
+            if model_fname is not None and weights_fname is not None:
+                model = KerasModel(model_fname=model_fname)
+                model.model.load_weights(weights_fname)
+            else:
+                model = KerasModel(signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
             fit_model = model.train(
                 fitting_signal_arrays, fitting_labels, fitting_scores,
                 stopping_signal_arrays, stopping_labels, stopping_scores,
@@ -227,7 +232,7 @@ def main_train(main_args, train_args):
             clean_res.validation_samples = valid.sample_ids
             clean_res.validation_chromosomes = valid.contigs
         clean_results.append(clean_res)
-        if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
+        if any(valid_labels == -1):
             res = fit_model.evaluate_peaks_and_labels(
                 valid_signal_arrays,
                 valid_labels,
@@ -251,10 +256,11 @@ def main_train(main_args, train_args):
     for res in clean_results:
         print res
     print clean_results
-    print 'FULL VALIDATION RESULTS'
-    for res in results:
-        print res
-    print results
+    if len(results) > 0:
+        print 'FULL VALIDATION RESULTS'
+        for res in results:
+            print res
+        print results
 
 def main_test(main_args, test_args):
     ( peaks_and_labels,

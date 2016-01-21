@@ -106,9 +106,13 @@ def balance_matrices(X, labels, balance_option='downsample'):
         return X_balanced, y
 
 def load_model(fname):
-    '''loads model saved as json.
+    '''loads model saved as json or pickle file.
     '''
-    return model_from_json(open(fname, 'r').read())
+    if 'json' in fname:
+        return model_from_json(open(fname).read())
+    else:
+        with open(fname, 'r') as fp:
+            return pickle.load(fp)
 
 def set_ambiguous_labels(labels, scores, threshold):
     ambig_labels = (labels == -1)
@@ -118,7 +122,7 @@ def set_ambiguous_labels(labels, scores, threshold):
 
 class KerasModelBase():
     def __init__(self, arrays_shapes=None, model_fname=None,
-                 stack_arrays=True, target_metric='recall_at_05_fdr',
+                 multi_mode=False, target_metric='recall_at_05_fdr',
                  batch_size=200, num_conv_layers=3, l1_decay=0,
                  num_conv=25, conv_height=5, conv_width=15, dropout=0.2,
                  maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
@@ -159,7 +163,7 @@ class KerasModelBase():
         """
         assert model_fname is not None or arrays_shapes is not None, \
             "Either model_fname or arrays_shapes needed to initialize KerasModel!"
-        self.stack_arrays = stack_arrays
+        self.stack_arrays = not multi_mode
         self.batch_size = batch_size
         self.ambiguous_peak_threshold = None
         self.target_metric = target_metric
@@ -199,7 +203,6 @@ class KerasModelBase():
                     W_regularizer=l1(l1_decay)
                 ))
                 self.model.add(Dropout(dropout))
-        # TODO: multi-moding if stack_arrays is False
         else:
             unimodal_cnns = []
             # build cnn for each mode
@@ -252,21 +255,36 @@ class KerasModelBase():
         return abs(hash(str(self.model.get_config())))
 
     def compile(self, ofname, loss, optimizer, class_mode="binary"):
-        loss_name = loss if isinstance(loss, str) else loss.__name__
-        fname = "%s.MODEL.%s.json" % (ofname, loss_name)
         print "compiling model..."
         self.model.compile(optimizer,
                            loss,
                            class_mode)
         print("Serializing compiled model." )
-        json_string = self.model.to_json()
-        open(fname, 'w').write(json_string)
+        loss_name = loss if isinstance(loss, str) else loss.__name__
+        if isinstance(self.model.layers[0], Merge):
+            fname = "%s.MODEL.%s.json" % (ofname, loss_name)
+            json_string = self.model.to_json()
+            open(fname, 'w').write(json_string)
+        else:
+        # json is not stable for some merged models
+        # pickle instead
+            fname = "%s.MODEL.%s.pkl" % (ofname, loss_name)
+            with open(fname, 'w') as fp:
+                pickle.dump(self.model, fp)
 
     def predict(self, X_validation, verbose=False):
-        return self.model.predict_classes(X_validation, verbose=int(verbose))
+        if isinstance(self.model.layers[0], Merge):
+            return self.model.predict_classes(X_validation, verbose=int(verbose))
+        else:
+            return self.model.predict_classes(np.concatenate(X_validation, axis=2),
+                                              verbose=int(verbose))
 
-    def predict_proba(self, predictors, verbose=False):
-        return self.model.predict_proba(predictors, verbose=int(verbose))
+    def predict_proba(self, X_validation, verbose=False):
+        if isinstance(self.model.layers[0], Merge):
+            return self.model.predict_proba(X_validation, verbose=int(verbose))
+        else:
+            return self.model.predict_proba(np.concatenate(X_validation, axis=2),
+                                            verbose=int(verbose))
 
     def find_optimal_ambiguous_peak_threshold(self, X, y, scores):
         return find_optimal_ambiguous_peak_threshold(
