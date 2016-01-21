@@ -10,15 +10,14 @@ except:
 
 from pyTFbindtools.peaks import (
     FastaPeaksAndLabels,
+    merge_peaks_and_labels,
     load_labeled_peaks_from_beds,
     load_labeled_peaks_from_fastas,
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 )
-
 from pyTFbindtools.cross_validation import (
     ClassificationResult, ClassificationResults
 )
-
 from get_signal import get_peaks_signal_arrays
 from KerasModel import KerasModel, load_model
 from grid_search import MOESearch

@@ -13,7 +13,6 @@ from pyTFbindtools.cross_validation import (
     plot_ambiguous_peaks,
     plot_peak_ranks,
     plot_pr_curve )
-from pyTFbindtools.peaks import merge_peaks_and_labels, get_intervals_from_peaks
 from ScoreModel import (
     score_convolutions, rank_convolutions,
     get_encode_pwm_hits,
