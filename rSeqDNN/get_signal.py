@@ -1,6 +1,6 @@
 import numpy as np
 from pybedtools import Interval
-import wWigIO
+import bigWigFeaturize
 from pyTFbindtools.sequence import one_hot_encode_sequence
 from pyTFbindtools.peaks import get_intervals_from_peaks
 
@@ -52,75 +52,31 @@ def encode_peaks_sequence_into_array(peaks, fasta):
 
     return data
 
-def _bigwig_extractor(datafile, intervals, **kwargs):
-    width = intervals[0].stop - intervals[0].start
-    data = np.zeros((len(intervals), 1, 1, width))
-
-    wWigIO.open(datafile)
-
-    for index, interval in enumerate(intervals):
-        wWigIO.getData(datafile, interval.chrom, interval.start, interval.stop,
-                       data[index, 0, 0, :])
-
-    wWigIO.close(datafile)
-
-    return data
-
-class BigwigExtractor(object):
-    multiprocessing_safe = True
-
-    def __init__(self, datafile, **kwargs):
-        self._datafile = datafile
-        self._halfwidth = kwargs.get('local_norm_halfwidth', None)
-
-    def __call__(self, intervals, **kwargs):
-        if self._halfwidth:
-            width = intervals[0].stop - intervals[0].start
-            offset = width // 2 - self._halfwidth
-
-            slopped_intervals = [
-                Interval(interval.chrom,
-                         interval.start + offset,
-                         interval.stop - offset)
-                for interval in intervals
-            ]
-
-            data = _bigwig_extractor(self._datafile, slopped_intervals,
-                                     **kwargs)
-            mean = data.mean(axis=3, keepdims=True)
-            std = data.std(axis=3, keepdims=True)
-
-            return (data[:, 0, 0, -offset:-offset + width] - mean) / std
-        else:
-            return _bigwig_extractor(self._datafile, intervals, **kwargs)
-
-def encode_peaks_bigwig_into_array(peaks, bigwig_fname, batch_size=1000):
+def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None):
     """
     Extracts bigwig input arrays.
 
     Parameters
     ----------
     peaks : sequence of NarrowPeak
-    bigwig_fname : str
-    batch_size : int, default: 1000
-        Determines batching during bigwig loading.
+    bigwig_fnames : list
+        Expects list of bigwig filenames.
 
     Returns
     -------
-    data : 4d array
-        shaped (N, 1, 1, L) where N is number of regions
-        and L is sequence length.
+    4d array shaped (N, 1, k, L) where N is number of regions,
+    k is the number of bigwig filenames, and L is sequence length.
     """
     # find the peak width
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    bw = BigwigExtractor(bigwig_fname)
-    data_batches = [bw(get_intervals_from_peaks(peaks_batch))
-                    for peaks_batch in batch_iter(peaks, batch_size)]
-    data = np.concatenate(data_batches)
-
-    return data
+    if isinstance(cache, basestring):
+        return bigWigFeaturize.new(bigwig_fnames, pk_width,
+                                   intervals=get_intervals_from_peaks(peaks), cache=cache)
+    else:
+        return bigWigFeaturize.new(bigwig_fnames, pk_width,
+                                   intervals=get_intervals_from_peaks(peaks))
 
 def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
                             reverse_complement=False):
@@ -137,7 +93,7 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
         signal_arrays.append(sequence_array)
     if bigwig_fname is not None:
         print('loading features from bigwig...')
-        bigwig_array = encode_peaks_bigwig_into_array(peaks, bigwig_fname)
+        bigwig_array = encode_peaks_bigwig_into_array(peaks, [bigwig_fname])
         if reverse_complement:
             bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
         signal_arrays.append(bigwig_array)
