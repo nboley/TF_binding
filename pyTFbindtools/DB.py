@@ -303,5 +303,33 @@ def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
         rv[sample_id][1].add(dnase_peak_fname)
     return rv
 
+def load_samples_from_db_by_tfid(tfid, annotation_id):
+    cur = conn.cursor()
+    query = """
+    SELECT roadmap_sample_id
+      FROM roadmap_matched_chipseq_peaks
+     WHERE tf_id = %s
+       AND annotation_id = %s;
+    """
+    rv = set()
+    cur.execute(query, [tfid, annotation_id])
+    for (sample_id,) in cur.fetchall():
+        rv.add(sample_id)
+    return rv
+
+def load_DNASE_foldchange_files_from_db_by_sample(samples):
+    cur = conn.cursor()
+    query = """
+    SELECT roadmap_sample_id,
+           local_filename
+      FROM roadmap_dnase_foldchange_files;
+    """
+    rv = defaultdict(str)
+    cur.execute(query)
+    for (sample_id, dnase_foldchange_fname) in cur.fetchall():
+        if sample_id in samples:
+            rv[sample_id] = dnase_foldchange_fname
+    return rv
+
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")

@@ -486,3 +486,15 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
     with open(pickle_fname, "w") as ofp:
         pickle.dump(peaks_and_labels, ofp)
     return peaks_and_labels
+
+def load_matching_dnase_foldchange_fnames_from_DB(tf_id, annotation_id):
+    """
+    Checks samples available for target tf,
+    and loads dnase filenames for those samples.
+    """
+    from DB import (
+        load_samples_from_db_by_tfid,
+        load_DNASE_foldchange_files_from_db_by_sample )
+    samples = load_samples_from_db_by_tfid(tf_id, annotation_id)
+    print 'samples: ', samples
+    return load_DNASE_foldchange_files_from_db_by_sample(samples)
