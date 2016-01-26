@@ -130,7 +130,7 @@ def theano_calc_affinities(seqs, ref_energy, ddg, ddg_shape_cont):
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
-    lower = TT.switch(inner>35, inner, 0)
+    lower = TT.switch(inner<-10, TT.exp(inner), 0)
     mid = TT.switch((inner >= -10)&(inner <= 35), 
                     TT.log(1.0 + TT.exp(inner)),
                     0 )
