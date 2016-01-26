@@ -496,5 +496,5 @@ def load_matching_dnase_foldchange_fnames_from_DB(tf_id, annotation_id):
         load_samples_from_db_by_tfid,
         load_DNASE_foldchange_files_from_db_by_sample )
     samples = load_samples_from_db_by_tfid(tf_id, annotation_id)
-    print 'samples: ', samples
+
     return load_DNASE_foldchange_files_from_db_by_sample(samples)
