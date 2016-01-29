@@ -4,17 +4,32 @@ from fit_selex import parse_arguments
 from pyDNAbinding.binding_model import ConvolutionalDNABindingModel
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 from pyDNAbinding.misc import calc_occ, R, T
+from pyDNAbinding.plot import plot_bases, pyplot
 
 from keras.layers.convolutional import Convolution2D
 from keras.layers.core import Lambda, Layer
 from keras import initializations
 from keras import backend as K
 
+from keras.models import Graph
+from keras.optimizers import Adam, Adamax, RMSprop, SGD
+from keras.layers.core import Dense, Activation, Flatten, Merge
+
 import theano
 import theano.tensor as TT
 
+def my_mean_squared_error(y_true, y_pred):
+    #clipped_pred = K.clip(y_pred, 0.01, 0.99)
+    #loss = K.sum(y_true*K.log(clipped_pred))/K.sum(y_true)
+    #return loss
+    return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
+    #return K.mean(K.square(y_pred - y_true), axis=-1)
+
 def get_coded_seqs_and_labels(rnds_and_seqs, background_seqs, rnd=None):
-    if rnd == None: rnd = max(rnds_and_seqs.keys())
+    if rnd == None: 
+        rnd = max(
+            rnd for rnd, seqs in rnds_and_seqs.items() if len(seqs) > 500)
+    
     bnd_seqs = rnds_and_seqs[rnd]  
     num_seqs = min(len(background_seqs), len(bnd_seqs))
     unbnd_seqs = FixedLengthDNASequences(background_seqs[:num_seqs])
@@ -65,27 +80,62 @@ def theano_log_sum_log_occs(log_occs):
     centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
     return centered_rv + scale_factor.flatten()
 
+def fancy_theano_calc_3_base_coded_affinities(one_hot_seqs, W, b):
+    # make sure the convolutional filter and biases match up
+    assert W.shape[1] == 1
+    assert b.shape[0] == W.shape[0]
+    # this was written for theano_conv2d filter call and, since Keras
+    # flips the filter, we will initially flip the filter
+    W = W[:,:,::-1,::-1]
+    fwd_bs_base_affinities = K.conv2d(
+        one_hot_seqs, W[:,:,::-1,::-1])[:,0,:]
+    rc_ddg_base_cont = (
+        K.concatenate((
+            W[:,:,(1,0),:], 
+            K.zeros_like(W[(0,),:], dtype=theano.config.floatX)
+        ), axis=2) 
+        - W[:,:,2,:]
+    )[:,:,:,::-1]
+    rc_bs_base_affinities = (
+        K.conv2d(one_hot_seqs, 
+                 rc_ddg_base_cont[:,:,::-1,::-1]) + W[:,:,2,:].sum()
+    )
+    bs_affinities = TT.stack(
+        (fwd_bs_base_affinities, rc_bs_base_affinities), axis=3)
+    return K.reshape(self.b, (1, self.nb_motifs, 1, 1)) + bs_affinities
+
 import keras.callbacks
-class MonitorAccuracy(keras.callbacks.Callback):
+class UpdateSampleWeights(keras.callbacks.Callback):
+    def __init__(self, sample_weights, *args, **kwargs):
+        self._sample_weights = sample_weights
+        super(UpdateSampleWeights, self).__init__(*args, **kwargs)
     def on_epoch_end(self, *args, **kwargs):
-        res = self.model.predict(
+        print self.my_weights.get_value()
+        self.my_weights.set_value(self.my_weights.get_value()/2)
+
+class MonitorAccuracy(keras.callbacks.Callback):    
+    def on_epoch_end(self, *args, **kwargs):
+        val_res = self.model.predict(
             {'one_hot_sequence': self.model.validation_data[0],
              'shape': self.model.validation_data[1]}
         )
         val_acc = (
-            1.0*(res['output'].round() == self.model.validation_data[-2]).sum()
+            1.0*(val_res['output'].round() == self.model.validation_data[-2]).sum()
             /self.model.validation_data[-2].shape[0]
         )
 
-        res = self.model.predict(
+        train_res = self.model.predict(
             {'one_hot_sequence': self.model.training_data[0],
              'shape': self.model.training_data[1]}
         )
         train_acc = (
-            1.0*(res['output'].round() == self.model.training_data[-2]).sum()
+            1.0*(train_res['output'].round() == self.model.training_data[-2]).sum()
             /self.model.training_data[-2].shape[0]
         )
-
+        
+        #print train_res['output']
+        #print train_acc
+        
         print "acc: %.2f - val_acc: %.2f" % (train_acc, val_acc) 
 
 class ConvolutionDNAShapeBinding(Layer):
@@ -136,11 +186,13 @@ class ConvolutionDNAShapeBinding(Layer):
 class ConvolutionDNASequenceBinding(Layer):
     def __init__(
             self, nb_motifs, motif_len, 
+            use_three_base_encoding=True,
             init='glorot_uniform', 
             **kwargs):
         self.nb_motifs = nb_motifs
         self.motif_len = motif_len
         self.input = K.placeholder(ndim=4)
+        self.use_three_base_encoding = use_three_base_encoding
         
         if isinstance(init, ConvolutionalDNABindingModel):
             self.init = lambda x: (
@@ -155,8 +207,13 @@ class ConvolutionDNASequenceBinding(Layer):
         super(ConvolutionDNASequenceBinding, self).__init__(**kwargs)
 
     def build(self):
-        self.W_shape = (
-            self.nb_motifs, 1, self.motif_len, self.input_shape[3])
+        assert self.input_shape[3] == 4, "Expecting one-hot-encoded DNA seqeunce."
+        if self.use_three_base_encoding:
+            self.W_shape = (
+                self.nb_motifs, 1, self.motif_len, 3)
+        else:
+            self.W_shape = (
+                self.nb_motifs, 1, self.motif_len, 4)
         self.W, self.b = self.init(self.W_shape)
         self.params = [self.W, self.b]
     
@@ -171,13 +228,16 @@ class ConvolutionDNASequenceBinding(Layer):
     
     def get_output(self, train=False):
         X = self.get_input(train)
-        fwd_rv = K.conv2d(X, 
-                          self.W, 
-                          border_mode='valid') \
+        if self.use_three_base_encoding:
+            X_fwd = X[:,:,:,1:]
+            X_rc = X[:,:,:,:3]
+        else:
+            X_fwd = X
+            X_rc = X
+        
+        fwd_rv = K.conv2d(X_fwd, self.W, border_mode='valid') \
                  + K.reshape(self.b, (1, self.nb_motifs, 1, 1))
-        rc_rv = K.conv2d(X, 
-                         self.W[:,:,::-1,::-1], 
-                         border_mode='valid') \
+        rc_rv = K.conv2d(X_rc, self.W[:,:,::-1,::-1], border_mode='valid') \
                 + K.reshape(self.b, (1, self.nb_motifs, 1, 1))
         return K.concatenate((fwd_rv, rc_rv), axis=3)
 
@@ -225,8 +285,9 @@ class ConvolutionBindingSubDomains(Layer):
 
 class NormalizedOccupancy(Layer):
     def __init__(
-            self, domain_len, **kwargs):
+            self, domain_len, chem_affinity=0.0, **kwargs):
         self.domain_len = domain_len
+        self.init_chem_affinity = chem_affinity
         self.input = K.placeholder(ndim=4)        
         super(NormalizedOccupancy, self).__init__(**kwargs)
 
@@ -234,12 +295,12 @@ class NormalizedOccupancy(Layer):
         # make sure the last input dimension has dimension exactly 2, for the 
         # fwd and rc sequence
         assert self.input_shape[3] == 2
-        self.chem_affinity = K.variable(-6.0)
+        self.chem_affinity = K.variable(self.init_chem_affinity)
         self.params = [self.chem_affinity]
     
     @property
     def output_shape(self):
-        return (self.input_shape[0], 1, 1, 1)
+        #return (self.input_shape[0],) # 1, 1, 1)
         return (# number of obseravations
                 self.input_shape[0], 
                 self.input_shape[1],
@@ -249,37 +310,149 @@ class NormalizedOccupancy(Layer):
     
     def get_output(self, train=False):
         X = self.get_input(train)
-        #return TT.exp(theano_calc_log_occs(X, -16))
-        p_op = theano.printing.Print("="*40)
+        return TT.exp(theano_calc_log_occs(-X, self.chem_affinity))
+        #p_op = theano.printing.Print("="*40)
         log_occs = TT.flatten(
             theano_calc_log_occs(X, self.chem_affinity), outdim=2)
+        return K.exp(theano_calc_log_occs(X, self.chem_affinity))
         scale_factor = K.max(log_occs, axis=1)
         centered_log_occs = log_occs - K.reshape(scale_factor, (X.shape[0],1))
         norm_occs = K.sum(K.exp(centered_log_occs), axis=1)
         log_sum_log_occs = TT.reshape(K.log(norm_occs) + scale_factor, (X.shape[0],1))
-        return K.exp(log_sum_log_occs)
+        return K.flatten(K.exp(log_sum_log_occs))
         norm_log_occs = log_occs-log_sum_log_occs
         norm_occs = K.exp(norm_log_occs)
         return K.reshape(norm_occs, X.shape)
         return K.max(norm_occs, axis=1) #K.reshape(norm_occs, X.shape)
 
-def main():
-    ( initial_model, 
-      rnds_and_seqs, background_seqs, 
-      selex_db_conn, 
-      partition_background_seqs,
-      ofname_prefix
-     ) = parse_arguments()
-    fwd_seqs, shape_seqs, labels = get_coded_seqs_and_labels(
-        rnds_and_seqs, background_seqs, None) # None
+
+class JointBindingModel(object):
+    def __init__(self):
+        self.model = Graph()
+        self.inputs = {}
+        self.losses = {}
+
+    def add_invitro_layer(self, tf_name,  fwd_seqs, shape_seqs, labels):
+        num_conv = 10
+        seq_len = 20
+        conv_size = 7
+
+        name_prefix = 'invitro_%s_' % tf_name 
+
+        self.model.add_input(
+            name=name_prefix + 'one_hot_sequence', 
+            input_shape=(None, seq_len, 4))
+        assert name_prefix + 'one_hot_sequence' not in self.inputs
+        self.inputs[name_prefix + 'one_hot_sequence'] = fwd_seqs
+
+        self.model.add_node(
+            ConvolutionDNASequenceBinding(
+                num_conv, # numConv
+                conv_size, # convWidth, 
+                #init=initial_model
+            ), 
+            name=name_prefix + 'binding_sub_domains', 
+            input=name_prefix + 'one_hot_sequence'
+        )
+
+        if shape_seqs is not None:
+            self.model.add_input(
+                name=name_prefix + 'shape', input_shape=(None, seq_len, 12))
+            assert name_prefix + 'shape' not in self.inputs
+            self.inputs[name_prefix + 'shape'] = shape_seqs
+
+            self.model.add_node(
+                ConvolutionDNAShapeBinding(
+                    num_conv, # numConv
+                    conv_size, # convWidth, 
+                    #, init=initial_model
+                ), 
+            name=name_prefix + 'shape_binding_affinities', 
+            input=name_prefix + 'shape'
+            )
+
+        """
+        self.model.add_node(
+            ConvolutionBindingSubDomains(
+                1, # numConv
+                4, # convWidth,
+            ), 
+            name=name_prefix + 'binding_affinities', 
+            inputs=[name_prefix + 'binding_sub_domains', 
+                    name_prefix + 'shape_binding_affinities'],
+            merge_mode='concat',
+            concat_axis=1
+        )
+        """
+
+        if shape_seqs is None:
+            self.model.add_node(
+                NormalizedOccupancy(1),
+                name=name_prefix + 'occupancies',
+                input=name_prefix + 'binding_sub_domains')
+        else:
+            self.model.add_node(
+                NormalizedOccupancy(1),
+                name=name_prefix + 'occupancies',
+                inputs=[
+                    name_prefix + 'binding_sub_domains', 
+                    name_prefix + 'shape_binding_affinities'
+                ],
+                merge_mode='concat',
+                concat_axis=1
+            )
+
+        self.model.add_node(Flatten(), 
+                       input=name_prefix + 'occupancies', 
+                       name=name_prefix + 'occupancies_flat')
+        self.model.add_node(
+            Dense(output_dim=1, activation='sigmoid'),
+            name=name_prefix + 'dense', 
+            input=name_prefix + 'occupancies_flat')
+
+        #self.model.add_node(
+        #    Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
+        #    name=name_prefix + 'max', 
+        #    input='occupancies')
+
+        self.model.add_output(name=name_prefix + 'output', 
+                         input=name_prefix + 'dense')
+        assert name_prefix + 'output' not in self.inputs
+        self.inputs[name_prefix + 'output'] = labels
+
+        self.losses[name_prefix + 'output'] = my_mean_squared_error
+
+        return
+
+    def compile(self):
+        self.model.compile(loss=self.losses, optimizer=Adam())
     
+    def fit(self):
+        #monitor_accuracy_cb = MonitorAccuracy()
+        self.model.fit(
+            self.inputs,
+            validation_split=0.1,
+            batch_size=100,
+            nb_epoch=100,
+            #callbacks=[monitor_accuracy_cb,],
+            shuffle=True
+        )
+
+def full_model(fwd_seqs, shape_seqs, labels):
+    model = JointBindingModel()
+    model.add_invitro_layer(
+        'test', fwd_seqs, None, labels) # shape_seqs
+    model.compile()
+    model.fit()
+
+def neural_network(fwd_seqs, shape_seqs, labels):
     from keras.models import Graph
     from keras.optimizers import Adam, Adamax, RMSprop, SGD
     from keras.layers.core import Dense, Activation, Flatten, Merge
 
-    num_conv = 1
+    num_conv = 50
     seq_len = 20
-    conv_size = 1
+    conv_size = 9
 
     model = Graph()
     
@@ -290,52 +463,32 @@ def main():
             num_conv, # numConv
             conv_size, # convWidth, 
             #init=initial_model
-        ), name='binding_sub_domains', input='one_hot_sequence')
-
-    #model.add_node(
-    #    ConvolutionBindingSubDomains(
-    #        10, # numConv
-    #        4, # convWidth, 
-    #    ), name='domains_binding_affinities', input='binding_sub_domains')
+        ), name='sub_domain_affinities', input='one_hot_sequence')
 
     model.add_input(
-        name='shape', input_shape=(None, seq_len, 12))
+        name='shape', input_shape=(None, seq_len, 16))
     model.add_node(
         ConvolutionDNAShapeBinding(
             num_conv, # numConv
             conv_size, # convWidth, 
-            #, init=initial_model
-        ), name='shape_binding_affinities', input='shape')
+            #init=initial_model
+        ), name='shape_affinities', input='shape')
 
     model.add_node(
-        ConvolutionBindingSubDomains(
-            1, # numConv
-            conv_size, # convWidth,
-        ), 
-        name='binding_affinities', 
-        inputs=['binding_sub_domains', 'shape_binding_affinities'],
+        Activation(lambda x: TT.exp(theano_calc_log_occs(-x,0))), 
+        inputs=['sub_domain_affinities', 'shape_affinities'],
         merge_mode='concat',
-        concat_axis=1
-    )
-    model.add_node(
-        NormalizedOccupancy(1),
-        name='occupancies',
-        input='binding_affinities')
-
-    #model.add_node(
-    #    Activation(lambda x: TT.exp(theano_calc_log_occs(-x,0))), 
-    #    input='binding_affinities',
-    #    name='occupancies')
+        concat_axis=1,
+        name='occupancies')
 
     model.add_node(Flatten(), 
                    input='occupancies', 
                    name='occupancies_flat')
     
     model.add_node(
-        Dense(output_dim=1),
+        Dense(output_dim=1, activation='sigmoid'),
         name='dense', 
         input='occupancies_flat')
-    
     
     model.add_output(name='output', input='dense')
     model.compile(
@@ -348,9 +501,23 @@ def main():
          'output': labels},
         validation_split=0.1,
         batch_size=100,
-        nb_epoch=100,
+        nb_epoch=2,
         callbacks=[monitor_accuracy_cb,],
         shuffle=True
     )
+
+def main():
+    ( initial_model, 
+      rnds_and_seqs, background_seqs, 
+      selex_db_conn, 
+      partition_background_seqs,
+      ofname_prefix
+     ) = parse_arguments()
+    fwd_seqs, shape_seqs, labels = get_coded_seqs_and_labels(
+        rnds_and_seqs, background_seqs, None) # None
+    full_model(fwd_seqs, None, labels) #shape_seqs, labels)
+
+    pass
+    
 
 main()
