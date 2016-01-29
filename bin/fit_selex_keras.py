@@ -445,67 +445,6 @@ def full_model(fwd_seqs, shape_seqs, labels):
     model.compile()
     model.fit()
 
-def neural_network(fwd_seqs, shape_seqs, labels):
-    from keras.models import Graph
-    from keras.optimizers import Adam, Adamax, RMSprop, SGD
-    from keras.layers.core import Dense, Activation, Flatten, Merge
-
-    num_conv = 50
-    seq_len = 20
-    conv_size = 9
-
-    model = Graph()
-    
-    model.add_input(
-        name='one_hot_sequence', input_shape=(None, seq_len, 4))
-    model.add_node(
-        ConvolutionDNASequenceBinding(
-            num_conv, # numConv
-            conv_size, # convWidth, 
-            #init=initial_model
-        ), name='sub_domain_affinities', input='one_hot_sequence')
-
-    model.add_input(
-        name='shape', input_shape=(None, seq_len, 16))
-    model.add_node(
-        ConvolutionDNAShapeBinding(
-            num_conv, # numConv
-            conv_size, # convWidth, 
-            #init=initial_model
-        ), name='shape_affinities', input='shape')
-
-    model.add_node(
-        Activation(lambda x: TT.exp(theano_calc_log_occs(-x,0))), 
-        inputs=['sub_domain_affinities', 'shape_affinities'],
-        merge_mode='concat',
-        concat_axis=1,
-        name='occupancies')
-
-    model.add_node(Flatten(), 
-                   input='occupancies', 
-                   name='occupancies_flat')
-    
-    model.add_node(
-        Dense(output_dim=1, activation='sigmoid'),
-        name='dense', 
-        input='occupancies_flat')
-    
-    model.add_output(name='output', input='dense')
-    model.compile(
-        loss={'output': "mse"}, optimizer=Adam()
-    )
-    monitor_accuracy_cb = MonitorAccuracy()
-    model.fit(
-        {'one_hot_sequence': fwd_seqs,
-         'shape': shape_seqs,
-         'output': labels},
-        validation_split=0.1,
-        batch_size=100,
-        nb_epoch=2,
-        callbacks=[monitor_accuracy_cb,],
-        shuffle=True
-    )
-
 def main():
     ( initial_model, 
       rnds_and_seqs, background_seqs, 
