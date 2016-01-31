@@ -75,6 +75,14 @@ class ConvolutionDNAShapeBinding(Layer):
         )
         super(ConvolutionDNAShapeBinding, self).__init__(**kwargs)
 
+    def get_config(self):
+        config = {'name': self.__class__.__name__,
+                  'nb_motifs': self.nb_motifs,
+                  'motif_len': self.motif_len, 
+                  'init': self.init.__name__}
+        base_config = super(ConvolutionDNAShapeBinding, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
     def build(self):
         input_dim = self.input_shape[1]
         self.W_shape = (
@@ -107,7 +115,9 @@ class ConvolutionDNAShapeBinding(Layer):
 
 class ConvolutionDNASequenceBinding(Layer):
     def __init__(
-            self, nb_motifs, motif_len, 
+            self,
+            nb_motifs,
+            motif_len, 
             use_three_base_encoding=True,
             init='glorot_uniform', 
             **kwargs):
@@ -163,9 +173,20 @@ class ConvolutionDNASequenceBinding(Layer):
                 + K.reshape(self.b, (1, self.nb_motifs, 1, 1))
         return K.concatenate((fwd_rv, rc_rv), axis=3)
 
+    def get_config(self):
+        config = {'name': self.__class__.__name__,
+                  'nb_motifs': self.nb_motifs,
+                  'motif_len': self.motif_len, 
+                  'use_three_base_encoding': self.use_three_base_encoding,
+                  'init': self.init.__name__}
+        base_config = super(ConvolutionDNASequenceBinding, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+            
+    
 class ConvolutionBindingSubDomains(Layer):
     def __init__(
-            self, nb_domains, 
+            self,
+            nb_domains, 
             domain_len='full', 
             init='glorot_uniform', 
             **kwargs):
@@ -209,6 +230,14 @@ class ConvolutionBindingSubDomains(Layer):
                 + K.reshape(self.b, (1, self.nb_domains, 1, 1))
         return K.concatenate((fwd_rv, rc_rv), axis=3)
 
+    def get_config(self):
+        config = {'name': self.__class__.__name__,
+                  'nb_domains': self.nb_domains,
+                  'domain_len': self.domain_len, 
+                  'init': self.init.__name__}
+        base_config = super(ConvolutionBindingSubDomains, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
 class NormalizedOccupancy(Layer):
     def __init__(
             self, domain_len, chem_affinity=0.0, **kwargs):
@@ -217,6 +246,13 @@ class NormalizedOccupancy(Layer):
         self.input = K.placeholder(ndim=4)        
         super(NormalizedOccupancy, self).__init__(**kwargs)
 
+    def get_config(self):
+        config = {'name': self.__class__.__name__,
+                  'domain_len': self.domain_len,
+                  'init_chem_affinity': self.chem_affinity} 
+        base_config = super(NormalizedOccupancy, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+        
     def build(self):
         # make sure the last input dimension has dimension exactly 2, for the 
         # fwd and rc sequence
