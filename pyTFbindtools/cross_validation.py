@@ -14,6 +14,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot
 
 TEST_CHRS = [1,2]
+IGNORE_CHRS = ['M']
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
 SINGLE_FOLD_TRAIN_CHRS = range(5, 23)
 
@@ -214,6 +215,7 @@ class ClassificationResults(list):
 
 def iter_train_validation_splits(sample_ids, contigs,
                                  validation_contigs=None,
+                                 same_celltype=False,
                                  single_celltype=False):
     # determine the training and validation sets
     if len(sample_ids) == 1:
@@ -222,15 +224,19 @@ def iter_train_validation_splits(sample_ids, contigs,
         all_sample_folds = [(train_samples, validation_samples),]
     else:
         all_sample_folds = []
-        for sample in sample_ids:
-            if single_celltype:
-                all_sample_folds.append(([sample,], [sample,]))
-            else:
-                all_sample_folds.append(
-                    ([x for x in sample_ids if x != sample], [sample,]))
+        if same_celltype:
+                all_sample_folds.append((sample_ids, sample_ids))
+        else:
+            for sample in sample_ids:
+                if single_celltype:
+                    all_sample_folds.append(([sample,], [sample,]))
+                else:
+                    all_sample_folds.append(
+                        ([x for x in sample_ids if x != sample], [sample,]))
     # split the samples into validation and training
     non_test_chrs = sorted(
-        set(contigs) - set("chr%i" % i for i in TEST_CHRS))
+        set(contigs) - set("chr%i" % i for i in TEST_CHRS)
+        - set("chr%s" % s for s in IGNORE_CHRS))
     if validation_contigs is None:
         all_chr_folds = list(cross_validation.KFold(
             len(non_test_chrs), n_folds=5))
