@@ -260,7 +260,7 @@ class KerasModelBase():
                            class_mode)
         print("Serializing compiled model." )
         loss_name = loss if isinstance(loss, str) else loss.__name__
-        if isinstance(self.model.layers[0], Merge):
+        if not isinstance(self.model.layers[0], Merge):
             fname = "%s.MODEL.%s.json" % (ofname, loss_name)
             json_string = self.model.to_json()
             open(fname, 'w').write(json_string)
@@ -315,13 +315,13 @@ class KerasModelBase():
         if include_ambiguous_labels:
             assert scores is not None, \
                 "model evaluation with ambiguous labels: must include scores!"
-            y_true = set_ambiguous_labels(
-                y_true, scores, self.ambiguous_peak_threshold)
             if plot_fname is not None:
                 plot_ambiguous_peaks(
                     scores[y_true == -1],
                     self.predict_proba(X)[y_true == -1],
                     plot_fname)
+            y_true = set_ambiguous_labels(
+                y_true, scores, self.ambiguous_peak_threshold)
         else:
             X = [X_arr[y_true != -1,:,:,:] for X_arr in X]
             y_true = y_true[y_true != -1]
@@ -363,7 +363,7 @@ class KerasModel(KerasModelBase):
         print("Compiling model with cross entropy loss.")
         weights_ofname = "%s.%s" % (ofname, "fit_weights.hd5")
         self.model.save_weights(weights_ofname, overwrite=True)
-        self.compile(ofname, 'binary_crossentropy', Adam())
+        self.compile(ofname, 'binary_crossentropy', self.model.optimizer)
         self.model.load_weights(weights_ofname)
         res = self.evaluate(X_validation, y_validation)
         self.best_target_metric = getattr(res, self.target_metric)
@@ -396,15 +396,14 @@ class KerasModel(KerasModelBase):
         # filter ambiguous examples
         y_train = np.copy(fitting_labels)
         y_validation = np.copy(stopping_labels)
-        if any(fitting_labels==-1) or any(stopping_labels==-1):
-            fitting_arrays = [X[fitting_labels != -1,:,:,:] for X in fitting_arrays]
-            y_train = y_train[y_train != -1]
-            stopping_arrays = [X[stopping_labels != -1,:,:,:] for X in stopping_arrays]
-            y_validation = y_validation[y_validation != -1]
-        # optional array stacking, keeping sequence of array format
         if self.stack_arrays:
-            X_train = [np.concatenate(fitting_arrays, axis=2)]
-            X_validation = [np.concatenate(stopping_arrays, axis=2)]
+            fitting_arrays = [np.concatenate(fitting_arrays, axis=2)]
+            stopping_arrays = [np.concatenate(stopping_arrays, axis=2)]
+        if any(fitting_labels==-1) or any(stopping_labels==-1):
+            X_train = [X[fitting_labels != -1,:,:,:] for X in fitting_arrays]
+            y_train = y_train[y_train != -1]
+            X_validation = [X[stopping_labels != -1,:,:,:] for X in stopping_arrays]
+            y_validation = y_validation[y_validation != -1]
         else:
             X_train = fitting_arrays
             X_validation = stopping_arrays
