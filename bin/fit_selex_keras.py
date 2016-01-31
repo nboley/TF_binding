@@ -1,6 +1,9 @@
+import functools
+from collections import defaultdict
+
 import numpy as np
 
-from fit_selex import parse_arguments
+from fit_selex import SelexDBConn, load_fastq, optional_gzip_open
 from pyDNAbinding.binding_model import ConvolutionalDNABindingModel
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 from pyDNAbinding.misc import calc_occ, R, T
@@ -13,7 +16,7 @@ from keras import backend as K
 
 from keras.models import Graph
 from keras.optimizers import Adam, Adamax, RMSprop, SGD
-from keras.layers.core import Dense, Activation, Flatten, Merge
+from keras.layers.core import Dense, Activation, Flatten, Merge, TimeDistributedDense
 
 import theano
 import theano.tensor as TT
@@ -24,38 +27,6 @@ def my_mean_squared_error(y_true, y_pred):
     #return loss
     return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
     #return K.mean(K.square(y_pred - y_true), axis=-1)
-
-def get_coded_seqs_and_labels(rnds_and_seqs, background_seqs, rnd=None):
-    if rnd == None: 
-        rnd = max(
-            rnd for rnd, seqs in rnds_and_seqs.items() if len(seqs) > 500)
-    
-    bnd_seqs = rnds_and_seqs[rnd]  
-    num_seqs = min(len(background_seqs), len(bnd_seqs))
-    unbnd_seqs = FixedLengthDNASequences(background_seqs[:num_seqs])
-    bnd_seqs = FixedLengthDNASequences(bnd_seqs[:num_seqs])
-    
-    permutation = np.random.permutation(2*num_seqs)
-    fwd_one_hot_seqs = np.vstack(
-        (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs) # _one_hot
-    )[permutation,None,:,:]
-    ## we keep this in case there is a more complicated encoding
-    #rc_one_hot_seqs = np.vstack(
-    #    (unbnd_seqs.rc_one_hot_coded_seqs, bnd_seqs.rc_one_hot_coded_seqs) # one_hot_
-    #)[permutation,None,:,:]
-
-    fwd_shape_seqs = np.vstack(
-        (unbnd_seqs.fwd_shape_features, bnd_seqs.fwd_shape_features)
-    )[permutation,:,:]
-    rc_shape_seqs = np.vstack(
-        (unbnd_seqs.rc_shape_features, bnd_seqs.rc_shape_features)
-    )[permutation,:,:]
-    shape_seqs = np.concatenate((fwd_shape_seqs, rc_shape_seqs), axis=2)[:,None,:,:]
-    labels = np.hstack(
-        (np.zeros(len(unbnd_seqs), dtype='float32'), 
-         np.ones(len(bnd_seqs), dtype='float32'))
-    )[permutation]
-    return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
 
 def softmax(x, axis):
     scale_factor = x.max(axis=axis, keepdims=True)
@@ -80,30 +51,6 @@ def theano_log_sum_log_occs(log_occs):
     centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
     return centered_rv + scale_factor.flatten()
 
-def fancy_theano_calc_3_base_coded_affinities(one_hot_seqs, W, b):
-    # make sure the convolutional filter and biases match up
-    assert W.shape[1] == 1
-    assert b.shape[0] == W.shape[0]
-    # this was written for theano_conv2d filter call and, since Keras
-    # flips the filter, we will initially flip the filter
-    W = W[:,:,::-1,::-1]
-    fwd_bs_base_affinities = K.conv2d(
-        one_hot_seqs, W[:,:,::-1,::-1])[:,0,:]
-    rc_ddg_base_cont = (
-        K.concatenate((
-            W[:,:,(1,0),:], 
-            K.zeros_like(W[(0,),:], dtype=theano.config.floatX)
-        ), axis=2) 
-        - W[:,:,2,:]
-    )[:,:,:,::-1]
-    rc_bs_base_affinities = (
-        K.conv2d(one_hot_seqs, 
-                 rc_ddg_base_cont[:,:,::-1,::-1]) + W[:,:,2,:].sum()
-    )
-    bs_affinities = TT.stack(
-        (fwd_bs_base_affinities, rc_bs_base_affinities), axis=3)
-    return K.reshape(self.b, (1, self.nb_motifs, 1, 1)) + bs_affinities
-
 import keras.callbacks
 class UpdateSampleWeights(keras.callbacks.Callback):
     def __init__(self, sample_weights, *args, **kwargs):
@@ -112,31 +59,6 @@ class UpdateSampleWeights(keras.callbacks.Callback):
     def on_epoch_end(self, *args, **kwargs):
         print self.my_weights.get_value()
         self.my_weights.set_value(self.my_weights.get_value()/2)
-
-class MonitorAccuracy(keras.callbacks.Callback):    
-    def on_epoch_end(self, *args, **kwargs):
-        val_res = self.model.predict(
-            {'one_hot_sequence': self.model.validation_data[0],
-             'shape': self.model.validation_data[1]}
-        )
-        val_acc = (
-            1.0*(val_res['output'].round() == self.model.validation_data[-2]).sum()
-            /self.model.validation_data[-2].shape[0]
-        )
-
-        train_res = self.model.predict(
-            {'one_hot_sequence': self.model.training_data[0],
-             'shape': self.model.training_data[1]}
-        )
-        train_acc = (
-            1.0*(train_res['output'].round() == self.model.training_data[-2]).sum()
-            /self.model.training_data[-2].shape[0]
-        )
-        
-        #print train_res['output']
-        #print train_acc
-        
-        print "acc: %.2f - val_acc: %.2f" % (train_acc, val_acc) 
 
 class ConvolutionDNAShapeBinding(Layer):
     def __init__(
@@ -243,7 +165,8 @@ class ConvolutionDNASequenceBinding(Layer):
 
 class ConvolutionBindingSubDomains(Layer):
     def __init__(
-            self, nb_domains, domain_len, 
+            self, nb_domains, 
+            domain_len='full', 
             init='glorot_uniform', 
             **kwargs):
         self.nb_domains = nb_domains
@@ -261,6 +184,8 @@ class ConvolutionBindingSubDomains(Layer):
         # make sure the last input dimension has dimension exactly 2, for the 
         # fwd and rc sequence
         assert self.input_shape[3] == 2
+        if self.domain_len == 'full':
+            self.domain_len = self.input_shape[2]
         self.W_shape = (
             self.nb_domains, self.input_shape[1], self.domain_len, 1)
         self.W, self.b = self.init(self.W_shape)
@@ -279,7 +204,8 @@ class ConvolutionBindingSubDomains(Layer):
         X = self.get_input(train)
         fwd_rv = K.conv2d(X[:,:,:,0:1], self.W, border_mode='valid')  \
                  + K.reshape(self.b, (1, self.nb_domains, 1, 1))
-        rc_rv = K.conv2d(X[:,:,:,1:2], self.W[:,:,::-1,::-1], border_mode='valid') \
+        # # [:,:,::-1,::-1]
+        rc_rv = K.conv2d(X[:,:,:,1:2], self.W, border_mode='valid') \
                 + K.reshape(self.b, (1, self.nb_domains, 1, 1))
         return K.concatenate((fwd_rv, rc_rv), axis=3)
 
@@ -305,7 +231,7 @@ class NormalizedOccupancy(Layer):
                 self.input_shape[0], 
                 self.input_shape[1],
                 # sequence length minus the motif length
-                self.input_shape[2], # -self.domain_len+1
+                self.input_shape[2]-self.domain_len+1,
                 2)
     
     def get_output(self, train=False):
@@ -326,74 +252,105 @@ class NormalizedOccupancy(Layer):
         return K.max(norm_occs, axis=1) #K.reshape(norm_occs, X.shape)
 
 
-class JointBindingModel(object):
-    def __init__(self):
-        self.model = Graph()
-        self.inputs = {}
-        self.losses = {}
+class MonitorAccuracy(keras.callbacks.Callback):    
+    def on_epoch_end(self, *args, **kwargs):
+        train_accs = self.model.calc_accuracy(val=False)
+        val_accs = self.model.calc_accuracy(val=True)
+        #print "acc: %.2f - val_acc: %.2f" % (train_acc, val_acc) 
+        for key in train_accs.iterkeys():
+            print "%s acc: %.2f - val_acc: %.2f" % (
+                key.ljust(30), train_accs[key], val_accs[key]) 
 
-    def add_invitro_layer(self, tf_name,  fwd_seqs, shape_seqs, labels):
+def calc_accuracy(pred_probs, labels):
+    return float((pred_probs.round() == labels[:,None]).sum())/labels.shape[0]
+
+def upsample(seqs, num_seqs):
+    new_seqs = []
+    new_seqs.extend(seqs)
+    while len(new_seqs) < num_seqs:
+        new_seqs.extend(seqs[:num_seqs-len(new_seqs)])
+    return new_seqs
+
+class JointBindingModel(Graph):
+    def calc_accuracy(self, val=True):
+        if val == True:
+            inputs = self.named_validation_inputs
+        else:
+            inputs = self.named_inputs
+        pred_prbs = self.predict(inputs)
+        acc_res = {}
+        for factor_key in pred_prbs.iterkeys():
+            acc_res[factor_key] = calc_accuracy(
+                pred_prbs[factor_key], inputs[factor_key])
+        return acc_res
+
+    def __init__(self, num_samples, *args, **kwargs):
+        # store a dictionary of round indexed selex sequences, 
+        # indexed by experiment ID
+        self.num_samples = num_samples
+        assert self.num_samples%2 == 0
+        self.selex_seqs = defaultdict(dict)
+        self.named_validation_inputs = {}
+        self.named_inputs = {}
+        self.named_losses = {}
+        super(Graph, self).__init__(*args, **kwargs)
+
+    def add_invitro_layer(self, tf_name, fwd_seqs, shape_seqs, labels):
         num_conv = 10
-        seq_len = 20
         conv_size = 7
 
         name_prefix = 'invitro_%s_' % tf_name 
 
-        self.model.add_input(
-            name=name_prefix + 'one_hot_sequence', 
-            input_shape=(None, seq_len, 4))
-        assert name_prefix + 'one_hot_sequence' not in self.inputs
-        self.inputs[name_prefix + 'one_hot_sequence'] = fwd_seqs
+        self.add_input(
+            name=name_prefix+'one_hot_sequence', 
+            input_shape=(None, fwd_seqs.shape[2], 4))
+        assert name_prefix+'one_hot_sequence' not in self.named_inputs
+        self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs
 
-        self.model.add_node(
+        self.add_node(
             ConvolutionDNASequenceBinding(
                 num_conv, # numConv
                 conv_size, # convWidth, 
                 #init=initial_model
             ), 
-            name=name_prefix + 'binding_sub_domains', 
-            input=name_prefix + 'one_hot_sequence'
+            name=name_prefix+'binding_sub_domains', 
+            input=name_prefix+'one_hot_sequence'
         )
 
         if shape_seqs is not None:
-            self.model.add_input(
-                name=name_prefix + 'shape', input_shape=(None, seq_len, 12))
-            assert name_prefix + 'shape' not in self.inputs
-            self.inputs[name_prefix + 'shape'] = shape_seqs
+            self.add_input(
+                name=name_prefix+'shape', 
+                input_shape=(None, fwd_seqs.shape[2], 12))
+            assert name_prefix+'shape' not in self.named_inputs
+            self.named_inputs[name_prefix+'shape'] = shape_seqs
 
-            self.model.add_node(
+            self.add_node(
                 ConvolutionDNAShapeBinding(
-                    num_conv, # numConv
-                    conv_size, # convWidth, 
+                    numConv, # numConv
+                    14, # convWidth, 
                     #, init=initial_model
                 ), 
-            name=name_prefix + 'shape_binding_affinities', 
-            input=name_prefix + 'shape'
+            name=name_prefix+'shape_binding_affinities', 
+            input=name_prefix+'shape'
             )
 
-        """
-        self.model.add_node(
-            ConvolutionBindingSubDomains(
-                1, # numConv
-                4, # convWidth,
-            ), 
-            name=name_prefix + 'binding_affinities', 
-            inputs=[name_prefix + 'binding_sub_domains', 
-                    name_prefix + 'shape_binding_affinities'],
-            merge_mode='concat',
-            concat_axis=1
-        )
-        """
 
         if shape_seqs is None:
-            self.model.add_node(
-                NormalizedOccupancy(1),
-                name=name_prefix + 'occupancies',
-                input=name_prefix + 'binding_sub_domains')
+            self.add_node(
+                ConvolutionBindingSubDomains(
+                    num_conv, # numConv
+                    'full', # convWidth,
+                ), 
+                name=name_prefix + 'binding_affinities', 
+                input=name_prefix + 'binding_sub_domains'
+            )
         else:
-            self.model.add_node(
-                NormalizedOccupancy(1),
-                name=name_prefix + 'occupancies',
+            self.add_node(
+                ConvolutionBindingSubDomains(
+                    num_conv, # numConv
+                    'full', # convWidth,
+                ), 
+                name=name_prefix + 'binding_affinities',
                 inputs=[
                     name_prefix + 'binding_sub_domains', 
                     name_prefix + 'shape_binding_affinities'
@@ -402,59 +359,151 @@ class JointBindingModel(object):
                 concat_axis=1
             )
 
-        self.model.add_node(Flatten(), 
-                       input=name_prefix + 'occupancies', 
-                       name=name_prefix + 'occupancies_flat')
-        self.model.add_node(
-            Dense(output_dim=1, activation='sigmoid'),
-            name=name_prefix + 'dense', 
-            input=name_prefix + 'occupancies_flat')
+        self.add_node(
+            NormalizedOccupancy(1),
+            name=name_prefix + 'occupancies',
+            input=name_prefix + 'binding_affinities')
 
-        #self.model.add_node(
-        #    Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
-        #    name=name_prefix + 'max', 
-        #    input='occupancies')
+        #self.add_node(
+        #    Activation('relu'),
+        #    name=name_prefix + 'occupancies',
+        #    input=name_prefix + 'binding_affinities')
 
-        self.model.add_output(name=name_prefix + 'output', 
-                         input=name_prefix + 'dense')
-        assert name_prefix + 'output' not in self.inputs
-        self.inputs[name_prefix + 'output'] = labels
+        self.add_node(
+            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
+            name=name_prefix+'max', 
+            input=name_prefix+'occupancies')
 
-        self.losses[name_prefix + 'output'] = my_mean_squared_error
+        self.add_output(name=name_prefix+'output', input=name_prefix+'max')
+        
+        assert name_prefix + 'output' not in self.named_inputs
+        self.named_inputs[name_prefix + 'output'] = labels
+
+        self.named_losses[name_prefix + 'output'] = my_mean_squared_error # 'mse'
 
         return
 
-    def compile(self):
-        self.model.compile(loss=self.losses, optimizer=Adam())
-    
-    def fit(self):
-        #monitor_accuracy_cb = MonitorAccuracy()
-        self.model.fit(
-            self.inputs,
-            validation_split=0.1,
-            batch_size=100,
+    def add_selex_layer(self, selex_exp_id):
+        # load connect to the DB, and find the factor name
+        selex_db_conn = SelexDBConn(
+            'mitra', 'cisbp', 'nboley', selex_exp_id)
+        factor_name = selex_db_conn.get_factor_name()
+
+        # load the sequencess
+        print "Loading sequences for %s (exp ID %i)" % (
+                factor_name, selex_exp_id)
+        fnames, bg_fname = selex_db_conn.get_fnames()
+        with optional_gzip_open(fnames[max(fnames.keys())]) as fp:
+            bnd_seqs = load_fastq(fp, self.num_samples/2)
+        with optional_gzip_open(bg_fname) as fp:
+            unbnd_seqs = load_fastq(fp, self.num_samples/2)
+        if len(unbnd_seqs) < self.num_samples/2:
+            unbnd_seqs = upsample(unbnd_seqs, self.num_samples/2)
+        if len(bnd_seqs) < self.num_samples/2:
+            bnd_seqs = upsample(bnd_seqs, self.num_samples/2)
+
+        train_start_index = int(self.num_samples*0.1)
+        fwd_seqs, shape_seqs, labels = get_coded_seqs_and_labels(
+            unbnd_seqs, bnd_seqs)
+        exp_name = '%s_%i' % (factor_name, selex_exp_id) 
+        self.add_invitro_layer(
+            exp_name,
+            fwd_seqs[train_start_index:,:,:,:], 
+            None, 
+            labels[train_start_index:])
+
+        name_prefix = 'invitro_%s_' % exp_name 
+        self.named_validation_inputs[
+            name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
+        if shape_seqs is not None:
+            self.named_validation_inputs[
+                name_prefix+'shape'] = shape_seqs[:train_start_index,:,:,:]
+        self.named_validation_inputs[name_prefix+'output'] = labels[
+            :train_start_index]
+
+    def compile(self, *args, **kwargs):
+        compile = functools.partial(
+            super(JointBindingModel, self).compile,
+            loss=self.named_losses,
+            optimizer=Adam()
+        )
+        return compile(*args, **kwargs)
+
+    def fit(self, 
+            data=None, 
+            validation_split=0.1, 
+            batch_size=100, 
             nb_epoch=100,
-            #callbacks=[monitor_accuracy_cb,],
+            *args, **kwargs):
+        if data is None: data = self.named_inputs
+        monitor_accuracy_cb = MonitorAccuracy()
+        fit = functools.partial(
+            super(JointBindingModel, self).fit,
+            data=data,
+            validation_split=validation_split,
+            batch_size=batch_size,
+            nb_epoch=nb_epoch,
+            callbacks=[monitor_accuracy_cb,],
             shuffle=True
         )
+        return fit(*args, **kwargs)
 
 def full_model(fwd_seqs, shape_seqs, labels):
     model = JointBindingModel()
     model.add_invitro_layer(
         'test', fwd_seqs, None, labels) # shape_seqs
+    model.add_invitro_layer(
+        'test2', fwd_seqs, None, labels) # shape_seqs
     model.compile()
-    model.fit()
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=100)
+
+def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
+    num_seqs = min(len(unbnd_seqs), len(bnd_seqs))
+    unbnd_seqs = FixedLengthDNASequences(unbnd_seqs[:num_seqs], include_shape=False)
+    bnd_seqs = FixedLengthDNASequences(bnd_seqs[:num_seqs], include_shape=False)
+    
+    permutation = np.random.permutation(2*num_seqs)
+    fwd_one_hot_seqs = np.vstack(
+        (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs)
+    )[permutation,None,:,:]
+
+    if unbnd_seqs.fwd_shape_features is None:
+        shape_seqs = None
+    else:
+        fwd_shape_seqs = np.vstack(
+            (unbnd_seqs.fwd_shape_features, bnd_seqs.fwd_shape_features)
+        )[permutation,:,:]
+        rc_shape_seqs = np.vstack(
+            (unbnd_seqs.rc_shape_features, bnd_seqs.rc_shape_features)
+        )[permutation,:,:]
+        shape_seqs = np.concatenate((fwd_shape_seqs, rc_shape_seqs), axis=2)[:,None,:,:]
+
+    labels = np.hstack(
+        (np.zeros(len(unbnd_seqs), dtype='float32'), 
+         np.ones(len(bnd_seqs), dtype='float32'))
+    )[permutation]
+    return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
+
+def load_selex_seqs(experiment_id, max_num_seqs_per_file=5000):
+    from fit_selex import SelexDBConn, load_fastq, optional_gzip_open
+    selex_db_conn = SelexDBConn(
+        'mitra', 'cisbp', 'nboley', experiment_id)
+    fnames, bg_fname = selex_db_conn.get_fnames()
+    with optional_gzip_open(fnames[max(fnames.keys())]) as fp:
+        bnd_seqs = load_fastq(fp, max_num_seqs_per_file)
+    with optional_gzip_open(bg_fname) as fp:
+        unbnd_seqs = load_fastq(fp, max_num_seqs_per_file)
+    factor_name = selex_db_conn.get_factor_name()
+    return factor_name, get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs)
 
 def main():
-    ( initial_model, 
-      rnds_and_seqs, background_seqs, 
-      selex_db_conn, 
-      partition_background_seqs,
-      ofname_prefix
-     ) = parse_arguments()
-    fwd_seqs, shape_seqs, labels = get_coded_seqs_and_labels(
-        rnds_and_seqs, background_seqs, None) # None
-    full_model(fwd_seqs, None, labels) #shape_seqs, labels)
+    model = JointBindingModel(100000)
+    for exp_id in (473, 441, 371, 83, 484, 35, 393, 30, 254, 202, 490, 91): # 441, 371, 
+        model.add_selex_layer(exp_id)
+
+    print "Compiling Model"
+    model.compile()
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=100)
 
     pass
     

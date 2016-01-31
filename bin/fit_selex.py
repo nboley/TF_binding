@@ -114,11 +114,18 @@ class SelexDBConn(object):
         self.exp_id = exp_id
         return
 
+    def get_factor_name(self):
+        cur = self.conn.cursor()
+        query = "SELECT tf_name FROM selex_experiments NATURAL JOIN tfs WHERE selex_exp_id = '%s';"
+        cur.execute(query, (self.exp_id,))
+        res = cur.fetchall()
+        return res[0][0]
+
     def insert_model_into_db(
             self, mo, validation_lhd):
         assert isinstance(mo, EnergeticDNABindingModel)
         motif_len = mo.motif_len
-        cur = self.conn.cursor()    
+        cur = self.conn.cursor()
         query = """
         INSERT INTO new_selex_models
           (selex_exp_id, motif_len, consensus_energy, ddg_array, validation_lhd)
@@ -150,7 +157,7 @@ class SelexDBConn(object):
         for rnd, primer, fname in cur.fetchall():
             fnames[int(rnd)] = fname
             primers.add(primer)
-        
+
         assert len(primers) == 1
         primer = list(primers)[0]
         query = """
