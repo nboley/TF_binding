@@ -312,7 +312,7 @@ def label_and_score_peak_with_chipseq_peaks(
         # if the contig isn't in the contig list, then it
         # can't be a valid peak
         if peak.contig not in fp.contigs: 
-            labels.append(-1)
+            labels.append(0)
             scores.append(0)
             continue
         overlap_frac = 0.0
