@@ -6,8 +6,8 @@ import numpy as np
 import json
 import os
 
-from pyTFbindtools.sequence import code_seq
-from pyTFbindtools.peaks import FastaPeaksAndLabels
+from pyTFbindtools.sequence import one_hot_encode_sequence
+from pyTFbindtools.peaks import FastaPeaksAndLabels, encode_peaks_sequence_into_binary_array
 from pyTFbindtools.cross_validation import (
     ClassificationResult, 
     find_optimal_ambiguous_peak_threshold, 
@@ -54,23 +54,6 @@ def balance_matrices(X, labels):
         np.random.choice(neg_full.shape[0], sample_size, replace=False)]
     return np.vstack((pos, neg)), np.array(
         [1]*sample_size + [0]*sample_size, dtype='float32')
-
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), 4, pk_width), dtype='float32')
-    for i, pk in enumerate(peaks):
-        if pk.seq is not None:
-            seq = pk.seq
-        else:
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-        # skip sequences overrunning the contig boundary
-        if len(seq) != pk_width: continue
-        coded_seq = code_seq(seq)
-        data[i] = coded_seq[0:4,:]
-    return data
 
 def add_reverse_complements(X, y):
     return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))

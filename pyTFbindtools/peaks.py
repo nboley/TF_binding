@@ -10,6 +10,8 @@ from sklearn.cross_validation import StratifiedKFold
 
 from pysam import Tabixfile
 
+from pyDNAbinding.sequence import one_hot_encode_sequence
+
 from grit.lib.multiprocessing_utils import Counter
 
 from cross_validation import iter_train_validation_splits
@@ -26,6 +28,23 @@ NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 
                    'score', 'signalValue', 'pValue', 'qValue', 'idrValue', 'seq'])
 NarrowPeakData.__new__.__defaults__ = (None,) * len(NarrowPeakData._fields)
+
+def encode_peaks_sequence_into_binary_array(peaks, fasta):
+    # find the peak width
+    pk_width = peaks[0].pk_width
+    # make sure that the peaks are all the same width
+    assert all(pk.pk_width == pk_width for pk in peaks)
+    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
+    for i, pk in enumerate(peaks):
+        if pk.seq is not None:
+            seq = pk.seq
+        else:
+            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+        # skip sequences overrunning the contig boundary
+        if len(seq) != pk_width: continue
+        coded_seq = one_hot_encode_sequence(seq)
+        data[i,:,:] = coded_seq
+    return data
 
 class NarrowPeak(NarrowPeakData):
     @property
@@ -131,6 +150,7 @@ class PeaksAndLabels():
             self.scores.append(score)
             self.sample_ids.add(sample)
             self.contigs.add(pk.contig)
+        print self.peak_widths
         assert len(self.peak_widths) == 1
         # turn the list of labels into a numpy array
         self.labels = np.array(self.labels, dtype='float32')
@@ -148,7 +168,7 @@ class PeaksAndLabels():
             )
 
     def remove_data(self, sample_names, contigs):
-        '''return data not covering sample_names and contigs                                                                                                                             
+        '''return data not covering sample_names and contigs
         '''
         return PeaksAndLabels(
                 pk_and_label for pk_and_label in self
@@ -339,7 +359,7 @@ def label_and_score_peak_with_chipseq_peaks(
         # if the contig isn't in the contig list, then it
         # can't be a valid peak
         if peak.contig not in fp.contigs: 
-            labels.append(-1)
+            labels.append(0)
             scores.append(0)
             continue
         overlap_frac = 0.0
@@ -393,7 +413,6 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         if ( len(ambiguous_sample_chipseq_peak_fnames) == 0 
              and len(optimal_sample_chipseq_peaks_fnames) == 0):
             continue
-
         # try to use anshul's relaxed peaks for the relaxed peak set.
         if ( include_ambiguous_peaks 
              and len(ambiguous_sample_chipseq_peak_fnames) == 0):
@@ -411,22 +430,33 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             for i, pk in enumerate(pks_iter):
                 labels, scores = label_and_score_peak_with_chipseq_peaks(
                     optimal_sample_chipseq_peaks_fnames, pk)
-                # set the label to zero if there is no clean peak set
-                # (in this case all peaks will be labeled -1 or 1 )
+                assert all(label in (0,1) for label in labels)
+                # set the label to -1 if there is no clean peak set
+                # (in this case all peaks will be labeled 0 or 1 )
                 # aggregate labels by taking the max over all labels
                 label, score = 0, 0
+                # set the label to the max label over the clean peaks
                 if len(labels) > 0:
                     assert len(scores) > 0
                     label = max(labels)
                     score = max(scores)
-                if include_ambiguous_peaks and label == 0:
+                # if there is not an overlapping clean peak, then see if there 
+                # is an overlapping ambiguous peak. If so, then label the region
+                # as ambiguous (no clean peak, but a dirty peak)
+                if include_ambiguous_peaks and label < 0:
                     (relaxed_labels, relaxed_scores
                          ) = label_and_score_peak_with_chipseq_peaks(
                              ambiguous_sample_chipseq_peak_fnames, pk)
+                    assert all(label in (0,1) for label in relaxed_labels)
+                    # if there is a relaxed peak with label 1, then this 
+                    # contradicts the clean peaks so we label it as ambiguous 
                     if max(relaxed_labels) == 1:
                         label = -1
-                        score = max(relaxed_scores)
-                
+                        score = max(score, max(relaxed_scores))
+                    # otherwise this is not labelled, so we assume that this
+                    # is not covered and thus remains a 0 (although now clean
+                    # because it's not overlapped by a noisy peak)
+                assert label != -1
                 yield PeakAndLabel(pk, sample_id, label, score)
                 num_peaks += 1
                 if ( max_n_peaks_per_sample is not None 

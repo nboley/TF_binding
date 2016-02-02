@@ -121,6 +121,13 @@ class SelexDBConn(object):
         res = cur.fetchall()
         return res[0][0]
 
+    def get_factor_id(self):
+        cur = self.conn.cursor()
+        query = "SELECT tf_id FROM selex_experiments WHERE selex_exp_id = '%s';"
+        cur.execute(query, (self.exp_id,))
+        res = cur.fetchall()
+        return res[0][0]
+
     def insert_model_into_db(
             self, mo, validation_lhd):
         assert isinstance(mo, EnergeticDNABindingModel)
@@ -167,8 +174,10 @@ class SelexDBConn(object):
         """
         cur.execute(query % primer)
         res = cur.fetchall()
-        assert len(res) == 1
-        bg_fname = res[0][0]
+        if len(res) == 0:
+            bg_fname = None
+        else:
+            bg_fname = res[0][0]
         
         return fnames, bg_fname
 
