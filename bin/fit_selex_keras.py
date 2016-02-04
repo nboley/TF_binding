@@ -214,7 +214,7 @@ class ConvolutionDNASequenceBinding(Layer):
         if self.W is None:
             assert self.b is None
             self.init_filters()
-        self.params = [self.W, self.b]
+        self.params = [self.W[0], self.b[0]]
     
     @property
     def output_shape(self):
@@ -233,11 +233,20 @@ class ConvolutionDNASequenceBinding(Layer):
         else:
             X_fwd = X
             X_rc = X
+
+        if self.W[1] is not None:
+            W = self.W[0][self.W[1],:,:,:]
+        else:
+            W = self.W[0]
+        if self.b[1] is not None:
+            b = self.b[0][self.b[1]]
+        else:
+            b = self.b[0]
         
-        fwd_rv = K.conv2d(X_fwd, self.W, border_mode='valid') \
-                 + K.reshape(self.b, (1, self.nb_motifs, 1, 1))
-        rc_rv = K.conv2d(X_rc, self.W[:,:,::-1,::-1], border_mode='valid') \
-                + K.reshape(self.b, (1, self.nb_motifs, 1, 1))
+        fwd_rv = K.conv2d(X_fwd, W, border_mode='valid') \
+                 + K.reshape(b, (1, self.nb_motifs, 1, 1))
+        rc_rv = K.conv2d(X_rc, W[:,:,::-1,::-1], border_mode='valid') \
+                + K.reshape(b, (1, self.nb_motifs, 1, 1))
         rv = K.concatenate((fwd_rv, rc_rv), axis=3)            
         #return rv.dimshuffle((0,3,2,1))
         return K.permute_dimensions(rv, (0,3,2,1))
@@ -255,8 +264,8 @@ class ConvolutionBindingSubDomains(Layer):
         self.input = K.placeholder(ndim=4)
         
         self.init = lambda x: (
-            initializations.get(init)(x), 
-            K.zeros((self.nb_domains,)) 
+            (initializations.get(init)(x), None),
+            (K.zeros((self.nb_domains,)), None) 
         )
         self.kwargs = kwargs
         
@@ -334,17 +343,12 @@ class ConvolutionBindingSubDomains(Layer):
         return K.permute_dimensions(rv, (0,3,2,1))
 
 class NormalizedOccupancy(Layer):
-    def __init__(
-            self, domain_len, chem_affinity=0.0, **kwargs):
-        self.domain_len = domain_len
-        self.init_chem_affinity = chem_affinity
+    def __init__(self, **kwargs):
         self.input = K.placeholder(ndim=4)        
         super(NormalizedOccupancy, self).__init__(**kwargs)
 
     def get_config(self):
-        config = {'name': self.__class__.__name__,
-                  'domain_len': self.domain_len,
-                  'init_chem_affinity': self.chem_affinity} 
+        config = {'name': self.__class__.__name__}
         base_config = super(NormalizedOccupancy, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
         
@@ -352,7 +356,7 @@ class NormalizedOccupancy(Layer):
         # make sure the last input dimension has dimension exactly 2, for the 
         # fwd and rc sequence
         #assert self.input_shape[3] == 2
-        self.chem_affinity = K.variable(self.init_chem_affinity)
+        self.chem_affinity = K.variable(0.0)
         self.params = [self.chem_affinity]
     
     @property
@@ -448,12 +452,12 @@ class JointBindingModel(Graph):
         # initialize the full subdomain convolutional filter
         self.num_binding_subdomain_convs = 8
         self.num_affinity_outputs = self.num_binding_subdomain_convs*len(tf_names)
-        self.binding_subdomain_conv_size = 14
+        self.binding_subdomain_conv_size = 9
         self.stacked_subdomains_layer_shape = (
             self.num_binding_subdomain_convs*len(tf_names), 
             1, 
             self.binding_subdomain_conv_size, 
-            self.num_small_convs)
+            3) # self.num_small_convs)
         self.stacked_subdomains_layer_filters = (
             self.stacked_subdomains_layer_shape,
             K.zeros((self.stacked_subdomains_layer_shape[0],)),
@@ -462,7 +466,7 @@ class JointBindingModel(Graph):
         )
 
         # extract the tf specific subtensors
-        self.binding_subdomains_layer = ConvolutionBindingSubDomains(
+        self.binding_subdomains_layer = ConvolutionDNASequenceBinding( #
                 self.num_binding_subdomain_convs*len(tf_names), # numConv
                 self.binding_subdomain_conv_size, # convWidth,
         )
@@ -483,7 +487,7 @@ class JointBindingModel(Graph):
             W_shape = tuple(W_shape)
             b = self.stacked_subdomains_layer_filters[1] #subtensor_slice]
             W = self.stacked_subdomains_layer_filters[2] #[subtensor_slice]
-            binding_sub_domains_layer = ConvolutionBindingSubDomains(
+            binding_sub_domains_layer = ConvolutionDNASequenceBinding(
                 self.num_binding_subdomain_convs, # numConv
                 self.binding_subdomain_conv_size, # convWidth,
             )
@@ -500,22 +504,34 @@ class JointBindingModel(Graph):
             input_name, output_name, 
             use_all_binding_subdomains=False):
 
+        """
+        if True:
+            short_conv_layer = ConvolutionDNASequenceBinding(
+                self.num_small_convs, # numConv
+                self.small_conv_size, # convWidth, 
+                #init=initial_model
+            )
+        else:
+            short_conv_layer = self.short_conv_layer.create_clone()
+        
         self.add_node(
-            self.short_conv_layer.create_clone(),
+            short_conv_layer,
             input=input_name,
             name=input_name + ".1"
         )
+        """
 
+        subdomain_input_name = input_name # + ".1"
         if use_all_binding_subdomains:
             self.add_node(
                 self.binding_subdomains_layer.create_clone(),
-                input=input_name + ".1",
+                input=subdomain_input_name,
                 name=output_name
             )
         else:
             self.add_node(
                 self.binding_subdomain_layers[tf_name].create_clone(),
-                input=input_name + ".1",
+                input=subdomain_input_name,
                 name=output_name
             )
         return
@@ -536,7 +552,7 @@ class JointBindingModel(Graph):
             output_name=name_prefix + 'binding_affinities')
         
         self.add_node(
-            NormalizedOccupancy(1),
+            NormalizedOccupancy(),
             name=name_prefix + 'occupancies',
             input=name_prefix + 'binding_affinities')
 
@@ -579,48 +595,47 @@ class JointBindingModel(Graph):
             use_all_binding_subdomains=True)
 
         self.add_node(
-            MaxPooling2D((8,1)),
+            ConvolutionBindingSubDomains(
+                nb_domains=8, 
+                domain_len=32,
+            ),
             name=name_prefix + 'binding_affinities.2',
             input=name_prefix + 'binding_affinities.1'
         )
 
         self.add_node(
+            NormalizedOccupancy(),
+            name=name_prefix + 'occupancies.1',
+            input=name_prefix + 'binding_affinities.2')
+        
+        """
+        self.add_node(
             Convolution2D(
-                nb_filter=4, 
-                nb_row=8,
-                nb_col=self.num_binding_subdomain_convs,
+                nb_filter=1, 
+                nb_row=16,
+                nb_col=8,
                 activation='sigmoid'
             ),
-            name=name_prefix + 'binding_affinities.3',
-            input=name_prefix + 'binding_affinities.2'
+            name=name_prefix + 'occupancies.2',
+            input=name_prefix + 'occupancies.1'
         )
-        
-        self.add_node(
-            Permute((3,2,1)),
-            name=name_prefix + 'binding_affinities.4',
-            input=name_prefix + 'binding_affinities.3'
-        )
-
-        self.add_node(
-            NormalizedOccupancy(1),
-            name=name_prefix + 'occupancies.1',
-            input=name_prefix + 'binding_affinities.4')
+        """
         
         self.add_node(
             Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
             name=name_prefix+'max', 
             input=name_prefix+'occupancies.1')
-        
 
         """
         self.add_node(
             Flatten(),
-            input=name_prefix+'occupancies.2',
-            name=name_prefix+'occupancies_flat'
+            input=name_prefix+'occupancies.1',
+            name=name_prefix+'occupancies.2'
         )
+        
         self.add_node(
             Dense(64, activation='sigmoid'), # numOutputNodes
-            input=name_prefix+'occupancies_flat',
+            input=name_prefix+'occupancies.2',
             name=name_prefix+'dense1'            
         ) 
         self.add_node(
@@ -633,14 +648,7 @@ class JointBindingModel(Graph):
             input=name_prefix+'dense2',
             name=name_prefix+'dense'            
         )
-        """
         
-        """
-        self.add_node(
-            Dropout(0.5),
-            name=name_prefix + 'occupancies1',
-            input=name_prefix + 'occupancies')
-
         # MaxPooling2D(pool_size=(1,maxPoolSize), stride=(1,maxPoolStride))
         #self.model.add(Reshape((numConv,numMaxPoolOutputs)))
         #self.model.add(Permute((2,1)))
@@ -648,17 +656,8 @@ class JointBindingModel(Graph):
         #self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
         #self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
         #self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
-        self.add_node(
-            Flatten(),
-            input=name_prefix+'occupancies1',
-            name=name_prefix+'occupancies_flat'
-        )
-        self.add_node(
-            Dense(1, activation='sigmoid'), # numOutputNodes
-            input=name_prefix+'occupancies_flat',
-            name=name_prefix+'dense'            
-        )
         """
+        
         self.add_output(
             name=name_prefix+'output', 
             input=name_prefix+'max')
@@ -705,7 +704,7 @@ class JointBindingModel(Graph):
                 name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
             self.named_validation_inputs[name_prefix+'output'] = labels[
                 :train_start_index]
-            #break
+            break
         return
 
     def add_selex_layer(self, selex_exp_id):
@@ -813,7 +812,7 @@ def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
     return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
 
 def main():
-    n_samples = 20000
+    n_samples = 50000
 
     """
     model.add_selex_layer(441) # MAX
@@ -838,8 +837,8 @@ def main():
     # filter out the TFs that dont have background sequence or arent long enough
     res = [ x for x in cur.fetchall() 
             if x[1] not in ('E2F1', 'E2F4', 'POU2F2', 'PRDM1', 'RXRA')
-            #and x[1] in ('MAX', 'YY1', 'RFX5', 'USF', 'PU1', 'CTCF')
-    ][:10]
+            and x[1] in ('MAX', ) #'YY1', 'RFX5', 'USF', 'PU1', 'CTCF')
+    ]
     
     tf_names = [x[1] for x in res]
     print tf_names
@@ -858,7 +857,7 @@ def main():
             except Exception, inst:
                 raise
 
-    #model.add_chipseq_layer('T011266_1.02', 'MAX') 
+    model.add_chipseq_layer('T011266_1.02', 'MAX') 
     #model.add_chipseq_layer('T044261_1.02', 'YY1')
 
     #for tf_id, tf_name, selex_exp_ids in res:
