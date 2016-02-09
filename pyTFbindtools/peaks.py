@@ -6,6 +6,7 @@ import random
 import cPickle as pickle
 
 import numpy as np
+
 from sklearn.cross_validation import StratifiedKFold
 
 from pysam import Tabixfile
@@ -90,8 +91,6 @@ class TrainValidationthreadSafeIterator(object):
 
     def next(self):
         i = self.i.return_and_increment()
-        print "="*1000
-        print i
         self._cur_val = i
         if i < self.n:
             train_indices, valid_indices = self.tr_valid_indices[i]
@@ -150,7 +149,6 @@ class PeaksAndLabels():
             self.scores.append(score)
             self.sample_ids.add(sample)
             self.contigs.add(pk.contig)
-        print self.peak_widths
         assert len(self.peak_widths) == 1
         # turn the list of labels into a numpy array
         self.labels = np.array(self.labels, dtype='float32')
@@ -164,7 +162,7 @@ class PeaksAndLabels():
         return PeaksAndLabels(
                 pk_and_label for pk_and_label in self 
                 if pk_and_label.sample in sample_names
-                and pk_and_label.peak.contig in contigs
+                and (contigs is None or pk_and_label.peak.contig in contigs)
             )
 
     def remove_data(self, sample_names, contigs):
@@ -232,9 +230,7 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
     if isinstance(fp, str):
         raise ValueError, "Expecting filepointer"
 
-    all_lines = [line for line in fp]
-    random.shuffle(all_lines)
-    for i, line in enumerate(all_lines):
+    for i, line in enumerate(fp):
         if line.startswith("track"): continue
         if max_n_peaks != None and i > max_n_peaks: 
             break
@@ -382,6 +378,77 @@ def label_and_score_peak_with_chipseq_peaks(
             scores.append(0)
     return labels, scores
 
+def iter_sample_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+        annotation_id,
+        half_peak_width=None, 
+        max_n_peaks_per_sample=None,
+        include_ambiguous_peaks=False,
+        order_by_accessibility=False):
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, tf_id, )
+
+    pass
+
+def build_peaks_label_mat(
+        annotation_id, roadmap_sample_id, half_peak_width=None):
+    # load all of the peaks
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
+
+    # extract the accessibility peaks
+    dnase_peaks_fnames = peak_fnames['dnase']
+    assert len(dnase_peaks_fnames) == 1
+    dnase_peaks_fname = next(iter(dnase_peaks_fnames))
+    del peak_fnames['dnase']
+
+    # load the DNASE peaks
+    print "Loading peaks"
+    with getFileHandle(dnase_peaks_fname) as fp:
+        if half_peak_width is None:
+            pks = list(iter_narrow_peaks(fp))
+        else:
+            pks = list(iter_summit_centered_peaks(
+                iter_narrow_peaks(fp), half_peak_width))
+    all_labels = []
+    for desired_peak_type in (
+            'optimal idr thresholded peaks', 'anshul relaxed peaks'):
+        # load the labels - using a cached version when available
+        pickle_fname = "PICKLEDLABELSMAT_%i_%s_%s_%s.obj" % (
+            annotation_id, 
+            roadmap_sample_id,
+            ('IDROPTIMAL' if desired_peak_type=='optimal idr thresholded peaks'
+             else 'RELAXEDPEAKS'),
+            half_peak_width
+        )
+        try:
+            with open(pickle_fname) as fp:
+                print "Loading labels"
+                labels = np.load(fp)
+        except IOError:
+            print "Building labels - this could take a while"
+            labels = np.zeros((len(pks), len(peak_fnames)), dtype='float32')
+            for tf_index, (tf_id, chipseq_peaks_fnames) in enumerate(
+                    sorted(peak_fnames.iteritems())):
+                optimal_chipseq_peaks_fnames = [
+                    fname for pk_type, fname in chipseq_peaks_fnames
+                    if pk_type == desired_peak_type
+                ]
+                for i, pk in enumerate(pks):
+                    pk_labels, pk_scores = label_and_score_peak_with_chipseq_peaks(
+                        optimal_chipseq_peaks_fnames, pk)
+                    try: label = max(pk_labels)
+                    except ValueError: label = 0 # if there are no overlapping peaks
+                    labels[i, tf_index] = label
+                    if i>0 and i%100000 == 0:
+                        print "%i/%i peaks, %i/%i samples" % (
+                            i, len(pks), tf_index, len(peak_fnames))
+            with open(pickle_fname, "w") as ofp:
+                np.save(ofp, labels)
+        all_labels.append(labels)
+    
+    return pks, sorted(peak_fnames.keys()), all_labels
+
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         tf_id, 
         annotation_id,
@@ -391,27 +458,32 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         order_by_accessibility=False):
     # put the import here to avoid errors if the database isn't available
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
-    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
-        tf_id, annotation_id)
-    for (sample_index, (sample_id, (
-            sample_chipseq_peaks_fnames, dnase_peaks_fnames)
-                )) in enumerate(peak_fnames.iteritems()):
+    all_peaks = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, tf_id)
+    for (sample_index, (sample_id, sample_peak_fnames)
+            ) in enumerate(all_peaks.iteritems()):
+        sample_chipseq_peaks_fnames = sample_peak_fnames[tf_id]
+        dnase_peaks_fnames = sample_peak_fnames['dnase']
         # for now, dont allow multiple set of DNASE peaks
         assert len(dnase_peaks_fnames) == 1
         dnase_peaks_fname = next(iter(dnase_peaks_fnames))
         
-        optimal_sample_chipseq_peaks_fnames = sample_chipseq_peaks_fnames[
-            'optimal idr thresholded peaks']
-        ambiguous_sample_chipseq_peak_fnames = sample_chipseq_peaks_fnames[
-            'anshul relaxed peaks']
+        optimal_sample_chipseq_peak_fnames = [
+            fname for pk_type, fname in sample_chipseq_peaks_fnames
+            if pk_type == 'optimal idr thresholded peaks'
+        ]
+        ambiguous_sample_chipseq_peak_fnames = [
+            fname for pk_type, fname in sample_chipseq_peaks_fnames
+            if pk_type == 'anshul relaxed peaks'
+        ]
         # if we're not using ambiuous peaks and there are no optimal peaks,
         # then skip this samples
         if ( not include_ambiguous_peaks 
-             and len(optimal_sample_chipseq_peaks_fnames) == 0):
+             and len(optimal_sample_chipseq_peak_fnames) == 0):
             continue
         # if there aren't any peak files then skip this samples
         if ( len(ambiguous_sample_chipseq_peak_fnames) == 0 
-             and len(optimal_sample_chipseq_peaks_fnames) == 0):
+             and len(optimal_sample_chipseq_peak_fnames) == 0):
             continue
         # try to use anshul's relaxed peaks for the relaxed peak set.
         if ( include_ambiguous_peaks 
@@ -419,7 +491,7 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             continue
         
         print "Loading peaks for sample '%s' (%i/%i)" % (
-            sample_id, sample_index, len(peak_fnames))
+            sample_id, sample_index, len(all_peaks))
         with getFileHandle(dnase_peaks_fname) as fp:
             pks_iter = list(iter_narrow_peaks(fp))
             if order_by_accessibility:
@@ -429,7 +501,7 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
             num_peaks = 0
             for i, pk in enumerate(pks_iter):
                 labels, scores = label_and_score_peak_with_chipseq_peaks(
-                    optimal_sample_chipseq_peaks_fnames, pk)
+                    optimal_sample_chipseq_peak_fnames, pk)
                 assert all(label in (0,1) for label in labels)
                 # set the label to -1 if there is no clean peak set
                 # (in this case all peaks will be labeled 0 or 1 )
@@ -443,7 +515,7 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                 # if there is not an overlapping clean peak, then see if there 
                 # is an overlapping ambiguous peak. If so, then label the region
                 # as ambiguous (no clean peak, but a dirty peak)
-                if include_ambiguous_peaks and label < 0:
+                if include_ambiguous_peaks and label <= 0:
                     (relaxed_labels, relaxed_scores
                          ) = label_and_score_peak_with_chipseq_peaks(
                              ambiguous_sample_chipseq_peak_fnames, pk)
@@ -456,7 +528,7 @@ def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
                     # otherwise this is not labelled, so we assume that this
                     # is not covered and thus remains a 0 (although now clean
                     # because it's not overlapped by a noisy peak)
-                assert label != -1
+                assert include_ambiguous_peaks or label != -1
                 yield PeakAndLabel(pk, sample_id, label, score)
                 num_peaks += 1
                 if ( max_n_peaks_per_sample is not None 

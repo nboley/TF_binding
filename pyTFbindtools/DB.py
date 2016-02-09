@@ -265,43 +265,51 @@ def encode_chipseq_exp_is_in_db(exp_id):
         return True
     return False
 
-def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(
-        tfid, annotation_id):
-    cur = conn.cursor()    
-    query = """
-    SELECT roadmap_sample_id,
-           dnase_peak_fname,
-           chipseq_peak_fname
-      FROM roadmap_matched_optimal_chipseq_peaks
-     WHERE tf_id = %s
-       AND annotation_id = %s;
-    """
-    rv = defaultdict(lambda: (set(), set()))
-    cur.execute(query, [tfid, annotation_id])
-    for sample_id, dnase_peak_fname, chipseq_peak_fname in cur.fetchall():
-        rv[sample_id][0].add(chipseq_peak_fname)
-        rv[sample_id][1].add(dnase_peak_fname)
-    return rv
-
 def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
-        tfid, annotation_id):
-    cur = conn.cursor()    
+        annotation_id, tfid=None, roadmap_sample_id=None, only_optimal=False):
+    cur = conn.cursor()
     query = """
     SELECT roadmap_sample_id,
+           tf_id,
            dnase_peak_fname,
            chipseq_peak_type,
            chipseq_peak_fname
-      FROM roadmap_matched_chipseq_peaks
-     WHERE tf_id = %s
-       AND annotation_id = %s;
-    """
-    rv = defaultdict(lambda: (defaultdict(set), set()))
-    cur.execute(query, [tfid, annotation_id])
-    for ( sample_id, dnase_peak_fname, chipseq_peak_type, chipseq_peak_fname
+      FROM {}
+     WHERE annotation_id = %s""".format(
+         'roadmap_matched_chipseq_peaks' if not only_optimal else (
+             'roadmap_matched_optimal_chipseq_peaks')
+     )
+    args = [annotation_id,]
+    if tfid is not None:
+        query += """
+       AND tf_id = %s"""
+        args.append(tfid)
+    if roadmap_sample_id is not None:
+        query += """
+       AND roadmap_sample_id = %s"""
+        args.append(roadmap_sample_id)
+    query += ';'
+    rv = defaultdict(lambda: defaultdict(set))
+    cur.execute(query, args)
+    for ( sample_id, tf_id, dnase_peak_fname, chipseq_peak_type, chipseq_peak_fname
            ) in cur.fetchall():
-        rv[sample_id][0][chipseq_peak_type].add(chipseq_peak_fname)
-        rv[sample_id][1].add(dnase_peak_fname)
+        rv[sample_id][tf_id].add((chipseq_peak_type, chipseq_peak_fname))
+        rv[sample_id]['dnase'].add(dnase_peak_fname)
     return rv
+
+def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, tfid=None, roadmap_sample_id=None):
+    return load_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, tfid, roadmap_sample_id, only_optimal=True)
+
+def load_tf_names(tf_ids):
+    cur = conn.cursor()
+    query = "select tf_name from roadmap_matched_chipseq_peaks where tf_id = %s limit 1"
+    tf_names = []
+    for tf_id in tf_ids:
+        cur.execute(query, [tf_id,])
+        tf_names.append(cur.fetchall()[0][0])
+    return tf_names
 
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")

@@ -46,6 +46,12 @@ class ClassificationResult(object):
                  is_cross_celltype=None, sample_type=None,
                  train_chromosomes=None, train_samples=None,
                  validation_chromosomes=None, validation_samples=None):
+        # filter out ambigfuous labels
+        index = labels > -0.5
+        predicted_labels = predicted_labels[index]
+        predicted_prbs = predicted_prbs[index]
+        labels = labels[index]
+
         self.is_cross_celltype = is_cross_celltype
         self.sample_type = sample_type
 
@@ -66,7 +72,8 @@ class ClassificationResult(object):
         if positives.sum() + negatives.sum() < len(labels):
             raise ValueError, "All labels must be either 0 or +1"
         
-        self.auROC = roc_auc_score(positives, predicted_prbs)
+        try: self.auROC = roc_auc_score(positives, predicted_prbs)
+        except ValueError: self.auROC = float('NaN')
         precision, recall, _ = precision_recall_curve(positives, predicted_prbs)
         prc = np.array([recall,precision])
         self.auPRC = auc(recall, precision)
@@ -79,11 +86,11 @@ class ClassificationResult(object):
 
     @property
     def positive_accuracy(self):
-        return float(self.num_true_positives)/self.num_positives
+        return float(self.num_true_positives)/(1e-6 + self.num_positives)
 
     @property
     def negative_accuracy(self):
-        return float(self.num_true_negatives)/self.num_negatives
+        return float(self.num_true_negatives)/(1e-6 + self.num_negatives)
 
     @property
     def balanced_accuracy(self):

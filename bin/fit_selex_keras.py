@@ -1,6 +1,8 @@
+import sys
+
 import functools
 from collections import defaultdict
-from random import shuffle
+from random import shuffle, sample
 
 import numpy as np
 
@@ -8,7 +10,9 @@ from pysam import FastaFile
 
 from pyTFbindtools.peaks import (
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB, 
-    encode_peaks_sequence_into_binary_array )
+    encode_peaks_sequence_into_binary_array, 
+    PeaksAndLabels,
+    build_peaks_label_mat, iter_summit_centered_peaks)
 from pyTFbindtools.DB import load_genome_metadata
 from pyTFbindtools.cross_validation import ClassificationResult
 
@@ -17,6 +21,7 @@ from pyDNAbinding.binding_model import ConvolutionalDNABindingModel
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 from pyDNAbinding.misc import calc_occ, R, T
 from pyDNAbinding.plot import plot_bases, pyplot
+from pyDNAbinding.sequence import one_hot_encode_sequence
 
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.layers.core import Lambda, Layer, Dropout, Permute
@@ -24,7 +29,7 @@ from keras import initializations
 from keras import backend as K
 from keras.models import model_from_yaml
 
-from keras.models import Graph
+from keras.models import Graph, Sequential
 from keras.optimizers import Adam, Adamax, RMSprop, SGD
 from keras.layers.core import Dense, Activation, Flatten, Merge, TimeDistributedDense, Reshape
 
@@ -50,15 +55,17 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
         expected_true_positives + expected_false_positives + 1.0)
     recall = expected_true_positives/(
         expected_true_positives + expected_false_negatives + 1.0)
+    rv = (-1e-6 -(1+beta*beta)*precision*recall)/(beta*beta*precision+recall+2e-6)
+    mse = K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
+    return rv
 
-    return (-1e-6 -(1+beta*beta)*precision*recall)/(beta*beta*precision+recall+2e-6)
-
-def my_mean_squared_error(y_true, y_pred):
+def mse_skip_ambig(y_true, y_pred):
     #clipped_pred = K.clip(y_pred, 0.01, 0.99)
     #loss = K.sum(y_true*K.log(clipped_pred))/K.sum(y_true)
     #return loss
-    return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
-    #return K.mean(K.square(y_pred - y_true), axis=-1)
+    #return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
+    #return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
+    return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
 
 def softmax(x, axis):
     scale_factor = x.max(axis=axis, keepdims=True)
@@ -74,6 +81,9 @@ def theano_calc_log_occs(affinities, chem_pot):
                     0 )
     upper = TT.switch(inner>35, inner, 0)
     return -(lower + mid + upper)
+
+def theano_logistic(affinities, chem_pot):
+    return 1/(1+TT.exp(affinities + chem_pot))
 
 def theano_log_sum_log_occs(log_occs):
     # theano.printing.Print('scale_factor')
@@ -128,7 +138,7 @@ class ConvolutionDNAShapeBinding(Layer):
                 self.input_shape[0], 
                 self.nb_motifs,
                 # sequence length minus the motif length
-                self.input_shape[2]-self.motif_len+1,
+                self.input_shape[2], #-self.motif_len+1,
                 2)
     
     def get_output(self, train=False):
@@ -336,7 +346,7 @@ class ConvolutionBindingSubDomains(Layer):
         fwd_rv = K.conv2d(X[:,0:1,:,:], W, border_mode='valid')  \
                  + K.reshape(b, (1, self.nb_domains, 1, 1))
         # # [:,:,::-1,::-1]
-        rc_rv = K.conv2d(X[:,1:2,:,:], W[:,:,::-1,::-1], border_mode='valid') \
+        rc_rv = K.conv2d(X[:,1:2,:,:], W[:,:,::-1,:], border_mode='valid') \
                 + K.reshape(b, (1, self.nb_domains, 1, 1))
         rv = K.concatenate((fwd_rv, rc_rv), axis=3)
         #return rv.dimshuffle((0,3,2,1))
@@ -366,12 +376,13 @@ class NormalizedOccupancy(Layer):
                 self.input_shape[0], 
                 1,
                 # sequence length minus the motif length
-                self.input_shape[2]-self.domain_len+1,
+                self.input_shape[2], #-self.domain_len+1,
                 2*self.input_shape[3])
     
     def get_output(self, train=False):
         X = self.get_input(train)
-        rv = TT.exp(theano_calc_log_occs(-X, self.chem_affinity))
+        rv = theano_logistic(-X, self.chem_affinity)
+        #rv = TT.exp(theano_calc_log_occs(-X, self.chem_affinity))
         return K.concatenate([rv[:,0:1,:,:], rv[:,1:2,:,:]], axis=3)
         #p_op = theano.printing.Print("="*40)
         log_occs = TT.flatten(
@@ -394,11 +405,20 @@ class MonitorAccuracy(keras.callbacks.Callback):
         data = self.model.named_validation_inputs
         proba = self.model.predict(data)
         for key, prbs in proba.iteritems():
-            prbs = prbs.ravel()
-            classes = np.array(prbs > 0.5, dtype=int)
-            truth = data[key]
-            res = ClassificationResult(truth, classes, prbs)
-            val_results[key] = res
+            print prbs.shape
+            if prbs.shape[1] == 1:
+                prbs_subset = prbs.ravel()
+                classes = np.array(prbs_subset > 0.5, dtype=int)
+                truth = data[key].ravel()
+                res = ClassificationResult(truth, classes, prbs_subset)
+                val_results[key] = res
+            else:
+                for i in xrange(prbs.shape[1]):
+                    prbs_subset = prbs[:,i].ravel()
+                    classes = np.array(prbs_subset > 0.5, dtype=int)
+                    truth = data[key][:,i].ravel()
+                    res = ClassificationResult(truth, classes, prbs_subset)
+                    val_results[key + "_%s" % self.model.tf_names[i]] = res
 
         for key, res in sorted(val_results.iteritems()):
             print key.ljust(40), res
@@ -438,6 +458,7 @@ class JointBindingModel(Graph):
         self.named_validation_inputs = {}
         self.named_inputs = {}
         self.named_losses = {}
+        self.sample_weights = {}
         
         # initialize the base convolutional filter
         self.num_small_convs = 64
@@ -454,7 +475,7 @@ class JointBindingModel(Graph):
         self.num_affinity_outputs = self.num_binding_subdomain_convs*len(tf_names)
         self.binding_subdomain_conv_size = 9
         self.stacked_subdomains_layer_shape = (
-            self.num_binding_subdomain_convs*len(tf_names), 
+            (0+self.num_binding_subdomain_convs)*len(tf_names), 
             1, 
             self.binding_subdomain_conv_size, 
             3) # self.num_small_convs)
@@ -467,7 +488,7 @@ class JointBindingModel(Graph):
 
         # extract the tf specific subtensors
         self.binding_subdomains_layer = ConvolutionDNASequenceBinding( #
-                self.num_binding_subdomain_convs*len(tf_names), # numConv
+                (0+self.num_binding_subdomain_convs)*len(tf_names), # numConv
                 self.binding_subdomain_conv_size, # convWidth,
         )
         self.binding_subdomains_layer.W_shape = (
@@ -498,12 +519,7 @@ class JointBindingModel(Graph):
 
         super(Graph, self).__init__(*args, **kwargs)
 
-    def add_affinity_layers(
-            self, 
-            tf_name, 
-            input_name, output_name, 
-            use_all_binding_subdomains=False):
-
+    def add_affinity_layers(self, input_name, output_name, tf_name=None):
         """
         if True:
             short_conv_layer = ConvolutionDNASequenceBinding(
@@ -522,13 +538,14 @@ class JointBindingModel(Graph):
         """
 
         subdomain_input_name = input_name # + ".1"
-        if use_all_binding_subdomains:
+        if tf_name is None:
             self.add_node(
                 self.binding_subdomains_layer.create_clone(),
                 input=subdomain_input_name,
                 name=output_name
             )
         else:
+            assert tf_name in self.binding_subdomain_layers
             self.add_node(
                 self.binding_subdomain_layers[tf_name].create_clone(),
                 input=subdomain_input_name,
@@ -547,9 +564,9 @@ class JointBindingModel(Graph):
         assert name_prefix+'one_hot_sequence' not in self.named_inputs
         self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs
         self.add_affinity_layers(
-            tf_name, 
             input_name=name_prefix+'one_hot_sequence', 
-            output_name=name_prefix + 'binding_affinities')
+            output_name=name_prefix + 'binding_affinities',
+            tf_name=tf_name)
         
         self.add_node(
             NormalizedOccupancy(),
@@ -571,28 +588,22 @@ class JointBindingModel(Graph):
         assert name_prefix + 'output' not in self.named_inputs
         self.named_inputs[name_prefix + 'output'] = labels
 
-        self.named_losses[name_prefix + 'output'] = 'mse'
+        self.named_losses[name_prefix + 'output'] = 'mse' #mse_skip_ambig #expected_F1_loss
         #expected_F1_loss #'mse' #my_mean_squared_error
 
         return
 
-    def add_invivo_layer(self, tf_name, sample_id, fwd_seqs, labels):
-        name_prefix = 'invivo_%s_%s_' % (tf_name, sample_id) 
-
+    def add_invivo_layer(self, name_prefix, seq_length, output_dim):
         self.add_input(
             name=name_prefix+'one_hot_sequence', 
-            input_shape=(1, fwd_seqs.shape[2], 4))
-        assert name_prefix+'one_hot_sequence' not in self.named_inputs
-        self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs
+            input_shape=(1, seq_length, 4))
 
         # this fixes an implementation bug in Keras. If this is not true,
         # then the code runs much more slowly
 
         self.add_affinity_layers(
-            tf_name, 
             input_name=name_prefix+'one_hot_sequence', 
-            output_name=name_prefix+'binding_affinities.1',
-            use_all_binding_subdomains=True)
+            output_name=name_prefix+'binding_affinities.1')
 
         self.add_node(
             ConvolutionBindingSubDomains(
@@ -607,26 +618,13 @@ class JointBindingModel(Graph):
             NormalizedOccupancy(),
             name=name_prefix + 'occupancies.1',
             input=name_prefix + 'binding_affinities.2')
-        
-        """
-        self.add_node(
-            Convolution2D(
-                nb_filter=1, 
-                nb_row=16,
-                nb_col=8,
-                activation='sigmoid'
-            ),
-            name=name_prefix + 'occupancies.2',
-            input=name_prefix + 'occupancies.1'
-        )
-        """
-        
-        self.add_node(
-            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
-            name=name_prefix+'max', 
-            input=name_prefix+'occupancies.1')
 
-        """
+        
+        #self.add_node(
+        #    Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
+        #    name=name_prefix+'max', 
+        #    input=name_prefix+'occupancies.1')
+
         self.add_node(
             Flatten(),
             input=name_prefix+'occupancies.1',
@@ -644,31 +642,48 @@ class JointBindingModel(Graph):
             input=name_prefix + 'dense1')
 
         self.add_node(
-            Dense(1, activation='sigmoid'), # numOutputNodes
+            Dense(output_dim, activation='sigmoid'), # numOutputNodes
             input=name_prefix+'dense2',
             name=name_prefix+'dense'            
         )
         
-        # MaxPooling2D(pool_size=(1,maxPoolSize), stride=(1,maxPoolStride))
-        #self.model.add(Reshape((numConv,numMaxPoolOutputs)))
-        #self.model.add(Permute((2,1)))
-        # make the number of max pooling outputs the time dimension
-        #self.model.add(GRU(output_dim=gruHiddenVecSize,return_sequences=True))
-        #self.model.add(TimeDistributedDense(numFCNodes,activation="relu"))
-        #self.model.add(Reshape((numFCNodes*numMaxPoolOutputs,)))
-        """
-        
         self.add_output(
             name=name_prefix+'output', 
-            input=name_prefix+'max')
-        
+            input=name_prefix+'dense')
+    
+    def add_chipseq_sample(self, 
+                           peaks_and_labels, 
+                           genome_fasta, 
+                           tf_name, 
+                           sample_id):
+        train_start_index = int(self.num_samples*0.1)
+        print "Adding ChIP-seq data for %s (sample ID %s)" % (
+                tf_name, sample_id)
+        name_prefix = 'invivo_%s_%s_' % (tf_name, sample_id) 
+        fwd_seqs = encode_peaks_sequence_into_binary_array(
+            [pk.peak for pk in peaks_and_labels], genome_fasta)[:,None,:,:]
+        labels = np.array([pk.label for pk in peaks_and_labels])
+        print round(float(labels.sum())/labels.shape[0], 3)
+        self.add_invivo_layer(
+            name_prefix,
+            fwd_seqs.shape[2],
+            1)
+
+        assert name_prefix+'one_hot_sequence' not in self.named_inputs
+        self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs[train_start_index:]
         assert name_prefix + 'output' not in self.named_inputs
-        self.named_inputs[name_prefix + 'output'] = labels
-        self.named_losses[name_prefix + 'output'] = 'mse' #expected_F1_loss
-        #expected_F1_loss # 'mse' # 'binary_crossentropy' 
+        self.named_inputs[name_prefix + 'output'] = labels[train_start_index:]
+        weights = np.ones_like(labels[train_start_index:])
+        self.sample_weights[name_prefix + 'output'] = weights.ravel()
+        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
+
+        self.named_validation_inputs[
+            name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
+        self.named_validation_inputs[name_prefix+'output'] = labels[
+            :train_start_index]
+        return
 
     def add_chipseq_layer(self, tf_id, tf_name):
-        train_start_index = int(self.num_samples*0.1)
         genome_fasta = FastaFile(
             load_genome_metadata(1).filename) # annotation_id 
         peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
@@ -676,35 +691,51 @@ class JointBindingModel(Graph):
             1, #args.annotation_id,
             500, # args.half_peak_width, 
             self.num_samples, #args.max_num_peaks_per_sample, 
-            include_ambiguous_peaks=False,
-            order_by_accessibility=True)
+            include_ambiguous_peaks=True,
+            order_by_accessibility=True).remove_ambiguous_labeled_entries()
+        peaks = PeaksAndLabels(sample(peaks_and_labels, self.num_samples))
+        self.add_chipseq_sample(peaks, genome_fasta, tf_name, 'top')
+        return
+       
         # group peaks by their sample
         sample_grpd_peaks = defaultdict(list)
-        for pk in peaks_and_labels:
-            sample_grpd_peaks[pk.sample].append(pk)
+        assert False
+        sample_grpd_peaks[pk.sample].append(pk)
         peaks_seqs, peaks_labels = {}, {}
         for sample_peaks in sample_grpd_peaks.itervalues():
             shuffle(sample_peaks)
         for sample_id, sample_pks in sample_grpd_peaks.iteritems():
-            print "Adding ChIP-seq data for %s (sample ID %s)" % (
-                    tf_name, sample_id)
-            name_prefix = 'invivo_%s_%s_' % (tf_name, sample_id) 
-            fwd_seqs = encode_peaks_sequence_into_binary_array(
-                [pk.peak for pk in sample_pks], genome_fasta)[:,None,:,:]
-            labels = np.array([pk.label for pk in sample_pks])
-            print round(float(labels.sum())/labels.shape[0], 3)
-            self.add_invivo_layer(
-                tf_name=tf_name, 
-                sample_id=sample_id, 
-                fwd_seqs=fwd_seqs[train_start_index:,:,:,:], 
-                labels=labels[train_start_index:])
+            self.add_chipseq_sample(sample_pks, genome_fasta, tf_name, sample_id)
+        return
 
-            name_prefix = 'invivo_%s_%s_' % (tf_name, sample_id) 
-            self.named_validation_inputs[
-                name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
-            self.named_validation_inputs[name_prefix+'output'] = labels[
-                :train_start_index]
-            break
+    def add_chipseq_samples(self, pks_and_labels): 
+        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
+        name_prefix = 'invivo_%s_' % pks_and_labels.sample_id 
+
+        #print (pks_and_labels.labels.sum(axis=1)
+        #         )/pks_and_labels.labels.shape[0]).round(3)
+        self.add_invivo_layer(
+            name_prefix, 
+            pks_and_labels.fwd_seqs.shape[2], 
+            pks_and_labels.labels.shape[1])
+
+        assert name_prefix+'one_hot_sequence' not in self.named_inputs
+        self.named_inputs[name_prefix+'one_hot_sequence'] = pks_and_labels.train_fwd_seqs
+        assert name_prefix + 'output' not in self.named_inputs
+        self.named_inputs[name_prefix + 'output'] = pks_and_labels.train_labels
+        num_zeros = (pks_and_labels.train_labels == 0.0).sum()
+        num_ones = (pks_and_labels.train_labels == 1.0).sum()
+        weights = np.zeros_like(pks_and_labels.train_labels)
+        weights[pks_and_labels.train_labels == 0.0] = (1 - num_zeros/float(num_ones + num_zeros))
+        weights[pks_and_labels.train_labels == 1.0] = (1 - num_ones/float(num_ones + num_zeros))
+        self.sample_weights[name_prefix + 'output'] = weights.ravel()
+        print weights
+        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
+
+        self.named_validation_inputs[
+            name_prefix+'one_hot_sequence'] = pks_and_labels.validation_fwd_seqs
+        self.named_validation_inputs[name_prefix+'output'] = pks_and_labels.validation_labels
+
         return
 
     def add_selex_layer(self, selex_exp_id):
@@ -759,7 +790,8 @@ class JointBindingModel(Graph):
         compile = functools.partial(
             super(JointBindingModel, self).compile,
             loss=self.named_losses,
-            optimizer=Adam()
+            optimizer=Adam(),
+            sample_weight_modes=dict((key, None) for key in self.sample_weights)
         )
         return compile(*args, **kwargs)
 
@@ -773,6 +805,14 @@ class JointBindingModel(Graph):
         early_stop = keras.callbacks.EarlyStopping(
             monitor='val_loss', patience=10, verbose=1, mode='auto')
         monitor_accuracy_cb = MonitorAccuracy()
+
+        #print data.keys()
+        #pass
+
+        for key, val in data.iteritems():
+            print key, val.shape
+        #assert False
+
         fit = functools.partial(
             super(JointBindingModel, self).fit,
             data=data,
@@ -780,7 +820,8 @@ class JointBindingModel(Graph):
             batch_size=batch_size,
             nb_epoch=nb_epoch,
             callbacks=[monitor_accuracy_cb, early_stop],
-            shuffle=True
+            shuffle=True,
+            sample_weight=self.sample_weights
         )
         return fit(*args, **kwargs)
 
@@ -811,8 +852,142 @@ def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
     )[permutation]
     return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
 
+import pandas as pd
+
+class SamplePeaksAndLabels():
+    def one_hot_code_peaks_sequence(self):
+        pk_width = self.pks[0][2] - self.pks[0][1]
+        rv = 0.25 * np.ones((len(self.pks), pk_width, 4), dtype='float32')
+        for i, data in enumerate(self.pks):
+            assert pk_width == data[2] - data[1]
+            seq = self.genome_fasta.fetch(str(data[0]), data[1], data[2])
+            if len(seq) != pk_width: continue
+            coded_seq = one_hot_encode_sequence(seq)
+            rv[i,:,:] = coded_seq
+        return rv[:,None,:,:]
+
+    def _init_pks_and_label_mats(self):
+        from pyTFbindtools.DB import load_tf_names
+        # load the matrix. This is probably cached on disk, but may need to 
+        # be recreated
+        (self.pks, self.tf_ids, (self.idr_optimal_labels, self.relaxed_labels)
+            ) = build_peaks_label_mat(
+                self.annotation_id, self.sample_id, self.half_peak_width)
+        self.pk_record_type = type(self.pks[0])
+        pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
+        self.pks = np.array(self.pks, dtype=zip(self.pks[0]._fields, pk_types))
+        # sort the peaks by accessibility
+        index = np.lexsort((self.pks['start'], -self.pks['signalValue']))
+        self.pks = self.pks[index]
+        self.idr_optimal_labels = self.idr_optimal_labels[index,:]
+        self.relaxed_labels = self.relaxed_labels[index,:]
+
+        # keep the top n_samples peaks and max_num_tfs tfs
+        print "Loading tf names"
+        all_tf_names = load_tf_names(self.tf_ids)
+        # make sure all of the tfnames actually exist
+        assert ( self.desired_tf_names is None 
+                 or all(tf_name in all_tf_names 
+                        for tf_name in self.desired_tf_names) 
+        )
+        # filter the tf set 
+        filtered_tfs = sorted([
+            (tf_name, tf_id, i) for i, (tf_name, tf_id) 
+            in enumerate(zip(all_tf_names, self.tf_ids)) 
+            if tf_name in self.desired_tf_names
+        ])
+        self.tf_names, self.tf_ids, tf_indices = zip(*filtered_tfs)
+        self.pks = self.pks[:self.n_samples]
+        self.idr_optimal_labels = self.idr_optimal_labels[
+            :self.n_samples, np.array(tf_indices)]
+        self.relaxed_labels = self.relaxed_labels[
+            :self.n_samples, np.array(tf_indices)]
+        
+        # set the ambiguous labels to -1
+        self.ambiguous_pk_indices = (
+            self.idr_optimal_labels != self.relaxed_labels)
+        self.clean_labels = self.idr_optimal_labels.copy()
+        self.clean_labels[self.ambiguous_pk_indices] = -1
+
+        # print out balance statistics
+        #print (self.idr_optimal_labels.sum(axis=0)/self.idr_optimal_labels.shape[0])
+        #print (self.relaxed_labels.sum(axis=0)/self.relaxed_labels.shape[0])
+        #print (self.ambiguous_pk_indices.sum(axis=0)/float(self.ambiguous_pk_indices.shape[0]))
+
+        return
+    
+    def __init__(
+            self, sample_id, n_samples, annotation_id=1, 
+            half_peak_width=500, tf_names=None):
+        self.sample_id = sample_id
+        self.annotation_id = annotation_id
+        self.half_peak_width = half_peak_width
+        self.n_samples = n_samples
+        self.desired_tf_names = tf_names
+        self._init_pks_and_label_mats()
+
+        # initialize the training and validation data
+        index = np.argsort(np.random.random(len(self.pks)))
+        self.pks = self.pks[index]
+        self.idr_optimal_labels = self.idr_optimal_labels[index,:]
+        self.relaxed_labels = self.relaxed_labels[index,:]
+        self.ambiguous_pk_indices = self.ambiguous_pk_indices[index,:]
+        self.ambiguous_labels = self.clean_labels[index,:]
+        from scipy.stats import itemfreq
+        print "IDR Optimal"
+        print itemfreq(self.idr_optimal_labels).T
+        print "Relaxed"
+        print itemfreq(self.relaxed_labels).T
+        print "Ambiguous"
+        print itemfreq(self.ambiguous_labels).T
+        print 
+        training_index = int(self.n_samples*0.1)        
+        self.labels = self.idr_optimal_labels # relaxed_labels
+        self.train_labels = self.labels[training_index:]
+        self.validation_labels = self.labels[:training_index]
+        
+        # code the peaks' sequence
+        print "Coding peaks"
+        self.genome_fasta = FastaFile(
+            load_genome_metadata(self.annotation_id).filename)
+        self.fwd_seqs = self.one_hot_code_peaks_sequence()
+        self.train_fwd_seqs = self.fwd_seqs[training_index:]
+        self.validation_fwd_seqs = self.fwd_seqs[:training_index]
+        
+        return
+    
+
+from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
-    n_samples = 50000
+    """
+    peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+        'T044268_1.02', # args.tf_id,
+        1, #args.annotation_id,
+        500, # args.half_peak_width, 
+        10000, #args.max_num_peaks_per_sample, 
+        include_ambiguous_peaks=True,
+        order_by_accessibility=True)#.remove_ambiguous_labeled_entries()
+    counts = defaultdict(int)
+    counts = defaultdict(int)
+    for pk in peaks_and_labels:
+        counts[(pk.sample, pk.label)] += 1
+    for x in sorted(counts.items()):
+        print x
+    assert False
+    """
+    n_samples = 25000
+    sample_id = 'E123'
+    sample_peaks_and_labels = SamplePeaksAndLabels(
+        sample_id, n_samples, half_peak_width=500, tf_names=['MAX',])
+    model = JointBindingModel(n_samples, sample_peaks_and_labels.tf_names)
+    print sample_peaks_and_labels.tf_names
+    model.add_selex_layer(441) # MAX
+    model.add_chipseq_layer('T011266_1.02', 'MAX') 
+    #model.add_chipseq_samples(sample_peaks_and_labels)
+    print "Compiling Model"
+    model.compile()
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=100)
+    return
 
     """
     model.add_selex_layer(441) # MAX
@@ -828,6 +1003,12 @@ def main():
         "host=%s dbname=%s user=%s" % ('mitra', 'cisbp', 'nboley'))
     cur = conn.cursor()
     query = """
+      SELECT tfs.family_id, family_name, array_agg(tfs.tf_name) 
+        FROM selex_experiments NATURAL JOIN tfs NATURAL JOIN tf_families 
+    GROUP BY family_id, family_name;
+    """ # group tfs by their families
+    
+    query = """
       SELECT selex_experiments.tf_id, tfs.tf_name, array_agg(distinct selex_exp_id)
         FROM roadmap_matched_chipseq_peaks NATURAL JOIN selex_experiments NATURAL JOIN tfs 
     GROUP BY selex_experiments.tf_id, tfs.tf_name
@@ -837,8 +1018,8 @@ def main():
     # filter out the TFs that dont have background sequence or arent long enough
     res = [ x for x in cur.fetchall() 
             if x[1] not in ('E2F1', 'E2F4', 'POU2F2', 'PRDM1', 'RXRA')
-            and x[1] in ('MAX', ) #'YY1', 'RFX5', 'USF', 'PU1', 'CTCF')
-    ]
+            #and x[1] in ('MAX',) # 'YY1', 'RFX5', 'USF', 'PU1', 'CTCF')
+    ][:25]
     
     tf_names = [x[1] for x in res]
     print tf_names
