@@ -42,6 +42,32 @@ class SeqsTooShort(Exception):
 class NoBackgroundSequences(Exception):
     pass
 
+global_model_W = None
+
+def circular_crosscorelation(X, y):
+    """ 
+    Input:
+        symbols for X [n, m]
+        and y[m,]
+
+    Returns: 
+        symbol for circular cross corelation of each of row in X with 
+        cc[n, m]
+    """
+    n, m = X.shape
+    corr_expr = T.signal.conv.conv2d(
+        X, y[::-1].reshape((1, -1)), image_shape=(1, m), border_mode='full')
+    corr_len = corr_expr.shape[1]
+    pad = m - corr_len%m
+    v_padded = T.concatenate([corr_expr, T.zeros((n, pad))], axis=1)
+    circ_corr_exp = T.sum(v_padded.reshape((n, v_padded.shape[1] / m, m)), axis=1)
+    return circ_corr_exp[:, ::-1]
+
+def test_loss(y_true, y_pred):
+    mse = K.mean(K.square(y_true - y_pred))
+    penalty = circular_crosscorelation(global_model_W, global_model_W)
+    return mse + penalty
+
 def expected_F1_loss(y_true, y_pred, beta=0.1):
     min_label = TT.min(y_true)
     max_label = TT.max(y_true)
@@ -592,12 +618,12 @@ class JointBindingModel(Graph):
             input_name=name_prefix+'one_hot_sequence', 
             output_name=name_prefix + 'binding_affinities',
             tf_name=tf_name)
-        
+        #N X 2 X seq_len X num_filters
         self.add_node(
             NormalizedOccupancy(),
             name=name_prefix + 'occupancies',
             input=name_prefix + 'binding_affinities')
-
+        #N X 1 X seq_len X 2*num_filters
         #self.add_node(
         #    Activation('relu'),
         #    name=name_prefix + 'occupancies',
@@ -625,11 +651,11 @@ class JointBindingModel(Graph):
 
         # this fixes an implementation bug in Keras. If this is not true,
         # then the code runs much more slowly
-
         self.add_affinity_layers(
             input_name=name_prefix+'one_hot_sequence', 
             output_name=name_prefix+'binding_affinities.1')
-
+        #N X 2 X 1000 X 100
+        
         self.add_node(
             ConvolutionBindingSubDomains(
                 nb_domains=8, 
@@ -643,11 +669,13 @@ class JointBindingModel(Graph):
             NormalizedOccupancy(),
             name=name_prefix + 'occupancies.1',
             input=name_prefix + 'binding_affinities.2')
-
+        #N X 1 X 1000 X 200
+        
         self.add_node(
             TrackMax(),
             name=name_prefix+'max', 
             input=name_prefix+'occupancies.1')
+        #N X 1 X 1 X 200
 
         self.add_node(
             Flatten(),
