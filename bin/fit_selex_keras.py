@@ -371,7 +371,7 @@ class NormalizedOccupancy(Layer):
     
     @property
     def output_shape(self):
-        #return (self.input_shape[0],) # 1, 1, 1)
+        #return self.input_shape
         return (# number of obseravations
                 self.input_shape[0], 
                 1,
@@ -381,9 +381,11 @@ class NormalizedOccupancy(Layer):
     
     def get_output(self, train=False):
         X = self.get_input(train)
-        rv = theano_logistic(-X, self.chem_affinity)
-        #rv = TT.exp(theano_calc_log_occs(-X, self.chem_affinity))
-        return K.concatenate([rv[:,0:1,:,:], rv[:,1:2,:,:]], axis=3)
+        #rv = theano_logistic(-X, self.chem_affinity)
+        rv = TT.exp(theano_calc_log_occs(-X, self.chem_affinity))
+        rv = K.concatenate([rv[:,0:1,:,:], rv[:,1:2,:,:]], axis=3)
+        return rv
+        return K.permute_dimensions(rv, (0,3,2,1))
         #p_op = theano.printing.Print("="*40)
         log_occs = TT.flatten(
             theano_calc_log_occs(X, self.chem_affinity), outdim=2)
@@ -398,6 +400,28 @@ class NormalizedOccupancy(Layer):
         return K.reshape(norm_occs, X.shape)
         return K.max(norm_occs, axis=1) #K.reshape(norm_occs, X.shape)
 
+class TrackMax(Layer):
+    def __init__(self, **kwargs):
+        self.input = K.placeholder(ndim=4)        
+        super(TrackMax, self).__init__(**kwargs)
+
+    def get_config(self):
+        config = {'name': self.__class__.__name__}
+        base_config = super(NormalizedOccupancy, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    @property
+    def output_shape(self):
+        #return self.input_shape
+        return (self.input_shape[0], 
+                self.input_shape[1],
+                1,
+                self.input_shape[3])
+
+    def get_output(self, train=False):
+        X = self.get_input(train)
+        rv = K.max(X, axis=2, keepdims=True)
+        return rv
 
 class MonitorAccuracy(keras.callbacks.Callback):    
     def on_epoch_end(self, *args, **kwargs):
@@ -405,11 +429,12 @@ class MonitorAccuracy(keras.callbacks.Callback):
         data = self.model.named_validation_inputs
         proba = self.model.predict(data)
         for key, prbs in proba.iteritems():
-            print prbs.shape
             if prbs.shape[1] == 1:
                 prbs_subset = prbs.ravel()
                 classes = np.array(prbs_subset > 0.5, dtype=int)
+                print "classes", np.unique(classes, return_counts=True)
                 truth = data[key].ravel()
+                print "truth", np.unique(truth, return_counts=True)
                 res = ClassificationResult(truth, classes, prbs_subset)
                 val_results[key] = res
             else:
@@ -471,7 +496,7 @@ class JointBindingModel(Graph):
         self.short_conv_layer.init_filters()
 
         # initialize the full subdomain convolutional filter
-        self.num_binding_subdomain_convs = 8
+        self.num_binding_subdomain_convs = 4
         self.num_affinity_outputs = self.num_binding_subdomain_convs*len(tf_names)
         self.binding_subdomain_conv_size = 9
         self.stacked_subdomains_layer_shape = (
@@ -588,7 +613,7 @@ class JointBindingModel(Graph):
         assert name_prefix + 'output' not in self.named_inputs
         self.named_inputs[name_prefix + 'output'] = labels
 
-        self.named_losses[name_prefix + 'output'] = 'mse' #mse_skip_ambig #expected_F1_loss
+        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
         #expected_F1_loss #'mse' #my_mean_squared_error
 
         return
@@ -619,18 +644,18 @@ class JointBindingModel(Graph):
             name=name_prefix + 'occupancies.1',
             input=name_prefix + 'binding_affinities.2')
 
-        
-        #self.add_node(
-        #    Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
-        #    name=name_prefix+'max', 
-        #    input=name_prefix+'occupancies.1')
+        self.add_node(
+            TrackMax(),
+            name=name_prefix+'max', 
+            input=name_prefix+'occupancies.1')
 
         self.add_node(
             Flatten(),
-            input=name_prefix+'occupancies.1',
+            input=name_prefix+'max',
             name=name_prefix+'occupancies.2'
         )
-        
+        """
+
         self.add_node(
             Dense(64, activation='sigmoid'), # numOutputNodes
             input=name_prefix+'occupancies.2',
@@ -640,10 +665,10 @@ class JointBindingModel(Graph):
             Dropout(0.5),
             name=name_prefix + 'dense2',
             input=name_prefix + 'dense1')
-
+        """
         self.add_node(
             Dense(output_dim, activation='sigmoid'), # numOutputNodes
-            input=name_prefix+'dense2',
+            input=name_prefix+'occupancies.2',
             name=name_prefix+'dense'            
         )
         
@@ -673,9 +698,9 @@ class JointBindingModel(Graph):
         self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs[train_start_index:]
         assert name_prefix + 'output' not in self.named_inputs
         self.named_inputs[name_prefix + 'output'] = labels[train_start_index:]
-        weights = np.ones_like(labels[train_start_index:])
+        weights = np.ones_like(labels[train_start_index:,:])
         self.sample_weights[name_prefix + 'output'] = weights.ravel()
-        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
+        self.named_losses[name_prefix + 'output'] = 'mse' #mse_skip_ambig #expected_F1_loss
 
         self.named_validation_inputs[
             name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
@@ -692,19 +717,19 @@ class JointBindingModel(Graph):
             500, # args.half_peak_width, 
             self.num_samples, #args.max_num_peaks_per_sample, 
             include_ambiguous_peaks=True,
-            order_by_accessibility=True).remove_ambiguous_labeled_entries()
-        peaks = PeaksAndLabels(sample(peaks_and_labels, self.num_samples))
-        self.add_chipseq_sample(peaks, genome_fasta, tf_name, 'top')
-        return
+            order_by_accessibility=True) #.remove_ambiguous_labeled_entries()
+        #peaks = PeaksAndLabels(sample(peaks_and_labels, self.num_samples))
+        #self.add_chipseq_sample(peaks, genome_fasta, tf_name, 'top')
+        #return
        
         # group peaks by their sample
         sample_grpd_peaks = defaultdict(list)
-        assert False
-        sample_grpd_peaks[pk.sample].append(pk)
+        for pk in peaks_and_labels:
+            sample_grpd_peaks[pk.sample].append(pk)
         peaks_seqs, peaks_labels = {}, {}
-        for sample_peaks in sample_grpd_peaks.itervalues():
-            shuffle(sample_peaks)
         for sample_id, sample_pks in sample_grpd_peaks.iteritems():
+            if sample_id != 'E123': continue
+            shuffle(sample_pks)
             self.add_chipseq_sample(sample_pks, genome_fasta, tf_name, sample_id)
         return
 
@@ -729,7 +754,6 @@ class JointBindingModel(Graph):
         weights[pks_and_labels.train_labels == 0.0] = (1 - num_zeros/float(num_ones + num_zeros))
         weights[pks_and_labels.train_labels == 1.0] = (1 - num_ones/float(num_ones + num_zeros))
         self.sample_weights[name_prefix + 'output'] = weights.ravel()
-        print weights
         self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
 
         self.named_validation_inputs[
@@ -821,7 +845,7 @@ class JointBindingModel(Graph):
             nb_epoch=nb_epoch,
             callbacks=[monitor_accuracy_cb, early_stop],
             shuffle=True,
-            sample_weight=self.sample_weights
+            #sample_weight=self.sample_weights
         )
         return fit(*args, **kwargs)
 
@@ -894,7 +918,8 @@ class SamplePeaksAndLabels():
         filtered_tfs = sorted([
             (tf_name, tf_id, i) for i, (tf_name, tf_id) 
             in enumerate(zip(all_tf_names, self.tf_ids)) 
-            if tf_name in self.desired_tf_names
+            if (self.desired_tf_names is None 
+                or tf_name in self.desired_tf_names)
         ])
         self.tf_names, self.tf_ids, tf_indices = zip(*filtered_tfs)
         self.pks = self.pks[:self.n_samples]
@@ -942,7 +967,7 @@ class SamplePeaksAndLabels():
         print itemfreq(self.ambiguous_labels).T
         print 
         training_index = int(self.n_samples*0.1)        
-        self.labels = self.idr_optimal_labels # relaxed_labels
+        self.labels = self.idr_optimal_labels # ambiguous_labels
         self.train_labels = self.labels[training_index:]
         self.validation_labels = self.labels[:training_index]
         
@@ -975,15 +1000,19 @@ def main():
         print x
     assert False
     """
-    n_samples = 25000
+    n_samples = 100000
     sample_id = 'E123'
     sample_peaks_and_labels = SamplePeaksAndLabels(
-        sample_id, n_samples, half_peak_width=500, tf_names=['MAX',])
+        sample_id, n_samples, half_peak_width=500, tf_names=['MAX','YY1', 'CTCF'])
     model = JointBindingModel(n_samples, sample_peaks_and_labels.tf_names)
+
+        #tf_names=sample_peaks_and_labels.tf_names) #=['MAX','YY1', 'CTCF']) #'YY1', 'CTCF'])
     print sample_peaks_and_labels.tf_names
     model.add_selex_layer(441) # MAX
-    model.add_chipseq_layer('T011266_1.02', 'MAX') 
-    #model.add_chipseq_samples(sample_peaks_and_labels)
+    model.add_selex_layer(202) # YY1
+
+    #model.add_chipseq_layer('T011266_1.02', 'MAX') 
+    model.add_chipseq_samples(sample_peaks_and_labels)
     print "Compiling Model"
     model.compile()
     model.fit(validation_split=0.1, batch_size=100, nb_epoch=100)
