@@ -4,6 +4,8 @@ import functools
 from collections import defaultdict
 from random import shuffle, sample
 
+import cPickle as pickle
+
 import numpy as np
 
 from pysam import FastaFile
@@ -449,27 +451,38 @@ class TrackMax(Layer):
         rv = K.max(X, axis=2, keepdims=True)
         return rv
 
+def cast_if_1D(x):
+    if len(x.shape) == 1:
+        return x[:,None]
+    return x
+
 class MonitorAccuracy(keras.callbacks.Callback):    
     def on_epoch_end(self, *args, **kwargs):
+        data_iterator = self.model.iter_validation_data(100, repeat_forever=False)
+        pred_prbs = defaultdict(list)
+        labels = defaultdict(list)
+        for i, data in enumerate(data_iterator):
+            for key, prbs in self.model.predict_on_batch(data).iteritems():
+                # make sure every set of predicted prbs have an associated key
+                assert key in data, "Predicted prbs don't have associated labels"
+                pred_prbs[key].append(prbs)
+                labels[key].append(cast_if_1D(data[key]))
+        
         val_results = {}
-        data = self.model.named_validation_inputs
-        proba = self.model.predict(data)
-        for key, prbs in proba.iteritems():
-            if prbs.shape[1] == 1:
-                prbs_subset = prbs.ravel()
+        assert set(pred_prbs.keys()) == set(labels.keys())
+        for key in pred_prbs.keys():
+            inner_prbs = cast_if_1D(np.vstack(pred_prbs[key]))
+            inner_labels = cast_if_1D(np.vstack(labels[key]))
+
+            assert len(prbs.shape) == 2
+            for i in xrange(prbs.shape[1]):
+                prbs_subset = inner_prbs[:,i].ravel()
                 classes = np.array(prbs_subset > 0.5, dtype=int)
-                print "classes", np.unique(classes, return_counts=True)
-                truth = data[key].ravel()
-                print "truth", np.unique(truth, return_counts=True)
+                truth = inner_labels[:,i].ravel()
                 res = ClassificationResult(truth, classes, prbs_subset)
-                val_results[key] = res
-            else:
-                for i in xrange(prbs.shape[1]):
-                    prbs_subset = prbs[:,i].ravel()
-                    classes = np.array(prbs_subset > 0.5, dtype=int)
-                    truth = data[key][:,i].ravel()
-                    res = ClassificationResult(truth, classes, prbs_subset)
-                    val_results[key + "_%s" % self.model.tf_names[i]] = res
+                name = key
+                if prbs.shape[1] > 0: name += "_%s" % self.model.factor_names[i]
+                val_results[name] = res
 
         for key, res in sorted(val_results.iteritems()):
             print key.ljust(40), res
@@ -498,18 +511,16 @@ class JointBindingModel(Graph):
                 pred_prbs[factor_key], inputs[factor_key])
         return acc_res
 
-    def __init__(self, num_samples, tf_names, *args, **kwargs):
+    def __init__(self, num_samples, factor_names, validation_split=0.1, *args, **kwargs):
         # store a dictionary of round indexed selex sequences, 
         # indexed by experiment ID
         self.num_samples = num_samples
         assert self.num_samples%2 == 0
-        self.tf_names = tf_names
-        
-        self.selex_seqs = defaultdict(dict)
-        self.named_validation_inputs = {}
-        self.named_inputs = {}
+        self.validation_split = validation_split
+        self.factor_names = factor_names
+
+        self.data = {}
         self.named_losses = {}
-        self.sample_weights = {}
         
         # initialize the base convolutional filter
         self.num_small_convs = 64
@@ -523,10 +534,10 @@ class JointBindingModel(Graph):
 
         # initialize the full subdomain convolutional filter
         self.num_binding_subdomain_convs = 4
-        self.num_affinity_outputs = self.num_binding_subdomain_convs*len(tf_names)
+        self.num_affinity_outputs = self.num_binding_subdomain_convs*len(factor_names)
         self.binding_subdomain_conv_size = 9
         self.stacked_subdomains_layer_shape = (
-            (0+self.num_binding_subdomain_convs)*len(tf_names), 
+            (0+self.num_binding_subdomain_convs)*len(factor_names), 
             1, 
             self.binding_subdomain_conv_size, 
             3) # self.num_small_convs)
@@ -539,7 +550,7 @@ class JointBindingModel(Graph):
 
         # extract the tf specific subtensors
         self.binding_subdomains_layer = ConvolutionDNASequenceBinding( #
-                (0+self.num_binding_subdomain_convs)*len(tf_names), # numConv
+                (0+self.num_binding_subdomain_convs)*len(factor_names), # numConv
                 self.binding_subdomain_conv_size, # convWidth,
         )
         self.binding_subdomains_layer.W_shape = (
@@ -550,7 +561,7 @@ class JointBindingModel(Graph):
             self.stacked_subdomains_layer_filters[2], None)
 
         self.binding_subdomain_layers = {}
-        for i, tf_name in enumerate(tf_names):
+        for i, factor_name in enumerate(factor_names):
             subtensor_slice = slice(
                 i*self.num_binding_subdomain_convs,
                 (i+1)*self.num_binding_subdomain_convs)
@@ -566,11 +577,11 @@ class JointBindingModel(Graph):
             binding_sub_domains_layer.W_shape = W_shape
             binding_sub_domains_layer.W = (W, subtensor_slice)
             binding_sub_domains_layer.b = (b, subtensor_slice)
-            self.binding_subdomain_layers[tf_name] = binding_sub_domains_layer
+            self.binding_subdomain_layers[factor_name] = binding_sub_domains_layer
 
         super(Graph, self).__init__(*args, **kwargs)
 
-    def add_affinity_layers(self, input_name, output_name, tf_name=None):
+    def add_affinity_layers(self, input_name, output_name, factor_name=None):
         """
         if True:
             short_conv_layer = ConvolutionDNASequenceBinding(
@@ -589,70 +600,30 @@ class JointBindingModel(Graph):
         """
 
         subdomain_input_name = input_name # + ".1"
-        if tf_name is None:
+        if factor_name is None:
             self.add_node(
                 self.binding_subdomains_layer.create_clone(),
                 input=subdomain_input_name,
                 name=output_name
             )
         else:
-            assert tf_name in self.binding_subdomain_layers
+            assert factor_name in self.binding_subdomain_layers
             self.add_node(
-                self.binding_subdomain_layers[tf_name].create_clone(),
+                self.binding_subdomain_layers[factor_name].create_clone(),
                 input=subdomain_input_name,
                 name=output_name
             )
         return
     
-    def add_invitro_layer(self, tf_name, factor_id, selex_exp_id, 
-                          fwd_seqs, shape_seqs, labels):
-        name_prefix = 'invitro_%s_%s_%s_' % (
-            tf_name, factor_id, selex_exp_id)
-
-        self.add_input(
-            name=name_prefix+'one_hot_sequence', 
-            input_shape=(None, fwd_seqs.shape[2], 4))
-        assert name_prefix+'one_hot_sequence' not in self.named_inputs
-        self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs
-        self.add_affinity_layers(
-            input_name=name_prefix+'one_hot_sequence', 
-            output_name=name_prefix + 'binding_affinities',
-            tf_name=tf_name)
-        #N X 2 X seq_len X num_filters
-        self.add_node(
-            NormalizedOccupancy(),
-            name=name_prefix + 'occupancies',
-            input=name_prefix + 'binding_affinities')
-        #N X 1 X seq_len X 2*num_filters
-        #self.add_node(
-        #    Activation('relu'),
-        #    name=name_prefix + 'occupancies',
-        #    input=name_prefix + 'binding_affinities')
-
-        self.add_node(
-            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
-            name=name_prefix+'max', 
-            input=name_prefix+'occupancies')
-
-        self.add_output(name=name_prefix+'output', input=name_prefix+'max')
-        
-        assert name_prefix + 'output' not in self.named_inputs
-        self.named_inputs[name_prefix + 'output'] = labels
-
-        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
-        #expected_F1_loss #'mse' #my_mean_squared_error
-
-        return
-
     def add_invivo_layer(self, name_prefix, seq_length, output_dim):
         self.add_input(
-            name=name_prefix+'one_hot_sequence', 
+            name=name_prefix+'input', 
             input_shape=(1, seq_length, 4))
 
         # this fixes an implementation bug in Keras. If this is not true,
         # then the code runs much more slowly
         self.add_affinity_layers(
-            input_name=name_prefix+'one_hot_sequence', 
+            input_name=name_prefix+'input', 
             output_name=name_prefix+'binding_affinities.1')
         #N X 2 X 1000 X 100
         
@@ -699,79 +670,23 @@ class JointBindingModel(Graph):
             input=name_prefix+'occupancies.2',
             name=name_prefix+'dense'            
         )
-        
+
         self.add_output(
             name=name_prefix+'output', 
             input=name_prefix+'dense')
     
-    def add_chipseq_sample(self, 
-                           peaks_and_labels, 
-                           genome_fasta, 
-                           tf_name, 
-                           sample_id):
-        train_start_index = int(self.num_samples*0.1)
-        print "Adding ChIP-seq data for %s (sample ID %s)" % (
-                tf_name, sample_id)
-        name_prefix = 'invivo_%s_%s_' % (tf_name, sample_id) 
-        fwd_seqs = encode_peaks_sequence_into_binary_array(
-            [pk.peak for pk in peaks_and_labels], genome_fasta)[:,None,:,:]
-        labels = np.array([pk.label for pk in peaks_and_labels])
-        print round(float(labels.sum())/labels.shape[0], 3)
-        self.add_invivo_layer(
-            name_prefix,
-            fwd_seqs.shape[2],
-            1)
-
-        assert name_prefix+'one_hot_sequence' not in self.named_inputs
-        self.named_inputs[name_prefix+'one_hot_sequence'] = fwd_seqs[train_start_index:]
-        assert name_prefix + 'output' not in self.named_inputs
-        self.named_inputs[name_prefix + 'output'] = labels[train_start_index:]
-        weights = np.ones_like(labels[train_start_index:,:])
-        self.sample_weights[name_prefix + 'output'] = weights.ravel()
-        self.named_losses[name_prefix + 'output'] = 'mse' #mse_skip_ambig #expected_F1_loss
-
-        self.named_validation_inputs[
-            name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
-        self.named_validation_inputs[name_prefix+'output'] = labels[
-            :train_start_index]
-        return
-
-    def add_chipseq_layer(self, tf_id, tf_name):
-        genome_fasta = FastaFile(
-            load_genome_metadata(1).filename) # annotation_id 
-        peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-            tf_id, # args.tf_id,
-            1, #args.annotation_id,
-            500, # args.half_peak_width, 
-            self.num_samples, #args.max_num_peaks_per_sample, 
-            include_ambiguous_peaks=True,
-            order_by_accessibility=True) #.remove_ambiguous_labeled_entries()
-        #peaks = PeaksAndLabels(sample(peaks_and_labels, self.num_samples))
-        #self.add_chipseq_sample(peaks, genome_fasta, tf_name, 'top')
-        #return
-       
-        # group peaks by their sample
-        sample_grpd_peaks = defaultdict(list)
-        for pk in peaks_and_labels:
-            sample_grpd_peaks[pk.sample].append(pk)
-        peaks_seqs, peaks_labels = {}, {}
-        for sample_id, sample_pks in sample_grpd_peaks.iteritems():
-            if sample_id != 'E123': continue
-            shuffle(sample_pks)
-            self.add_chipseq_sample(sample_pks, genome_fasta, tf_name, sample_id)
-        return
-
     def add_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
-        name_prefix = 'invivo_%s_' % pks_and_labels.sample_id 
-
-        #print (pks_and_labels.labels.sum(axis=1)
-        #         )/pks_and_labels.labels.shape[0]).round(3)
+        name_prefix = 'invivo_%s.' % pks_and_labels.sample_id 
+        self.data[name_prefix] = pks_and_labels
+        
         self.add_invivo_layer(
             name_prefix, 
             pks_and_labels.fwd_seqs.shape[2], 
             pks_and_labels.labels.shape[1])
+        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig 
 
+        """
         assert name_prefix+'one_hot_sequence' not in self.named_inputs
         self.named_inputs[name_prefix+'one_hot_sequence'] = pks_and_labels.train_fwd_seqs
         assert name_prefix + 'output' not in self.named_inputs
@@ -782,98 +697,103 @@ class JointBindingModel(Graph):
         weights[pks_and_labels.train_labels == 0.0] = (1 - num_zeros/float(num_ones + num_zeros))
         weights[pks_and_labels.train_labels == 1.0] = (1 - num_ones/float(num_ones + num_zeros))
         self.sample_weights[name_prefix + 'output'] = weights.ravel()
-        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig #expected_F1_loss
 
         self.named_validation_inputs[
             name_prefix+'one_hot_sequence'] = pks_and_labels.validation_fwd_seqs
         self.named_validation_inputs[name_prefix+'output'] = pks_and_labels.validation_labels
+        """
+        return
+
+    def add_invitro_layer(self, name_prefix, factor_name, seq_length):
+        self.add_input(
+            name=name_prefix+'input', 
+            input_shape=(None, seq_length, 4))
+
+        self.add_affinity_layers(
+            input_name=name_prefix+'input', 
+            output_name=name_prefix + 'binding_affinities',
+            factor_name=factor_name)
+        #N X 2 X seq_len X num_filters
+
+        self.add_node(
+            NormalizedOccupancy(),
+            name=name_prefix + 'occupancies',
+            input=name_prefix + 'binding_affinities')
+        #N X 1 X seq_len X 2*num_filters
+
+        self.add_node(
+            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
+            name=name_prefix+'max', 
+            input=name_prefix+'occupancies')
+        #N X 1
+
+        self.add_output(name=name_prefix+'output', input=name_prefix+'max')
 
         return
 
-    def add_selex_layer(self, selex_exp_id):
-        # load connect to the DB, and find the factor name
-        selex_db_conn = SelexDBConn(
-            'mitra', 'cisbp', 'nboley', selex_exp_id)
-        factor_name = selex_db_conn.get_factor_name()
-        factor_id = selex_db_conn.get_factor_id()
-
-        # load the sequencess
-        print "Loading sequences for %s-%s (exp ID %i)" % (
-                factor_name, factor_id, selex_exp_id)
-        fnames, bg_fname = selex_db_conn.get_fnames()
-        if bg_fname is None:
-            raise NoBackgroundSequences("No background sequences for %s (%i)." % (factor_name, selex_exp_id))
-
-        with optional_gzip_open(fnames[max(fnames.keys())]) as fp:
-            bnd_seqs = load_fastq(fp, self.num_samples/2)
-        with optional_gzip_open(bg_fname) as fp:
-            unbnd_seqs = load_fastq(fp, self.num_samples/2)
-        if len(bnd_seqs[0]) < 20:
-            raise SeqsTooShort("Seqs too short for %s (exp %i)." % (factor_name, selex_exp_id))
+    def add_selex_experiment(self, selex_experiment):
+        selex_exp_id = selex_experiment.selex_exp_id
+        factor_name = selex_experiment.factor_name
+        factor_id = selex_experiment.factor_id
+        seq_length = selex_experiment.fwd_seqs.shape[2]
         
-        if len(unbnd_seqs) < self.num_samples/2:
-            unbnd_seqs = upsample(unbnd_seqs, self.num_samples/2)
-        if len(bnd_seqs) < self.num_samples/2:
-            bnd_seqs = upsample(bnd_seqs, self.num_samples/2)
-
-        train_start_index = int(self.num_samples*0.1)
-        fwd_seqs, shape_seqs, labels = get_coded_seqs_and_labels(
-            unbnd_seqs, bnd_seqs)
-        
-        self.add_invitro_layer(
-            factor_name,
-            factor_id,
-            selex_exp_id,
-            fwd_seqs[train_start_index:,:,:,:], 
-            None, 
-            labels[train_start_index:])
-
-        name_prefix = 'invitro_%s_%s_%s_' % (
+        name_prefix = 'invitro_%s_%s_%s.' % (
             factor_name, factor_id, selex_exp_id)
-        self.named_validation_inputs[
-            name_prefix+'one_hot_sequence'] = fwd_seqs[:train_start_index,:,:,:]
-        if shape_seqs is not None:
-            self.named_validation_inputs[
-                name_prefix+'shape'] = shape_seqs[:train_start_index,:,:,:]
-        self.named_validation_inputs[name_prefix+'output'] = labels[
-            :train_start_index]
-    
+        print "Adding", name_prefix
+        self.data[name_prefix] = selex_experiment        
+        self.add_invitro_layer(name_prefix, factor_name, seq_length)
+        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig 
+
     def compile(self, *args, **kwargs):
         compile = functools.partial(
             super(JointBindingModel, self).compile,
             loss=self.named_losses,
             optimizer=Adam(),
-            sample_weight_modes=dict((key, None) for key in self.sample_weights)
+            #sample_weight_modes=dict((key, None) for key in self.sample_weights)
         )
         return compile(*args, **kwargs)
 
+    def iter_batches(self, batch_size, data_subset, repeat_forever):
+        assert data_subset in ('train', 'validation')
+        # initialize the set of iterators
+        iterators = {}
+        for key, data in self.data.iteritems():
+            iterators[key] = data.iter_batches(
+                batch_size, data_subset, repeat_forever)
+        
+        def iter_data():
+            while True:
+                output = {}
+                for key, iterator in iterators.iteritems():
+                    input, labels = next(iterator)
+                    output[key + "input"] = input
+                    output[key + "output"] = labels
+                yield output
+        
+        return iter_data()
+    
+    def iter_train_data(self, batch_size, repeat_forever=False):
+        return self.iter_batches(batch_size, 'train', repeat_forever)
+    
+    def iter_validation_data(self, batch_size, repeat_forever=False):
+        return self.iter_batches(batch_size, 'validation', repeat_forever)
+
     def fit(self, 
-            data=None, 
             validation_split=0.1, 
             batch_size=100, 
             nb_epoch=100,
             *args, **kwargs):
-        if data is None: data = self.named_inputs
         early_stop = keras.callbacks.EarlyStopping(
             monitor='val_loss', patience=10, verbose=1, mode='auto')
         monitor_accuracy_cb = MonitorAccuracy()
 
-        #print data.keys()
-        #pass
-
-        for key, val in data.iteritems():
-            print key, val.shape
-        #assert False
-
         fit = functools.partial(
-            super(JointBindingModel, self).fit,
-            data=data,
-            validation_split=validation_split,
-            batch_size=batch_size,
+            super(JointBindingModel, self).fit_generator,
+            self.iter_train_data(batch_size, repeat_forever=True),
+            samples_per_epoch=int(self.num_samples*(1-self.validation_split)),
             nb_epoch=nb_epoch,
-            callbacks=[monitor_accuracy_cb, early_stop],
-            shuffle=True,
-            #sample_weight=self.sample_weights
+            verbose=1,
+            callbacks=[monitor_accuracy_cb,], # monitor_accuracy_cb,, early_stop
         )
         return fit(*args, **kwargs)
 
@@ -903,8 +823,6 @@ def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
          np.ones(len(bnd_seqs), dtype='float32'))
     )[permutation]
     return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
-
-import pandas as pd
 
 class SamplePeaksAndLabels():
     def one_hot_code_peaks_sequence(self):
@@ -936,20 +854,20 @@ class SamplePeaksAndLabels():
 
         # keep the top n_samples peaks and max_num_tfs tfs
         print "Loading tf names"
-        all_tf_names = load_tf_names(self.tf_ids)
+        all_factor_names = load_tf_names(self.tf_ids)
         # make sure all of the tfnames actually exist
-        assert ( self.desired_tf_names is None 
-                 or all(tf_name in all_tf_names 
-                        for tf_name in self.desired_tf_names) 
+        assert ( self.desired_factor_names is None 
+                 or all(factor_name in all_factor_names 
+                        for factor_name in self.desired_factor_names) 
         )
         # filter the tf set 
         filtered_tfs = sorted([
-            (tf_name, tf_id, i) for i, (tf_name, tf_id) 
-            in enumerate(zip(all_tf_names, self.tf_ids)) 
-            if (self.desired_tf_names is None 
-                or tf_name in self.desired_tf_names)
+            (factor_name, tf_id, i) for i, (factor_name, tf_id) 
+            in enumerate(zip(all_factor_names, self.tf_ids)) 
+            if (self.desired_factor_names is None 
+                or factor_name in self.desired_factor_names)
         ])
-        self.tf_names, self.tf_ids, tf_indices = zip(*filtered_tfs)
+        self.factor_names, self.tf_ids, tf_indices = zip(*filtered_tfs)
         self.pks = self.pks[:self.n_samples]
         self.idr_optimal_labels = self.idr_optimal_labels[
             :self.n_samples, np.array(tf_indices)]
@@ -971,12 +889,12 @@ class SamplePeaksAndLabels():
     
     def __init__(
             self, sample_id, n_samples, annotation_id=1, 
-            half_peak_width=500, tf_names=None):
+            half_peak_width=500, factor_names=None):
         self.sample_id = sample_id
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
         self.n_samples = n_samples
-        self.desired_tf_names = tf_names
+        self.desired_factor_names = factor_names
         self._init_pks_and_label_mats()
 
         # initialize the training and validation data
@@ -1008,11 +926,191 @@ class SamplePeaksAndLabels():
         self.validation_fwd_seqs = self.fwd_seqs[:training_index]
         
         return
-    
 
-from pyTFbindtools.peaks import build_peaks_label_mat
-def main():
-    """
+    def iter_batches(self, batch_size, data_subset, repeat_forever):
+        if data_subset == 'train': 
+            fwd_seqs = self.train_fwd_seqs
+            labels = self.train_labels
+        elif data_subset == 'validation':
+            fwd_seqs = self.validation_fwd_seqs
+            labels = self.validation_labels
+        else:
+            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
+
+        i = 0
+        n = fwd_seqs.shape[0]//batch_size
+        if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
+           % (fwd_seqs.shape[0], batch_size)
+        while repeat_forever is True or i < n:
+            # yield a subset of the data
+            subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
+            yield fwd_seqs[subset], labels[subset]
+            i += 1
+        
+        return
+    
+    def iter_train_data(self, batch_size, repeat_forever=False):
+        return self.iter_batches(batch_size, 'train', repeat_forever)
+
+    def iter_validation_data(self, batch_size, repeat_forever=False):
+        return self.iter_batches(batch_size, 'validation', repeat_forever)
+
+class SelexExperiment():
+    @property
+    def seq_length(self):
+        return self.fwd_seqs.shape[2]
+
+
+    def __init__(self, selex_exp_id, n_samples, validation_split=0.1):
+        self.selex_exp_id = selex_exp_id
+        self.n_samples = n_samples
+        self.validation_split = validation_split
+        self._training_index = int(self.n_samples*self.validation_split)
+
+        # load connect to the DB, and find the factor name
+        selex_db_conn = SelexDBConn(
+            'mitra', 'cisbp', 'nboley', selex_exp_id)
+        self.factor_name = selex_db_conn.get_factor_name()
+        self.factor_id = selex_db_conn.get_factor_id()
+
+        # load the sequencess
+        print "Loading sequences for %s-%s (exp ID %i)" % (
+                self.factor_name, self.factor_id, self.selex_exp_id)
+        fnames, bg_fname = selex_db_conn.get_fnames()
+        if bg_fname is None:
+            raise NoBackgroundSequences(
+                "No background sequences for %s (%i)." % (
+                    self.factor_name, self.selex_exp_id))
+
+        with optional_gzip_open(fnames[max(fnames.keys())]) as fp:
+            bnd_seqs = load_fastq(fp, self.n_samples/2)
+        with optional_gzip_open(bg_fname) as fp:
+            unbnd_seqs = load_fastq(fp, self.n_samples/2)
+        if len(bnd_seqs[0]) < 20:
+            raise SeqsTooShort("Seqs too short for %s (exp %i)." % (
+                factor_name, selex_exp_id))
+        
+        if len(unbnd_seqs) < self.n_samples/2:
+            unbnd_seqs = upsample(unbnd_seqs, self.n_samples/2)
+        if len(bnd_seqs) < self.n_samples/2:
+            bnd_seqs = upsample(bnd_seqs, self.n_samples/2)
+
+        self.fwd_seqs, self.shape_seqs, self.labels = get_coded_seqs_and_labels(
+            unbnd_seqs, bnd_seqs)
+
+        self.train_fwd_seqs = self.fwd_seqs[self._training_index:]
+        self.train_labels = self.labels[self._training_index:]
+        
+        self.validation_fwd_seqs = self.fwd_seqs[:self._training_index]
+        self.validation_labels = self.labels[:self._training_index]
+        
+        return
+
+    def iter_batches(self, batch_size, data_subset, repeat_forever):
+        if data_subset == 'train': 
+            fwd_seqs = self.train_fwd_seqs
+            labels = self.train_labels
+        elif data_subset == 'validation':
+            fwd_seqs = self.validation_fwd_seqs
+            labels = self.validation_labels
+        else:
+            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
+
+        i = 0
+        n = fwd_seqs.shape[0]//batch_size
+        if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
+           % (fwd_seqs.shape[0], batch_size)
+        while repeat_forever is True or i < n:
+            # yield a subset of the data
+            subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
+            yield fwd_seqs[subset], labels[subset]
+            i += 1
+        
+        return
+    
+    def iter_train_data(self, batch_size, repeat_forever=False):
+        return self.iter_batches(batch_size, 'train', repeat_forever)
+
+    def iter_validation_data(self, batch_size, repeat_forever=False):
+        return self.iter_batches(batch_size, 'validation', repeat_forever)
+
+class SelexData():
+    def load_tfs_grpd_by_family(self):
+        raise NotImplementedError, "This fucntion just exists to save teh sql query"
+        query = """
+          SELECT tfs.family_id, family_name, array_agg(tfs.factor_name) 
+            FROM selex_experiments NATURAL JOIN tfs NATURAL JOIN tf_families 
+        GROUP BY family_id, family_name;
+        """ # group tfs by their families
+
+        pass
+
+    def find_all_selex_experiments(self):
+        import psycopg2
+        conn = psycopg2.connect(
+            "host=%s dbname=%s user=%s" % ('mitra', 'cisbp', 'nboley'))
+        cur = conn.cursor()    
+        query = """
+          SELECT selex_experiments.tf_id, tfs.tf_name, array_agg(distinct selex_exp_id)
+            FROM roadmap_matched_chipseq_peaks NATURAL JOIN selex_experiments NATURAL JOIN tfs 
+        GROUP BY selex_experiments.tf_id, tfs.tf_name
+        ORDER BY tf_name;
+        """
+        cur.execute(query)
+        # filter out the TFs that dont have background sequence or arent long enough
+        res = [ x for x in cur.fetchall() 
+                if x[1] not in ('E2F1', 'E2F4', 'POU2F2', 'PRDM1', 'RXRA')
+                #and x[1] in ('MAX',) # 'YY1', 'RFX5', 'USF', 'PU1', 'CTCF')
+        ]
+        return res
+
+    def add_selex_experiment(self, selex_exp_id):
+        self.experiments.append(
+            SelexExperiment(
+                selex_exp_id, self.n_samples, self.validation_split)
+        )
+
+    def add_all_selex_experiments_for_factor(self, factor_name):
+        exps_added = 0
+        for tf_id, i_factor_name, selex_exp_ids in self.find_all_selex_experiments():
+            if i_factor_name == factor_name:
+                for exp_id in selex_exp_ids:
+                    self.add_selex_experiment(exp_id)
+                    exps_added += 1
+        assert exps_added > 0
+        return
+
+    def add_all_selex_experiments(self):
+        for tf_id, factor_name, selex_exp_ids in self.find_all_selex_experiments():
+            for selex_exp_id in selex_exp_ids:
+                try: 
+                    self.add_selex_experiment(selex_exp_id)
+                except SeqsTooShort, inst:
+                    print inst
+                    continue
+                except NoBackgroundSequences, inst:
+                    print inst
+                    continue
+                except Exception, inst:
+                    raise
+            break
+    
+    @property
+    def factor_names(self):
+        return [exp.factor_name for exp in self]
+
+    def __iter__(self):
+        for experiment in self.experiments:
+            yield experiment
+        return
+
+    def __init__(self, n_samples, validation_split=0.1):
+        self.n_samples = n_samples
+        self.validation_split = 0.1
+        self.experiments = []
+
+
+def old_main():
     peaks_and_labels = load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         'T044268_1.02', # args.tf_id,
         1, #args.annotation_id,
@@ -1026,83 +1124,43 @@ def main():
         counts[(pk.sample, pk.label)] += 1
     for x in sorted(counts.items()):
         print x
-    assert False
-    """
-    n_samples = 100000
-    sample_id = 'E123'
-    sample_peaks_and_labels = SamplePeaksAndLabels(
-        sample_id, n_samples, half_peak_width=500, tf_names=['MAX','YY1', 'CTCF'])
-    model = JointBindingModel(n_samples, sample_peaks_and_labels.tf_names)
 
-        #tf_names=sample_peaks_and_labels.tf_names) #=['MAX','YY1', 'CTCF']) #'YY1', 'CTCF'])
-    print sample_peaks_and_labels.tf_names
-    model.add_selex_layer(441) # MAX
-    model.add_selex_layer(202) # YY1
-
-    #model.add_chipseq_layer('T011266_1.02', 'MAX') 
-    model.add_chipseq_samples(sample_peaks_and_labels)
-    print "Compiling Model"
-    model.compile()
-    model.fit(validation_split=0.1, batch_size=100, nb_epoch=100)
-    return
-
-    """
     model.add_selex_layer(441) # MAX
     model.add_selex_layer(202) # YY1
     model.add_chipseq_layer('T011266_1.02', 'MAX') 
     model.compile()
     model.fit(validation_split=0.1, batch_size=100, nb_epoch=5)
+
+    pass
+
+from pyTFbindtools.peaks import build_peaks_label_mat
+def main():
+    n_samples = 50000
+    sample_id = 'E123'
+    sample_peaks_and_labels = SamplePeaksAndLabels(
+        sample_id, n_samples) #, factor_names=['MAX', 'YY1', 'CTCF'])
+    model = JointBindingModel(n_samples, sample_peaks_and_labels.factor_names)
+    model.add_chipseq_samples(sample_peaks_and_labels)
+    #selex_experiments = SelexData(n_samples)
+    #for factor_name in sample_peaks_and_labels.factor_names:
+    #    selex_experiments.add_all_selex_experiments_for_factor(factor_name)
+    #for exp in selex_experiments:
+    #    model.add_selex_experiment(exp)
+    print "Compiling Model"
+    model.compile()
+    model.fit(validation_split=0.1, batch_size=50, nb_epoch=100)
     return
-    """
 
-    import psycopg2
-    conn = psycopg2.connect(
-        "host=%s dbname=%s user=%s" % ('mitra', 'cisbp', 'nboley'))
-    cur = conn.cursor()
-    query = """
-      SELECT tfs.family_id, family_name, array_agg(tfs.tf_name) 
-        FROM selex_experiments NATURAL JOIN tfs NATURAL JOIN tf_families 
-    GROUP BY family_id, family_name;
-    """ # group tfs by their families
+    model = JointBindingModel(n_samples, factor_names)
     
-    query = """
-      SELECT selex_experiments.tf_id, tfs.tf_name, array_agg(distinct selex_exp_id)
-        FROM roadmap_matched_chipseq_peaks NATURAL JOIN selex_experiments NATURAL JOIN tfs 
-    GROUP BY selex_experiments.tf_id, tfs.tf_name
-    ORDER BY tf_name;
-    """
-    cur.execute(query)
-    # filter out the TFs that dont have background sequence or arent long enough
-    res = [ x for x in cur.fetchall() 
-            if x[1] not in ('E2F1', 'E2F4', 'POU2F2', 'PRDM1', 'RXRA')
-            #and x[1] in ('MAX',) # 'YY1', 'RFX5', 'USF', 'PU1', 'CTCF')
-    ][:25]
-    
-    tf_names = [x[1] for x in res]
-    print tf_names
-    model = JointBindingModel(n_samples, tf_names)
-    
-    for tf_id, tf_name, selex_exp_ids in res:
-        for selex_exp_id in selex_exp_ids:
-            try: 
-                model.add_selex_layer(selex_exp_id)
-            except SeqsTooShort, inst:
-                print inst
-                continue
-            except NoBackgroundSequences, inst:
-                print inst
-                continue
-            except Exception, inst:
-                raise
-
     model.add_chipseq_layer('T011266_1.02', 'MAX') 
     #model.add_chipseq_layer('T044261_1.02', 'YY1')
 
-    #for tf_id, tf_name, selex_exp_ids in res:
+    #for tf_id, factor_name, selex_exp_ids in res:
     #    try:
-    #        model.add_chipseq_layer(tf_id, tf_name)
+    #        model.add_chipseq_layer(tf_id, factor_name)
     #    except Exception, inst:
-    #        print "Couldnt load ChIP-seq data for %s" % tf_name
+    #        print "Couldnt load ChIP-seq data for %s" % factor_name
     #        continue
     #    else:
     #        break
