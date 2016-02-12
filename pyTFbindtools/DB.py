@@ -311,5 +311,14 @@ def load_tf_names(tf_ids):
         tf_names.append(cur.fetchall()[0][0])
     return tf_names
 
+def load_dnase_fnames(roadmap_sample_ids):
+    cur = conn.cursor()
+    query = "select local_filename from roadmap_dnase_foldchange_files where roadmap_sample_id=%s"
+    fnames = []
+    for sample_id in roadmap_sample_ids:
+        cur.execute(query, [sample_id,])
+        fnames.append(cur.fetchall()[0][0])
+    return fnames
+
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")

@@ -1,8 +1,14 @@
 import sys
+import hashlib
 
 import functools
 from collections import defaultdict
 from random import shuffle, sample
+
+sys.path.insert(0, '/users/nasa/FeatureExtractionTools/bigWigFeaturize/')
+import bigWigFeaturize
+from collections import namedtuple
+Region = namedtuple('Region', ['chrom', 'start', 'stop'])
 
 import cPickle as pickle
 
@@ -87,13 +93,21 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
     mse = K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
     return rv
 
-def mse_skip_ambig(y_true, y_pred):
+def mse_skip_ambig(y_true, y_pred, weight=1.0):
     #clipped_pred = K.clip(y_pred, 0.01, 0.99)
     #loss = K.sum(y_true*K.log(clipped_pred))/K.sum(y_true)
     #return loss
     #return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
     #return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
     return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
+
+def mse_skip_ambig_gen(weight):
+    def f(y_true, y_pred):
+        return mse_skip_ambig(y_true, y_pred, weight)
+    return f
+
+def weighted_mse(y_true, y_pred):
+    return 20*K.mean(K.square(y_pred - y_true), axis=-1)
 
 def softmax(x, axis):
     scale_factor = x.max(axis=axis, keepdims=True)
@@ -380,14 +394,14 @@ class ConvolutionBindingSubDomains(Layer):
         #return rv.dimshuffle((0,3,2,1))
         return K.permute_dimensions(rv, (0,3,2,1))
 
-class NormalizedOccupancy(Layer):
+class LogNormalizedOccupancy(Layer):
     def __init__(self, **kwargs):
         self.input = K.placeholder(ndim=4)        
-        super(NormalizedOccupancy, self).__init__(**kwargs)
+        super(LogNormalizedOccupancy, self).__init__(**kwargs)
 
     def get_config(self):
         config = {'name': self.__class__.__name__}
-        base_config = super(NormalizedOccupancy, self).get_config()
+        base_config = super(LogNormalizedOccupancy, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
         
     def build(self):
@@ -410,7 +424,7 @@ class NormalizedOccupancy(Layer):
     def get_output(self, train=False):
         X = self.get_input(train)
         #rv = theano_logistic(-X, self.chem_affinity)
-        rv = TT.exp(theano_calc_log_occs(-X, self.chem_affinity))
+        rv = theano_calc_log_occs(-X, self.chem_affinity) # TT.exp(
         rv = K.concatenate([rv[:,0:1,:,:], rv[:,1:2,:,:]], axis=3)
         return rv
         return K.permute_dimensions(rv, (0,3,2,1))
@@ -435,7 +449,7 @@ class TrackMax(Layer):
 
     def get_config(self):
         config = {'name': self.__class__.__name__}
-        base_config = super(NormalizedOccupancy, self).get_config()
+        base_config = super(TrackMax, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
     @property
@@ -456,9 +470,14 @@ def cast_if_1D(x):
         return x[:,None]
     return x
 
-class MonitorAccuracy(keras.callbacks.Callback):    
-    def on_epoch_end(self, *args, **kwargs):
-        data_iterator = self.model.iter_validation_data(100, repeat_forever=False)
+class MonitorAccuracy(keras.callbacks.Callback):
+    def __init__(self, batch_size, *args, **kwargs):
+        self.batch_size = batch_size
+        super(MonitorAccuracy, self).__init__(*args, **kwargs)
+
+    def _calc_val_results(self):
+        data_iterator = self.model.iter_validation_data(
+            self.batch_size, repeat_forever=False)
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
         for i, data in enumerate(data_iterator):
@@ -467,25 +486,45 @@ class MonitorAccuracy(keras.callbacks.Callback):
                 assert key in data, "Predicted prbs don't have associated labels"
                 pred_prbs[key].append(prbs)
                 labels[key].append(cast_if_1D(data[key]))
+                
         
         val_results = {}
         assert set(pred_prbs.keys()) == set(labels.keys())
         for key in pred_prbs.keys():
-            inner_prbs = cast_if_1D(np.vstack(pred_prbs[key]))
-            inner_labels = cast_if_1D(np.vstack(labels[key]))
+            inner_prbs = np.concatenate(pred_prbs[key], axis=0)
+            inner_labels = np.concatenate(labels[key], axis=0)
 
-            assert len(prbs.shape) == 2
-            for i in xrange(prbs.shape[1]):
+            assert len(inner_prbs.shape) == 2
+            for i in xrange(inner_prbs.shape[1]):
                 prbs_subset = inner_prbs[:,i].ravel()
                 classes = np.array(prbs_subset > 0.5, dtype=int)
                 truth = inner_labels[:,i].ravel()
                 res = ClassificationResult(truth, classes, prbs_subset)
                 name = key
-                if prbs.shape[1] > 0: name += "_%s" % self.model.factor_names[i]
+                if inner_prbs.shape[1] > 1:
+                    # this is a hack. The data is stored with input name prefix,
+                    # but the key is PREFIX.output, so we replace output with 
+                    # the prefix. Note that we also assume htat TFnames is 
+                    # correctly set
+                    name += "_%s" % self.model.data[
+                        key.replace('output', '')].factor_names[i]
                 val_results[name] = res
-
+        return val_results
+    
+    def on_epoch_end(self, *args, **kwargs):
+        # calculate and print he validation results
+        val_results = self._calc_val_results()
+        
+        # update the in-vitro penalty
+        invitro_weight = self.model.invitro_weight.get_value()
+        print "Current Invitro Weight:",  invitro_weight
+        self.model.invitro_weight.set_value(
+            np.array(invitro_weight/2, dtype='float32'))
+        
+        # print the validation results
         for key, res in sorted(val_results.iteritems()):
             print key.ljust(40), res
+        
 
 def calc_accuracy(pred_probs, labels):
     return float((pred_probs.round() == labels[:,None]).sum())/labels.shape[0]
@@ -521,6 +560,8 @@ class JointBindingModel(Graph):
 
         self.data = {}
         self.named_losses = {}
+
+        self.invitro_weight = K.variable(1.0)
         
         # initialize the base convolutional filter
         self.num_small_convs = 64
@@ -617,41 +658,61 @@ class JointBindingModel(Graph):
     
     def add_invivo_layer(self, name_prefix, seq_length, output_dim):
         self.add_input(
-            name=name_prefix+'input', 
+            name=name_prefix+'fwd_seqs', 
             input_shape=(1, seq_length, 4))
 
         # this fixes an implementation bug in Keras. If this is not true,
         # then the code runs much more slowly
         self.add_affinity_layers(
-            input_name=name_prefix+'input', 
+            input_name=name_prefix+'fwd_seqs', 
             output_name=name_prefix+'binding_affinities.1')
         #N X 2 X 1000 X 100
-        
-        self.add_node(
-            ConvolutionBindingSubDomains(
-                nb_domains=8, 
-                domain_len=32,
-            ),
-            name=name_prefix + 'binding_affinities.2',
-            input=name_prefix + 'binding_affinities.1'
-        )
 
         self.add_node(
-            NormalizedOccupancy(),
+            ConvolutionBindingSubDomains(
+                nb_domains=16, 
+                domain_len=16,
+            ),
+            name=name_prefix + 'binding_affinities.2',
+            input=name_prefix+'binding_affinities.1'
+        )
+        self.add_node(
+            LogNormalizedOccupancy(),
             name=name_prefix + 'occupancies.1',
             input=name_prefix + 'binding_affinities.2')
         #N X 1 X 1000 X 200
-        
+
+        #self.add_input(
+        #    name=name_prefix+'accessibility_data', 
+        #    input_shape=(1, 977, 1)) # seq_length        
+        #self.add_node(
+        #    Convolution2D(4, 32, 33),
+        #    name=name_prefix+'occupancies.2',
+        #    inputs=[
+        #        name_prefix+'occupancies.1',
+        #        name_prefix+'accessibility_data'
+        #    ]
+        #)
         self.add_node(
             TrackMax(),
-            name=name_prefix+'max', 
+            name=name_prefix+'max.1', 
             input=name_prefix+'occupancies.1')
+        #self.add_node(
+        #    MaxPooling2D(pool_size=(64, 1)),
+        #    name=name_prefix+'max.1',
+        #    input=name_prefix+'occupancies.2'
+        #)
+        self.add_node(
+            Activation('sigmoid'),
+            name=name_prefix+'max.2',
+            input=name_prefix+'max.1'
+        )
         #N X 1 X 1 X 200
 
         self.add_node(
             Flatten(),
-            input=name_prefix+'max',
-            name=name_prefix+'occupancies.2'
+            name=name_prefix+'max.3',
+            input=name_prefix+'max.2'
         )
         """
 
@@ -666,8 +727,8 @@ class JointBindingModel(Graph):
             input=name_prefix + 'dense1')
         """
         self.add_node(
-            Dense(output_dim, activation='sigmoid'), # numOutputNodes
-            input=name_prefix+'occupancies.2',
+            Dense(output_dim, activation='linear'), # numOutputNodes
+            input=name_prefix+'max.3',
             name=name_prefix+'dense'            
         )
 
@@ -677,14 +738,14 @@ class JointBindingModel(Graph):
     
     def add_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
-        name_prefix = 'invivo_%s.' % pks_and_labels.sample_id 
+        name_prefix = 'invivo_%s_sequence.' % pks_and_labels.sample_id 
         self.data[name_prefix] = pks_and_labels
         
         self.add_invivo_layer(
             name_prefix, 
             pks_and_labels.fwd_seqs.shape[2], 
             pks_and_labels.labels.shape[1])
-        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig 
+        self.named_losses[name_prefix + 'output'] = mse_skip_ambig_gen(1.0) 
 
         """
         assert name_prefix+'one_hot_sequence' not in self.named_inputs
@@ -706,23 +767,23 @@ class JointBindingModel(Graph):
 
     def add_invitro_layer(self, name_prefix, factor_name, seq_length):
         self.add_input(
-            name=name_prefix+'input', 
+            name=name_prefix+'fwd_seqs', 
             input_shape=(None, seq_length, 4))
 
         self.add_affinity_layers(
-            input_name=name_prefix+'input', 
+            input_name=name_prefix+'fwd_seqs', 
             output_name=name_prefix + 'binding_affinities',
             factor_name=factor_name)
         #N X 2 X seq_len X num_filters
 
         self.add_node(
-            NormalizedOccupancy(),
+            LogNormalizedOccupancy(),
             name=name_prefix + 'occupancies',
             input=name_prefix + 'binding_affinities')
         #N X 1 X seq_len X 2*num_filters
 
         self.add_node(
-            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
+            Lambda(lambda x: K.exp(K.max(K.batch_flatten(x), axis=1, keepdims=True))),
             name=name_prefix+'max', 
             input=name_prefix+'occupancies')
         #N X 1
@@ -731,7 +792,11 @@ class JointBindingModel(Graph):
 
         return
 
-    def add_selex_experiment(self, selex_experiment):
+    def add_selex_experiments(self, selex_experiments):
+        for exp in selex_experiments:
+            self.add_selex_experiment(exp, weight=1.0)
+
+    def add_selex_experiment(self, selex_experiment, weight=1.0):
         selex_exp_id = selex_experiment.selex_exp_id
         factor_name = selex_experiment.factor_name
         factor_id = selex_experiment.factor_id
@@ -742,7 +807,8 @@ class JointBindingModel(Graph):
         print "Adding", name_prefix
         self.data[name_prefix] = selex_experiment        
         self.add_invitro_layer(name_prefix, factor_name, seq_length)
-        self.named_losses[name_prefix + 'output'] = 'mse' # mse_skip_ambig 
+        self.named_losses[name_prefix + 'output'] = mse_skip_ambig_gen(
+            self.invitro_weight*weight) # mse_skip_ambig 
 
     def compile(self, *args, **kwargs):
         compile = functools.partial(
@@ -764,10 +830,10 @@ class JointBindingModel(Graph):
         def iter_data():
             while True:
                 output = {}
-                for key, iterator in iterators.iteritems():
-                    input, labels = next(iterator)
-                    output[key + "input"] = input
-                    output[key + "output"] = labels
+                for name_prefix, iterator in iterators.iteritems():
+                    data_dict = next(iterator)
+                    for key, data in data_dict.iteritems():
+                        output[name_prefix + key] = data
                 yield output
         
         return iter_data()
@@ -785,7 +851,7 @@ class JointBindingModel(Graph):
             *args, **kwargs):
         early_stop = keras.callbacks.EarlyStopping(
             monitor='val_loss', patience=10, verbose=1, mode='auto')
-        monitor_accuracy_cb = MonitorAccuracy()
+        monitor_accuracy_cb = MonitorAccuracy(batch_size)
 
         fit = functools.partial(
             super(JointBindingModel, self).fit_generator,
@@ -826,6 +892,14 @@ def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
 
 class SamplePeaksAndLabels():
     def one_hot_code_peaks_sequence(self):
+        cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(self.pks.view(np.uint8)).hexdigest()
+        try:
+            with open(cached_fname) as fp:
+                print "Loading cached seqs"
+                return np.load(fp)
+        except IOError:
+            pass
+
         pk_width = self.pks[0][2] - self.pks[0][1]
         rv = 0.25 * np.ones((len(self.pks), pk_width, 4), dtype='float32')
         for i, data in enumerate(self.pks):
@@ -834,7 +908,44 @@ class SamplePeaksAndLabels():
             if len(seq) != pk_width: continue
             coded_seq = one_hot_encode_sequence(seq)
             rv[i,:,:] = coded_seq
-        return rv[:,None,:,:]
+        
+        # add the extra dimension for theano
+        rv = rv[:,None,:,:]
+        
+        with open(cached_fname, "w") as ofp:
+            print "Saving seqs"
+            np.save(ofp, rv)
+
+        return rv
+
+    def load_accessibility_data(self):
+        from pyTFbindtools.DB import load_dnase_fnames
+        # get the correct filename
+        fnames = load_dnase_fnames([self.sample_id,])
+
+        cached_fname = "cachedaccessibility.%s.%s.obj" % (
+            hashlib.sha1(self.pks.view(np.uint8)).hexdigest(),
+            hash(tuple(fnames))
+        )
+        try:
+            with open(cached_fname) as fp:
+                print "Loading cached accessibility data"
+                rv = np.load(fp)
+        except IOError:
+            rv = bigWigFeaturize.new(
+                fnames,
+                self.half_peak_width*2, 
+                intervals=[
+                    Region(pk['contig'], pk['start'], pk['stop']) for pk in self.pks
+                ],
+                cache='cache'
+            )
+
+            with open(cached_fname, "w") as ofp:
+                print "Saving accessibility data"
+                np.save(ofp, rv)
+        
+        return rv[:,:,0,:][:,:,:,None]
 
     def _init_pks_and_label_mats(self):
         from pyTFbindtools.DB import load_tf_names
@@ -856,10 +967,10 @@ class SamplePeaksAndLabels():
         print "Loading tf names"
         all_factor_names = load_tf_names(self.tf_ids)
         # make sure all of the tfnames actually exist
-        assert ( self.desired_factor_names is None 
-                 or all(factor_name in all_factor_names 
-                        for factor_name in self.desired_factor_names) 
-        )
+        #assert ( self.desired_factor_names is None 
+        #         or all(factor_name in all_factor_names 
+        #                for factor_name in self.desired_factor_names) 
+        #)
         # filter the tf set 
         filtered_tfs = sorted([
             (factor_name, tf_id, i) for i, (factor_name, tf_id) 
@@ -897,6 +1008,12 @@ class SamplePeaksAndLabels():
         self.desired_factor_names = factor_names
         self._init_pks_and_label_mats()
 
+
+        #res = bigWigFeaturize.new(
+        #    ["/mnt/data/epigenomeRoadmap/signal/consolidated/macs2signal/foldChange/E123-DNase.fc.signal.bigwig",], 
+        #    self., 
+        #    intervals=regions)
+
         # initialize the training and validation data
         index = np.argsort(np.random.random(len(self.pks)))
         self.pks = self.pks[index]
@@ -904,14 +1021,7 @@ class SamplePeaksAndLabels():
         self.relaxed_labels = self.relaxed_labels[index,:]
         self.ambiguous_pk_indices = self.ambiguous_pk_indices[index,:]
         self.ambiguous_labels = self.clean_labels[index,:]
-        from scipy.stats import itemfreq
-        print "IDR Optimal"
-        print itemfreq(self.idr_optimal_labels).T
-        print "Relaxed"
-        print itemfreq(self.relaxed_labels).T
-        print "Ambiguous"
-        print itemfreq(self.ambiguous_labels).T
-        print 
+
         training_index = int(self.n_samples*0.1)        
         self.labels = self.idr_optimal_labels # ambiguous_labels
         self.train_labels = self.labels[training_index:]
@@ -924,14 +1034,22 @@ class SamplePeaksAndLabels():
         self.fwd_seqs = self.one_hot_code_peaks_sequence()
         self.train_fwd_seqs = self.fwd_seqs[training_index:]
         self.validation_fwd_seqs = self.fwd_seqs[:training_index]
-        
-        return
+
+        print "Loading Accessibility Data"
+        self.accessibility_data = self.load_accessibility_data()[:,:,:977,:]
+        print self.accessibility_data.shape
+        print "="*40
+        self.train_accessibility_data = self.accessibility_data[training_index:]
+        self.validation_accessibility_data = self.accessibility_data[
+            :training_index]
 
     def iter_batches(self, batch_size, data_subset, repeat_forever):
-        if data_subset == 'train': 
+        if data_subset == 'train':
+            accessibility_data = self.train_accessibility_data
             fwd_seqs = self.train_fwd_seqs
             labels = self.train_labels
         elif data_subset == 'validation':
+            accessibility_data = self.validation_accessibility_data
             fwd_seqs = self.validation_fwd_seqs
             labels = self.validation_labels
         else:
@@ -944,7 +1062,9 @@ class SamplePeaksAndLabels():
         while repeat_forever is True or i < n:
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
-            yield fwd_seqs[subset], labels[subset]
+            yield {'fwd_seqs': fwd_seqs[subset], 
+                   'accessibility_data': accessibility_data[subset], 
+                   'output': labels[subset]}
             i += 1
         
         return
@@ -1023,7 +1143,7 @@ class SelexExperiment():
         while repeat_forever is True or i < n:
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
-            yield fwd_seqs[subset], labels[subset]
+            yield {'fwd_seqs': fwd_seqs[subset], 'output': labels[subset]}
             i += 1
         
         return
@@ -1052,7 +1172,7 @@ class SelexData():
         cur = conn.cursor()    
         query = """
           SELECT selex_experiments.tf_id, tfs.tf_name, array_agg(distinct selex_exp_id)
-            FROM roadmap_matched_chipseq_peaks NATURAL JOIN selex_experiments NATURAL JOIN tfs 
+            FROM selex_experiments NATURAL JOIN tfs  --- NATURAL JOIN roadmap_matched_chipseq_peaks
         GROUP BY selex_experiments.tf_id, tfs.tf_name
         ORDER BY tf_name;
         """
@@ -1077,7 +1197,9 @@ class SelexData():
                 for exp_id in selex_exp_ids:
                     self.add_selex_experiment(exp_id)
                     exps_added += 1
-        assert exps_added > 0
+        if exps_added == 0:
+            print "Couldnt add for", factor_name
+        #assert exps_added > 0
         return
 
     def add_all_selex_experiments(self):
@@ -1093,7 +1215,6 @@ class SelexData():
                     continue
                 except Exception, inst:
                     raise
-            break
     
     @property
     def factor_names(self):
@@ -1108,6 +1229,9 @@ class SelexData():
         self.n_samples = n_samples
         self.validation_split = 0.1
         self.experiments = []
+
+    def __len__(self):
+        return len(self.experiments)
 
 
 def old_main():
@@ -1136,19 +1260,35 @@ def old_main():
 from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
     n_samples = 50000
-    sample_id = 'E123'
-    sample_peaks_and_labels = SamplePeaksAndLabels(
-        sample_id, n_samples) #, factor_names=['MAX', 'YY1', 'CTCF'])
-    model = JointBindingModel(n_samples, sample_peaks_and_labels.factor_names)
-    model.add_chipseq_samples(sample_peaks_and_labels)
-    #selex_experiments = SelexData(n_samples)
-    #for factor_name in sample_peaks_and_labels.factor_names:
-    #    selex_experiments.add_all_selex_experiments_for_factor(factor_name)
-    #for exp in selex_experiments:
-    #    model.add_selex_experiment(exp)
+    sample_ids = ['E123', 'E119']
+    #factor_names = [
+    #    'MAX', 'YY1', 'CTCF', 'BHLHE40', 'CEBPB', 'CUX1', 'ELF1', 'HNF4A', 
+    #    'HSF1', 'SP1', 'TCF3']
+    factor_names = [
+        'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
+    factor_names = ['CTCF',]
+    all_sample_peaks_and_labels = [
+        SamplePeaksAndLabels(
+            sample_id, n_samples, factor_names=factor_names)
+        for sample_id in sample_ids
+    ]
+    selex_experiments = SelexData(n_samples)
+    #selex_experiments.add_all_selex_experiments()
+    for factor_name in factor_names:
+        selex_experiments.add_all_selex_experiments_for_factor(factor_name)
+    #all_factor_names = list(set(
+    #    list(sample_peaks_and_labels.factor_names) 
+    #    + list(selex_experiments.factor_names)
+    #))
+    all_factor_names = factor_names
+    model = JointBindingModel(n_samples, all_factor_names)
+    for sample_peaks_and_labels in all_sample_peaks_and_labels:
+        model.add_chipseq_samples(sample_peaks_and_labels)
+    model.add_selex_experiments(selex_experiments)
+
     print "Compiling Model"
     model.compile()
-    model.fit(validation_split=0.1, batch_size=50, nb_epoch=100)
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=200)
     return
 
     model = JointBindingModel(n_samples, factor_names)
