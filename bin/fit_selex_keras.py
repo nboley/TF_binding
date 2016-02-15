@@ -31,6 +31,8 @@ from pyDNAbinding.misc import calc_occ, R, T
 from pyDNAbinding.plot import plot_bases, pyplot
 from pyDNAbinding.sequence import one_hot_encode_sequence
 
+import keras.callbacks
+
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.layers.core import Lambda, Layer, Dropout, Permute
 from keras import initializations
@@ -40,6 +42,8 @@ from keras.models import model_from_yaml
 from keras.models import Graph, Sequential
 from keras.optimizers import Adam, Adamax, RMSprop, SGD
 from keras.layers.core import Dense, Activation, Flatten, Merge, TimeDistributedDense, Reshape
+
+VERBOSE = False
 
 import theano
 import theano.tensor as TT
@@ -93,21 +97,25 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
     mse = K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
     return rv
 
-def mse_skip_ambig(y_true, y_pred, weight=1.0):
+def mse_skip_ambig(y_true, y_pred):
     #clipped_pred = K.clip(y_pred, 0.01, 0.99)
     #loss = K.sum(y_true*K.log(clipped_pred))/K.sum(y_true)
     #return loss
     #return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
     #return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
-    return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
+    #p_op = theano.printing.Print('non_ambig')
 
-def mse_skip_ambig_gen(weight):
+    non_ambig = (y_true > -0.5)
+    return K.mean(K.square(y_pred*non_ambig - y_true*non_ambig), axis=-1)
+    #return rv*len(y_true)/K.sum(non_ambig)
+
+def weighted_loss_generator(weight, loss_fn):
     def f(y_true, y_pred):
-        return mse_skip_ambig(y_true, y_pred, weight)
+        return weight*loss_fn(y_true, y_pred)
     return f
 
 def weighted_mse(y_true, y_pred):
-    return 20*K.mean(K.square(y_pred - y_true), axis=-1)
+    return K.mean(K.square(y_pred - y_true), axis=-1)
 
 def softmax(x, axis):
     scale_factor = x.max(axis=axis, keepdims=True)
@@ -134,15 +142,6 @@ def theano_log_sum_log_occs(log_occs):
     centered_log_occs = (log_occs - scale_factor)
     centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
     return centered_rv + scale_factor.flatten()
-
-import keras.callbacks
-class UpdateSampleWeights(keras.callbacks.Callback):
-    def __init__(self, sample_weights, *args, **kwargs):
-        self._sample_weights = sample_weights
-        super(UpdateSampleWeights, self).__init__(*args, **kwargs)
-    def on_epoch_end(self, *args, **kwargs):
-        print self.my_weights.get_value()
-        self.my_weights.set_value(self.my_weights.get_value()/2)
 
 class ConvolutionDNAShapeBinding(Layer):
     def __init__(
@@ -253,16 +252,16 @@ class ConvolutionDNASequenceBinding(Layer):
     def init_filters(self):
         if self.use_three_base_encoding:
             self.W_shape = (
-                self.nb_motifs, 1, self.motif_len, 3)
+                self.nb_motifs, 3, 1, self.motif_len)
         else:
             self.W_shape = (
-                self.nb_motifs, 1, self.motif_len, 4)
+                self.nb_motifs, 4, 1, self.motif_len)
         self.W, self.b = self.init(self.W_shape)
         return
 
     def build(self):
         #print "Small Domains W SHAPE:", self.W_shape
-        assert self.input_shape[3]==4, "Expecting one-hot-encoded DNA sequence."
+        assert self.input_shape[1]==4, "Expecting one-hot-encoded DNA sequence."
         if self.W is None:
             assert self.b is None
             self.init_filters()
@@ -272,16 +271,19 @@ class ConvolutionDNASequenceBinding(Layer):
     def output_shape(self):
         return (# number of obseravations
                 self.input_shape[0],
+                self.nb_motifs,
                 2,
                 # sequence length minus the motif length
-                self.input_shape[2]-self.motif_len+1,
-                self.nb_motifs)
+                self.input_shape[3]-self.motif_len+1,
+                )
     
     def get_output(self, train=False):
+        print "Input Shape", self.input_shape
+        print "ConvolutionDNASequenceBinding", self.output_shape
         X = self.get_input(train)
         if self.use_three_base_encoding:
-            X_fwd = X[:,:,:,1:]
-            X_rc = X[:,:,:,:3]
+            X_fwd = X[:,1:,:,:]
+            X_rc = X[:,:3,:,:]
         else:
             X_fwd = X
             X_rc = X
@@ -297,11 +299,11 @@ class ConvolutionDNASequenceBinding(Layer):
         
         fwd_rv = K.conv2d(X_fwd, W, border_mode='valid') \
                  + K.reshape(b, (1, self.nb_motifs, 1, 1))
-        rc_rv = K.conv2d(X_rc, W[:,:,::-1,::-1], border_mode='valid') \
+        rc_rv = K.conv2d(X_rc, W[:,::-1,:,::-1], border_mode='valid') \
                 + K.reshape(b, (1, self.nb_motifs, 1, 1))
-        rv = K.concatenate((fwd_rv, rc_rv), axis=3)            
+        rv = K.concatenate((fwd_rv, rc_rv), axis=2)            
         #return rv.dimshuffle((0,3,2,1))
-        return K.permute_dimensions(rv, (0,3,2,1))
+        return rv # K.permute_dimensions(rv, (0,3,2,1))
 
 class ConvolutionBindingSubDomains(Layer):
     def __init__(
@@ -351,18 +353,18 @@ class ConvolutionBindingSubDomains(Layer):
 
     def init_filters(self, num_input_filters):
         self.W_shape = (
-            self.nb_domains, 1, self.domain_len, num_input_filters)
+            self.nb_domains, num_input_filters, 1, self.domain_len)
         self.W, self.b = self.init(self.W_shape)
         return
 
     def build(self):
         # make sure the last input dimension has dimension exactly 2, for the 
         # fwd and rc sequence
-        assert self.input_shape[1] == 2
+        assert self.input_shape[2] == 2
         if self.W is None:
             assert self.b is None
             self.init_filters(self.input_shape[1])
-        #print "Subdomains W SHAPE:", self.W_shape
+        print "Subdomains Filter Shape:", self.W_shape
         #assert self.input_shape[3] == self.W_shape[3]
         self.params = [self.W[0], self.b[0]]
     
@@ -370,12 +372,13 @@ class ConvolutionBindingSubDomains(Layer):
     def output_shape(self):
         return (# number of obseravations
                 self.input_shape[0], 
-                2,
+                self.nb_domains,
                 # sequence length minus the motif length
-                self.input_shape[2]-self.domain_len+1,
-                self.nb_domains)
+                2,
+                self.input_shape[3]-self.domain_len+1)
     
     def get_output(self, train=False):
+        print "ConvolutionBindingSubDomains", self.output_shape
         X = self.get_input(train)
         if self.W[1] is not None:
             W = self.W[0][self.W[1],:,:,:]
@@ -385,14 +388,14 @@ class ConvolutionBindingSubDomains(Layer):
             b = self.b[0][self.b[1]]
         else:
             b = self.b[0]
-        fwd_rv = K.conv2d(X[:,0:1,:,:], W, border_mode='valid')  \
+        fwd_rv = K.conv2d(X[:,:,0:1,:], W, border_mode='valid')  \
                  + K.reshape(b, (1, self.nb_domains, 1, 1))
         # # [:,:,::-1,::-1]
-        rc_rv = K.conv2d(X[:,1:2,:,:], W[:,:,::-1,:], border_mode='valid') \
+        rc_rv = K.conv2d(X[:,:,1:2,:], W[:,:,:,::-1], border_mode='valid') \
                 + K.reshape(b, (1, self.nb_domains, 1, 1))
-        rv = K.concatenate((fwd_rv, rc_rv), axis=3)
+        rv = K.concatenate((fwd_rv, rc_rv), axis=2)
         #return rv.dimshuffle((0,3,2,1))
-        return K.permute_dimensions(rv, (0,3,2,1))
+        return rv #K.permute_dimensions(rv, (0,3,2,1))
 
 class LogNormalizedOccupancy(Layer):
     def __init__(self, **kwargs):
@@ -414,18 +417,21 @@ class LogNormalizedOccupancy(Layer):
     @property
     def output_shape(self):
         #return self.input_shape
+        assert self.input_shape[2] == 2
         return (# number of obseravations
                 self.input_shape[0], 
-                1,
+                2*self.input_shape[1],
                 # sequence length minus the motif length
-                self.input_shape[2], #-self.domain_len+1,
-                2*self.input_shape[3])
+                1, #-self.domain_len+1,
+                self.input_shape[3])
     
     def get_output(self, train=False):
+        print "LogNormalizedOccupancy", self.output_shape
+
         X = self.get_input(train)
-        #rv = theano_logistic(-X, self.chem_affinity)
-        rv = theano_calc_log_occs(-X, self.chem_affinity) # TT.exp(
-        rv = K.concatenate([rv[:,0:1,:,:], rv[:,1:2,:,:]], axis=3)
+        rv = theano_logistic(-X, self.chem_affinity)
+        #rv = theano_calc_log_occs(-X, self.chem_affinity) # TT.exp(
+        rv = K.concatenate([rv[:,:,0:1,:], rv[:,:,1:2,:]], axis=1)
         return rv
         return K.permute_dimensions(rv, (0,3,2,1))
         #p_op = theano.printing.Print("="*40)
@@ -455,14 +461,15 @@ class TrackMax(Layer):
     @property
     def output_shape(self):
         #return self.input_shape
-        return (self.input_shape[0], 
+        return (self.input_shape[0],
                 self.input_shape[1],
-                1,
-                self.input_shape[3])
+                self.input_shape[2],
+                1)
 
     def get_output(self, train=False):
+        print "TrackMax", self.output_shape
         X = self.get_input(train)
-        rv = K.max(X, axis=2, keepdims=True)
+        rv = K.max(X, axis=3, keepdims=True)
         return rv
 
 def cast_if_1D(x):
@@ -470,56 +477,67 @@ def cast_if_1D(x):
         return x[:,None]
     return x
 
+def calc_val_results(model, batch_size):
+    data_iterator = model.iter_validation_data(
+        batch_size, repeat_forever=False)
+    pred_prbs = defaultdict(list)
+    labels = defaultdict(list)
+    for i, data in enumerate(data_iterator):
+        for key, prbs in model.predict_on_batch(data).iteritems():
+            # make sure every set of predicted prbs have an associated key
+            assert key in data, "Predicted prbs don't have associated labels"
+            pred_prbs[key].append(prbs)
+            labels[key].append(cast_if_1D(data[key]))
+
+
+    val_results = {}
+    assert set(pred_prbs.keys()) == set(labels.keys())
+    for key in pred_prbs.keys():
+        inner_prbs = np.concatenate(pred_prbs[key], axis=0)
+        inner_labels = np.concatenate(labels[key], axis=0)
+
+        assert len(inner_prbs.shape) == 2
+        for i in xrange(inner_prbs.shape[1]):
+            prbs_subset = inner_prbs[:,i].ravel()
+            classes = np.array(prbs_subset > 0.5, dtype=int)
+            truth = inner_labels[:,i].ravel()
+            res = ClassificationResult(truth, classes, prbs_subset)
+            name = key
+            if inner_prbs.shape[1] > 1:
+                # this is a hack. The data is stored with input name prefix,
+                # but the key is PREFIX.output, so we replace output with 
+                # the prefix. Note that we also assume htat TFnames is 
+                # correctly set
+                name += "_%s" % model.data[
+                    key.replace('output', '')].factor_names[i]
+            val_results[name] = res
+    return val_results
+
 class MonitorAccuracy(keras.callbacks.Callback):
     def __init__(self, batch_size, *args, **kwargs):
         self.batch_size = batch_size
         super(MonitorAccuracy, self).__init__(*args, **kwargs)
 
     def _calc_val_results(self):
-        data_iterator = self.model.iter_validation_data(
-            self.batch_size, repeat_forever=False)
-        pred_prbs = defaultdict(list)
-        labels = defaultdict(list)
-        for i, data in enumerate(data_iterator):
-            for key, prbs in self.model.predict_on_batch(data).iteritems():
-                # make sure every set of predicted prbs have an associated key
-                assert key in data, "Predicted prbs don't have associated labels"
-                pred_prbs[key].append(prbs)
-                labels[key].append(cast_if_1D(data[key]))
-                
-        
-        val_results = {}
-        assert set(pred_prbs.keys()) == set(labels.keys())
-        for key in pred_prbs.keys():
-            inner_prbs = np.concatenate(pred_prbs[key], axis=0)
-            inner_labels = np.concatenate(labels[key], axis=0)
+        return calc_val_results(self.model, self.batch_size)
 
-            assert len(inner_prbs.shape) == 2
-            for i in xrange(inner_prbs.shape[1]):
-                prbs_subset = inner_prbs[:,i].ravel()
-                classes = np.array(prbs_subset > 0.5, dtype=int)
-                truth = inner_labels[:,i].ravel()
-                res = ClassificationResult(truth, classes, prbs_subset)
-                name = key
-                if inner_prbs.shape[1] > 1:
-                    # this is a hack. The data is stored with input name prefix,
-                    # but the key is PREFIX.output, so we replace output with 
-                    # the prefix. Note that we also assume htat TFnames is 
-                    # correctly set
-                    name += "_%s" % self.model.data[
-                        key.replace('output', '')].factor_names[i]
-                val_results[name] = res
-        return val_results
-    
-    def on_epoch_end(self, *args, **kwargs):
+    def on_epoch_end(self, batch, logs):
+        val_losses = []
+        for i, data in enumerate(self.model.iter_validation_data(
+                self.batch_size, repeat_forever=False)):
+            val_losses.append( self.model.test_on_batch(data) )
+        val_loss = np.array(val_losses).mean()
+        logs['val_loss'] = val_loss
+        print "val_loss:", val_loss
+            
         # calculate and print he validation results
         val_results = self._calc_val_results()
-        
+
         # update the in-vitro penalty
         invitro_weight = self.model.invitro_weight.get_value()
-        print "Current Invitro Weight:",  invitro_weight
+        #print "Current Invitro Weight:",  invitro_weight
         self.model.invitro_weight.set_value(
-            np.array(invitro_weight/2, dtype='float32'))
+            np.array(invitro_weight, dtype='float32'))
         
         # print the validation results
         for key, res in sorted(val_results.iteritems()):
@@ -574,25 +592,34 @@ class JointBindingModel(Graph):
         self.short_conv_layer.init_filters()
 
         # initialize the full subdomain convolutional filter
-        self.num_binding_subdomain_convs = 4
-        self.num_affinity_outputs = self.num_binding_subdomain_convs*len(factor_names)
+        self.num_invivo_convs = 0
+        self.num_tf_specific_invitro_binding_subdomain_convs = 2
+        self.num_tf_specific_invivo_subdomain_convs = 0
+        
+        self.num_affinity_outputs = (
+            (   self.num_tf_specific_invivo_subdomain_convs
+                 + self.num_tf_specific_invitro_binding_subdomain_convs
+            )*len(factor_names) 
+            + self.num_invivo_convs
+        )
+        
         self.binding_subdomain_conv_size = 9
         self.stacked_subdomains_layer_shape = (
-            (0+self.num_binding_subdomain_convs)*len(factor_names), 
-            1, 
-            self.binding_subdomain_conv_size, 
-            3) # self.num_small_convs)
+            self.num_affinity_outputs,
+            3, 
+            1,
+            self.binding_subdomain_conv_size
+        ) 
         self.stacked_subdomains_layer_filters = (
             self.stacked_subdomains_layer_shape,
             K.zeros((self.stacked_subdomains_layer_shape[0],)),
             initializations.get('glorot_uniform')(
                 self.stacked_subdomains_layer_shape)
         )
-
         # extract the tf specific subtensors
-        self.binding_subdomains_layer = ConvolutionDNASequenceBinding( #
-                (0+self.num_binding_subdomain_convs)*len(factor_names), # numConv
-                self.binding_subdomain_conv_size, # convWidth,
+        self.binding_subdomains_layer = ConvolutionDNASequenceBinding(
+            self.num_affinity_outputs,
+            self.binding_subdomain_conv_size, # convWidth,
         )
         self.binding_subdomains_layer.W_shape = (
             self.stacked_subdomains_layer_filters[0] )
@@ -602,17 +629,22 @@ class JointBindingModel(Graph):
             self.stacked_subdomains_layer_filters[2], None)
 
         self.binding_subdomain_layers = {}
+        step_size = ( 
+            self.num_tf_specific_invitro_binding_subdomain_convs 
+            + self.num_tf_specific_invivo_subdomain_convs
+        )
         for i, factor_name in enumerate(factor_names):
             subtensor_slice = slice(
-                i*self.num_binding_subdomain_convs,
-                (i+1)*self.num_binding_subdomain_convs)
+                i*step_size,
+                i*step_size+self.num_tf_specific_invitro_binding_subdomain_convs
+            )
             W_shape = list(self.stacked_subdomains_layer_shape)
-            W_shape[0] = self.num_binding_subdomain_convs
+            W_shape[0] = self.num_tf_specific_invitro_binding_subdomain_convs
             W_shape = tuple(W_shape)
             b = self.stacked_subdomains_layer_filters[1] #subtensor_slice]
             W = self.stacked_subdomains_layer_filters[2] #[subtensor_slice]
             binding_sub_domains_layer = ConvolutionDNASequenceBinding(
-                self.num_binding_subdomain_convs, # numConv
+                self.num_tf_specific_invitro_binding_subdomain_convs, # numConv
                 self.binding_subdomain_conv_size, # convWidth,
             )
             binding_sub_domains_layer.W_shape = W_shape
@@ -648,7 +680,7 @@ class JointBindingModel(Graph):
                 name=output_name
             )
         else:
-            assert factor_name in self.binding_subdomain_layers
+            assert factor_name in self.binding_subdomain_layers, factor_name
             self.add_node(
                 self.binding_subdomain_layers[factor_name].create_clone(),
                 input=subdomain_input_name,
@@ -657,9 +689,10 @@ class JointBindingModel(Graph):
         return
     
     def add_invivo_layer(self, name_prefix, seq_length, output_dim):
+        print "add_invivo_layer", name_prefix, seq_length, output_dim
         self.add_input(
             name=name_prefix+'fwd_seqs', 
-            input_shape=(1, seq_length, 4))
+            input_shape=(4, 1, seq_length))
 
         # this fixes an implementation bug in Keras. If this is not true,
         # then the code runs much more slowly
@@ -671,11 +704,29 @@ class JointBindingModel(Graph):
         self.add_node(
             ConvolutionBindingSubDomains(
                 nb_domains=16, 
-                domain_len=16,
+                domain_len=32,
             ),
             name=name_prefix + 'binding_affinities.2',
             input=name_prefix+'binding_affinities.1'
         )
+        """
+        self.add_node(
+            ConvolutionBindingSubDomains(
+                nb_domains=60, 
+                domain_len=15,
+            ),
+            name=name_prefix + 'binding_affinities.3',
+            input=name_prefix+'binding_affinities.2'
+        )
+        self.add_node(
+            ConvolutionBindingSubDomains(
+                nb_domains=15, 
+                domain_len=15,
+            ),
+            name=name_prefix + 'binding_affinities.4',
+            input=name_prefix+'binding_affinities.3'
+        )
+        """
         self.add_node(
             LogNormalizedOccupancy(),
             name=name_prefix + 'occupancies.1',
@@ -686,9 +737,10 @@ class JointBindingModel(Graph):
         #    name=name_prefix+'accessibility_data', 
         #    input_shape=(1, 977, 1)) # seq_length        
         #self.add_node(
-        #    Convolution2D(4, 32, 33),
+        #    Convolution2D(4, 16, 32),
         #    name=name_prefix+'occupancies.2',
-        #    inputs=[
+        #    input=name_prefix+'occupancies.1'
+        #)
         #        name_prefix+'occupancies.1',
         #        name_prefix+'accessibility_data'
         #    ]
@@ -698,21 +750,21 @@ class JointBindingModel(Graph):
             name=name_prefix+'max.1', 
             input=name_prefix+'occupancies.1')
         #self.add_node(
-        #    MaxPooling2D(pool_size=(64, 1)),
+        #    MaxPooling2D(pool_size=(1, 32)),
         #    name=name_prefix+'max.1',
-        #    input=name_prefix+'occupancies.2'
+        #    input=name_prefix+'occupancies.1'
         #)
-        self.add_node(
-            Activation('sigmoid'),
-            name=name_prefix+'max.2',
-            input=name_prefix+'max.1'
-        )
+        #self.add_node(
+        #    Activation('sigmoid'),
+        #    name=name_prefix+'max.2',
+        #    input=name_prefix+'max.1'
+        #)
         #N X 1 X 1 X 200
 
         self.add_node(
             Flatten(),
             name=name_prefix+'max.3',
-            input=name_prefix+'max.2'
+            input=name_prefix+'max.1'
         )
         """
 
@@ -727,7 +779,7 @@ class JointBindingModel(Graph):
             input=name_prefix + 'dense1')
         """
         self.add_node(
-            Dense(output_dim, activation='linear'), # numOutputNodes
+            Dense(output_dim, activation='hard_sigmoid'), # numOutputNodes
             input=name_prefix+'max.3',
             name=name_prefix+'dense'            
         )
@@ -743,9 +795,10 @@ class JointBindingModel(Graph):
         
         self.add_invivo_layer(
             name_prefix, 
-            pks_and_labels.fwd_seqs.shape[2], 
+            pks_and_labels.fwd_seqs.shape[3], 
             pks_and_labels.labels.shape[1])
-        self.named_losses[name_prefix + 'output'] = mse_skip_ambig_gen(1.0) 
+        self.named_losses[name_prefix + 'output'] = weighted_loss_generator(
+            1.0, mse_skip_ambig) 
 
         """
         assert name_prefix+'one_hot_sequence' not in self.named_inputs
@@ -768,7 +821,7 @@ class JointBindingModel(Graph):
     def add_invitro_layer(self, name_prefix, factor_name, seq_length):
         self.add_input(
             name=name_prefix+'fwd_seqs', 
-            input_shape=(None, seq_length, 4))
+            input_shape=(4, 1, seq_length))
 
         self.add_affinity_layers(
             input_name=name_prefix+'fwd_seqs', 
@@ -783,7 +836,7 @@ class JointBindingModel(Graph):
         #N X 1 X seq_len X 2*num_filters
 
         self.add_node(
-            Lambda(lambda x: K.exp(K.max(K.batch_flatten(x), axis=1, keepdims=True))),
+            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
             name=name_prefix+'max', 
             input=name_prefix+'occupancies')
         #N X 1
@@ -804,11 +857,13 @@ class JointBindingModel(Graph):
         
         name_prefix = 'invitro_%s_%s_%s.' % (
             factor_name, factor_id, selex_exp_id)
-        print "Adding", name_prefix
+        if VERBOSE: print "Adding", name_prefix
+        if factor_name not in self.binding_subdomain_layers:
+            return
         self.data[name_prefix] = selex_experiment        
         self.add_invitro_layer(name_prefix, factor_name, seq_length)
-        self.named_losses[name_prefix + 'output'] = mse_skip_ambig_gen(
-            self.invitro_weight*weight) # mse_skip_ambig 
+        self.named_losses[name_prefix + 'output'] = 'mse' #weighted_loss_generator(
+            #self.invitro_weight*weight, mse_skip_ambig)
 
     def compile(self, *args, **kwargs):
         compile = functools.partial(
@@ -850,7 +905,7 @@ class JointBindingModel(Graph):
             nb_epoch=100,
             *args, **kwargs):
         early_stop = keras.callbacks.EarlyStopping(
-            monitor='val_loss', patience=10, verbose=1, mode='auto')
+            monitor='val_loss', patience=5, verbose=1, mode='auto')
         monitor_accuracy_cb = MonitorAccuracy(batch_size)
 
         fit = functools.partial(
@@ -859,7 +914,7 @@ class JointBindingModel(Graph):
             samples_per_epoch=int(self.num_samples*(1-self.validation_split)),
             nb_epoch=nb_epoch,
             verbose=1,
-            callbacks=[monitor_accuracy_cb,], # monitor_accuracy_cb,, early_stop
+            callbacks=[monitor_accuracy_cb, early_stop],
         )
         return fit(*args, **kwargs)
 
@@ -871,7 +926,9 @@ def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
     permutation = np.random.permutation(2*num_seqs)
     fwd_one_hot_seqs = np.vstack(
         (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs)
-    )[permutation,None,:,:]
+    )[permutation,:,:]
+    fwd_one_hot_seqs = np.swapaxes(fwd_one_hot_seqs, 1, 2)[:,:,None,:]
+    print fwd_one_hot_seqs.shape
 
     if unbnd_seqs.fwd_shape_features is None:
         shape_seqs = None
@@ -910,7 +967,7 @@ class SamplePeaksAndLabels():
             rv[i,:,:] = coded_seq
         
         # add the extra dimension for theano
-        rv = rv[:,None,:,:]
+        rv = np.swapaxes(rv, 1, 2)[:,:,None,:]
         
         with open(cached_fname, "w") as ofp:
             print "Saving seqs"
@@ -937,15 +994,14 @@ class SamplePeaksAndLabels():
                 self.half_peak_width*2, 
                 intervals=[
                     Region(pk['contig'], pk['start'], pk['stop']) for pk in self.pks
-                ],
-                cache='cache'
+                ]
             )
 
             with open(cached_fname, "w") as ofp:
                 print "Saving accessibility data"
                 np.save(ofp, rv)
         
-        return rv[:,:,0,:][:,:,:,None]
+        return rv
 
     def _init_pks_and_label_mats(self):
         from pyTFbindtools.DB import load_tf_names
@@ -986,10 +1042,10 @@ class SamplePeaksAndLabels():
             :self.n_samples, np.array(tf_indices)]
         
         # set the ambiguous labels to -1
-        self.ambiguous_pk_indices = (
+        self.ambiguous_pks_mask = (
             self.idr_optimal_labels != self.relaxed_labels)
         self.clean_labels = self.idr_optimal_labels.copy()
-        self.clean_labels[self.ambiguous_pk_indices] = -1
+        self.clean_labels[self.ambiguous_pks_mask] = -1
 
         # print out balance statistics
         #print (self.idr_optimal_labels.sum(axis=0)/self.idr_optimal_labels.shape[0])
@@ -1019,11 +1075,10 @@ class SamplePeaksAndLabels():
         self.pks = self.pks[index]
         self.idr_optimal_labels = self.idr_optimal_labels[index,:]
         self.relaxed_labels = self.relaxed_labels[index,:]
-        self.ambiguous_pk_indices = self.ambiguous_pk_indices[index,:]
         self.ambiguous_labels = self.clean_labels[index,:]
 
         training_index = int(self.n_samples*0.1)        
-        self.labels = self.idr_optimal_labels # ambiguous_labels
+        self.labels = self.ambiguous_labels # idr_optimal_labels
         self.train_labels = self.labels[training_index:]
         self.validation_labels = self.labels[:training_index]
         
@@ -1032,12 +1087,16 @@ class SamplePeaksAndLabels():
         self.genome_fasta = FastaFile(
             load_genome_metadata(self.annotation_id).filename)
         self.fwd_seqs = self.one_hot_code_peaks_sequence()
+        print self.fwd_seqs.shape
+        print "="*40
         self.train_fwd_seqs = self.fwd_seqs[training_index:]
         self.validation_fwd_seqs = self.fwd_seqs[:training_index]
 
         print "Loading Accessibility Data"
+        print len(self.pks)
         self.accessibility_data = self.load_accessibility_data()[:,:,:977,:]
         print self.accessibility_data.shape
+        assert self.accessibility_data.shape[0] == n_samples
         print "="*40
         self.train_accessibility_data = self.accessibility_data[training_index:]
         self.validation_accessibility_data = self.accessibility_data[
@@ -1078,8 +1137,7 @@ class SamplePeaksAndLabels():
 class SelexExperiment():
     @property
     def seq_length(self):
-        return self.fwd_seqs.shape[2]
-
+        return self.fwd_seqs.shape[3]
 
     def __init__(self, selex_exp_id, n_samples, validation_split=0.1):
         self.selex_exp_id = selex_exp_id
@@ -1094,7 +1152,8 @@ class SelexExperiment():
         self.factor_id = selex_db_conn.get_factor_id()
 
         # load the sequencess
-        print "Loading sequences for %s-%s (exp ID %i)" % (
+        if VERBOSE:
+            print "Loading sequences for %s-%s (exp ID %i)" % (
                 self.factor_name, self.factor_id, self.selex_exp_id)
         fnames, bg_fname = selex_db_conn.get_fnames()
         if bg_fname is None:
@@ -1108,7 +1167,7 @@ class SelexExperiment():
             unbnd_seqs = load_fastq(fp, self.n_samples/2)
         if len(bnd_seqs[0]) < 20:
             raise SeqsTooShort("Seqs too short for %s (exp %i)." % (
-                factor_name, selex_exp_id))
+                self.factor_name, selex_exp_id))
         
         if len(unbnd_seqs) < self.n_samples/2:
             unbnd_seqs = upsample(unbnd_seqs, self.n_samples/2)
@@ -1172,7 +1231,7 @@ class SelexData():
         cur = conn.cursor()    
         query = """
           SELECT selex_experiments.tf_id, tfs.tf_name, array_agg(distinct selex_exp_id)
-            FROM selex_experiments NATURAL JOIN tfs  --- NATURAL JOIN roadmap_matched_chipseq_peaks
+            FROM selex_experiments NATURAL JOIN tfs NATURAL JOIN roadmap_matched_chipseq_peaks
         GROUP BY selex_experiments.tf_id, tfs.tf_name
         ORDER BY tf_name;
         """
@@ -1257,16 +1316,31 @@ def old_main():
 
     pass
 
+def fit_selex(n_samples):
+    selex_experiments = SelexData(n_samples)
+    for tf_id, tf_name, exp_ids in selex_experiments.find_all_selex_experiments():
+        if tf_name != 'CTCF': continue
+        for i, exp_id in enumerate(exp_ids):
+            exp = SelexExperiment(exp_id, n_samples)
+            model = JointBindingModel(n_samples, [exp.factor_name,])
+            model.add_selex_experiment(exp)
+            model.compile()
+            model.fit(validation_split=0.1, batch_size=100, nb_epoch=15)
+            print tf_name, i+1, calc_val_results(model, 100).values()[0]
+    return
+
 from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
     n_samples = 50000
-    sample_ids = ['E123', 'E119']
-    #factor_names = [
-    #    'MAX', 'YY1', 'CTCF', 'BHLHE40', 'CEBPB', 'CUX1', 'ELF1', 'HNF4A', 
-    #    'HSF1', 'SP1', 'TCF3']
+    sample_ids = ['E123',] # 'E119']
     factor_names = [
-        'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
+        'MAX', 'YY1', 'CTCF', 'BHLHE40', 'CEBPB', 'CUX1', 'ELF1', 'HNF4A', 
+        'HSF1', 'SP1', 'TCF3', 'GATA1', 'RELA', 'POLR2AphosphoS2', 'IRF1', 
+        'JUN', 'JUND', 'KAT2B', 'FOS', 'SPI1', 'USF2']
+    #factor_names = [
+    #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
     factor_names = ['CTCF',]
+    #factor_names=None
     all_sample_peaks_and_labels = [
         SamplePeaksAndLabels(
             sample_id, n_samples, factor_names=factor_names)
@@ -1277,9 +1351,10 @@ def main():
     for factor_name in factor_names:
         selex_experiments.add_all_selex_experiments_for_factor(factor_name)
     #all_factor_names = list(set(
-    #    list(sample_peaks_and_labels.factor_names) 
+    #    list(all_sample_peaks_and_labels[0].factor_names) 
     #    + list(selex_experiments.factor_names)
     #))
+    #print sorted(all_factor_names)
     all_factor_names = factor_names
     model = JointBindingModel(n_samples, all_factor_names)
     for sample_peaks_and_labels in all_sample_peaks_and_labels:
@@ -1288,7 +1363,7 @@ def main():
 
     print "Compiling Model"
     model.compile()
-    model.fit(validation_split=0.1, batch_size=100, nb_epoch=200)
+    model.fit(validation_split=0.1, batch_size=200, nb_epoch=200)
     return
 
     model = JointBindingModel(n_samples, factor_names)
