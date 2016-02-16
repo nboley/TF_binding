@@ -398,8 +398,9 @@ class ConvolutionBindingSubDomains(Layer):
         return rv #K.permute_dimensions(rv, (0,3,2,1))
 
 class LogNormalizedOccupancy(Layer):
-    def __init__(self, **kwargs):
-        self.input = K.placeholder(ndim=4)        
+    def __init__(self, init_chem_affinity=0.0, **kwargs):
+        self.input = K.placeholder(ndim=4)
+        self.init_chem_affinity = init_chem_affinity
         super(LogNormalizedOccupancy, self).__init__(**kwargs)
 
     def get_config(self):
@@ -411,7 +412,7 @@ class LogNormalizedOccupancy(Layer):
         # make sure the last input dimension has dimension exactly 2, for the 
         # fwd and rc sequence
         #assert self.input_shape[3] == 2
-        self.chem_affinity = K.variable(0.0)
+        self.chem_affinity = K.variable(self.init_chem_affinity)
         self.params = [self.chem_affinity]
     
     @property
@@ -429,8 +430,8 @@ class LogNormalizedOccupancy(Layer):
         print "LogNormalizedOccupancy", self.output_shape
 
         X = self.get_input(train)
-        rv = theano_logistic(-X, self.chem_affinity)
-        #rv = theano_calc_log_occs(-X, self.chem_affinity) # TT.exp(
+        #rv = theano_logistic(-X, self.chem_affinity)
+        rv = theano_calc_log_occs(-X, self.chem_affinity) # TT.exp(
         rv = K.concatenate([rv[:,:,0:1,:], rv[:,:,1:2,:]], axis=1)
         return rv
         return K.permute_dimensions(rv, (0,3,2,1))
@@ -470,6 +471,34 @@ class TrackMax(Layer):
         print "TrackMax", self.output_shape
         X = self.get_input(train)
         rv = K.max(X, axis=3, keepdims=True)
+        return rv
+
+class LogAnyBound(Layer):
+    def __init__(self, **kwargs):
+        self.input = K.placeholder(ndim=4)        
+        super(LogAnyBound, self).__init__(**kwargs)
+
+    def get_config(self):
+        config = {'name': self.__class__.__name__}
+        base_config = super(LogAnyBound, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    @property
+    def output_shape(self):
+        #return self.input_shape
+        return (self.input_shape[0],
+                self.input_shape[1],
+                self.input_shape[2],
+                1)
+
+    def get_output(self, train=False):
+        print "LogAnyBound", self.output_shape
+        X = self.get_input(train)
+        log_none_bnd = K.sum(
+            K.log(1-K.clip(K.exp(X), 1e-6, 1)), axis=3, keepdims=True)
+        at_least_1_bnd = 1-K.exp(log_none_bnd)
+        rv = K.log(
+            0.01*K.max(K.exp(X), axis=-1, keepdims=True) + 0.99*at_least_1_bnd)
         return rv
 
 def cast_if_1D(x):
@@ -568,38 +597,17 @@ class JointBindingModel(Graph):
                 pred_prbs[factor_key], inputs[factor_key])
         return acc_res
 
-    def __init__(self, num_samples, factor_names, validation_split=0.1, *args, **kwargs):
-        # store a dictionary of round indexed selex sequences, 
-        # indexed by experiment ID
-        self.num_samples = num_samples
-        assert self.num_samples%2 == 0
-        self.validation_split = validation_split
-        self.factor_names = factor_names
-
-        self.data = {}
-        self.named_losses = {}
-
-        self.invitro_weight = K.variable(1.0)
-        
-        # initialize the base convolutional filter
-        self.num_small_convs = 64
-        self.small_conv_size = 4
-        self.short_conv_layer = ConvolutionDNASequenceBinding(
-            self.num_small_convs, # numConv
-            self.small_conv_size, # convWidth, 
-            #init=initial_model
-        )
-        self.short_conv_layer.init_filters()
-
+    def _init_shared_convolution_layer(self):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_binding_subdomain_convs = 2
-        self.num_tf_specific_invivo_subdomain_convs = 0
-        
+        self.num_tf_specific_invivo_subdomain_convs = 2
+        self.num_tf_specific_convs = (
+            self.num_tf_specific_invitro_binding_subdomain_convs
+            + self.num_tf_specific_invivo_subdomain_convs
+        )
         self.num_affinity_outputs = (
-            (   self.num_tf_specific_invivo_subdomain_convs
-                 + self.num_tf_specific_invitro_binding_subdomain_convs
-            )*len(factor_names) 
+            self.num_tf_specific_convs*len(self.factor_names)
             + self.num_invivo_convs
         )
         
@@ -633,7 +641,7 @@ class JointBindingModel(Graph):
             self.num_tf_specific_invitro_binding_subdomain_convs 
             + self.num_tf_specific_invivo_subdomain_convs
         )
-        for i, factor_name in enumerate(factor_names):
+        for i, factor_name in enumerate(self.factor_names):
             subtensor_slice = slice(
                 i*step_size,
                 i*step_size+self.num_tf_specific_invitro_binding_subdomain_convs
@@ -651,6 +659,33 @@ class JointBindingModel(Graph):
             binding_sub_domains_layer.W = (W, subtensor_slice)
             binding_sub_domains_layer.b = (b, subtensor_slice)
             self.binding_subdomain_layers[factor_name] = binding_sub_domains_layer
+
+        return
+
+    def __init__(self, num_samples, factor_names, validation_split=0.1, *args, **kwargs):
+        # store a dictionary of round indexed selex sequences, 
+        # indexed by experiment ID
+        self.num_samples = num_samples
+        assert self.num_samples%2 == 0
+        self.validation_split = validation_split
+        self.factor_names = factor_names
+
+        self.data = {}
+        self.named_losses = {}
+
+        self.invitro_weight = K.variable(1.0)
+        
+        # initialize the base convolutional filter
+        self.num_small_convs = 64
+        self.small_conv_size = 4
+        self.short_conv_layer = ConvolutionDNASequenceBinding(
+            self.num_small_convs, # numConv
+            self.small_conv_size, # convWidth, 
+            #init=initial_model
+        )
+        self.short_conv_layer.init_filters()
+
+        self._init_shared_convolution_layer()
 
         super(Graph, self).__init__(*args, **kwargs)
 
@@ -699,39 +734,20 @@ class JointBindingModel(Graph):
         self.add_affinity_layers(
             input_name=name_prefix+'fwd_seqs', 
             output_name=name_prefix+'binding_affinities.1')
-        #N X 2 X 1000 X 100
 
         self.add_node(
             ConvolutionBindingSubDomains(
-                nb_domains=16, 
+                nb_domains=self.num_affinity_outputs, 
                 domain_len=32,
             ),
             name=name_prefix + 'binding_affinities.2',
             input=name_prefix+'binding_affinities.1'
         )
-        """
+
         self.add_node(
-            ConvolutionBindingSubDomains(
-                nb_domains=60, 
-                domain_len=15,
-            ),
-            name=name_prefix + 'binding_affinities.3',
-            input=name_prefix+'binding_affinities.2'
-        )
-        self.add_node(
-            ConvolutionBindingSubDomains(
-                nb_domains=15, 
-                domain_len=15,
-            ),
-            name=name_prefix + 'binding_affinities.4',
-            input=name_prefix+'binding_affinities.3'
-        )
-        """
-        self.add_node(
-            LogNormalizedOccupancy(),
+            LogNormalizedOccupancy(-10.0),
             name=name_prefix + 'occupancies.1',
             input=name_prefix + 'binding_affinities.2')
-        #N X 1 X 1000 X 200
 
         #self.add_input(
         #    name=name_prefix+'accessibility_data', 
@@ -746,25 +762,29 @@ class JointBindingModel(Graph):
         #    ]
         #)
         self.add_node(
-            TrackMax(),
+            LogAnyBound(),
             name=name_prefix+'max.1', 
             input=name_prefix+'occupancies.1')
-        #self.add_node(
-        #    MaxPooling2D(pool_size=(1, 32)),
-        #    name=name_prefix+'max.1',
-        #    input=name_prefix+'occupancies.1'
-        #)
-        #self.add_node(
-        #    Activation('sigmoid'),
-        #    name=name_prefix+'max.2',
-        #    input=name_prefix+'max.1'
-        #)
+        self.add_node(
+            Permute((1,2)),
+            name=name_prefix+'max.2', 
+            input=name_prefix+'max.1')
+        self.add_node(
+            MaxPooling2D(pool_size=(2*self.num_tf_specific_convs, 1)),
+            name=name_prefix+'max.3',
+            input=name_prefix+'max.2'
+        )
+        self.add_node(
+            Lambda(lambda x: K.exp(x)),
+            name=name_prefix+'max.4',
+            input=name_prefix+'max.3'
+        )
         #N X 1 X 1 X 200
 
         self.add_node(
             Flatten(),
-            name=name_prefix+'max.3',
-            input=name_prefix+'max.1'
+            name=name_prefix+'max.5',
+            input=name_prefix+'max.4'
         )
         """
 
@@ -778,21 +798,20 @@ class JointBindingModel(Graph):
             name=name_prefix + 'dense2',
             input=name_prefix + 'dense1')
         """
-        self.add_node(
-            Dense(output_dim, activation='hard_sigmoid'), # numOutputNodes
-            input=name_prefix+'max.3',
-            name=name_prefix+'dense'            
-        )
+        #self.add_node(
+        #    Dense(output_dim, activation='hard_sigmoid'), # numOutputNodes
+        #    input=name_prefix+'max.5',
+        #    name=name_prefix+'dense'            
+        #)
 
         self.add_output(
             name=name_prefix+'output', 
-            input=name_prefix+'dense')
+            input=name_prefix+'max.5')
     
     def add_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
         name_prefix = 'invivo_%s_sequence.' % pks_and_labels.sample_id 
         self.data[name_prefix] = pks_and_labels
-        
         self.add_invivo_layer(
             name_prefix, 
             pks_and_labels.fwd_seqs.shape[3], 
@@ -819,6 +838,7 @@ class JointBindingModel(Graph):
         return
 
     def add_invitro_layer(self, name_prefix, factor_name, seq_length):
+        print "add_invitro_layer", name_prefix, seq_length
         self.add_input(
             name=name_prefix+'fwd_seqs', 
             input_shape=(4, 1, seq_length))
@@ -830,18 +850,24 @@ class JointBindingModel(Graph):
         #N X 2 X seq_len X num_filters
 
         self.add_node(
-            LogNormalizedOccupancy(),
+            LogNormalizedOccupancy(0.0),
             name=name_prefix + 'occupancies',
             input=name_prefix + 'binding_affinities')
         #N X 1 X seq_len X 2*num_filters
 
         self.add_node(
-            Lambda(lambda x: K.max(K.batch_flatten(x), axis=1, keepdims=True)),
-            name=name_prefix+'max', 
-            input=name_prefix+'occupancies')
+            LogAnyBound(),
+            name=name_prefix + 'max.1',
+            input=name_prefix + 'occupancies')
+
+        self.add_node(
+            Lambda(lambda x: K.exp(
+                K.max(K.batch_flatten(x), axis=1, keepdims=True))),
+            name=name_prefix+'max.2', 
+            input=name_prefix+'max.1')
         #N X 1
 
-        self.add_output(name=name_prefix+'output', input=name_prefix+'max')
+        self.add_output(name=name_prefix+'output', input=name_prefix+'max.2')
 
         return
 
@@ -853,7 +879,7 @@ class JointBindingModel(Graph):
         selex_exp_id = selex_experiment.selex_exp_id
         factor_name = selex_experiment.factor_name
         factor_id = selex_experiment.factor_id
-        seq_length = selex_experiment.fwd_seqs.shape[2]
+        seq_length = selex_experiment.fwd_seqs.shape[3]
         
         name_prefix = 'invitro_%s_%s_%s.' % (
             factor_name, factor_id, selex_exp_id)
@@ -928,7 +954,6 @@ def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
         (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs)
     )[permutation,:,:]
     fwd_one_hot_seqs = np.swapaxes(fwd_one_hot_seqs, 1, 2)[:,:,None,:]
-    print fwd_one_hot_seqs.shape
 
     if unbnd_seqs.fwd_shape_features is None:
         shape_seqs = None
@@ -1331,7 +1356,7 @@ def fit_selex(n_samples):
 
 from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
-    n_samples = 50000
+    n_samples = 50000 # 50000 # 300000
     sample_ids = ['E123',] # 'E119']
     factor_names = [
         'MAX', 'YY1', 'CTCF', 'BHLHE40', 'CEBPB', 'CUX1', 'ELF1', 'HNF4A', 
@@ -1339,7 +1364,7 @@ def main():
         'JUN', 'JUND', 'KAT2B', 'FOS', 'SPI1', 'USF2']
     #factor_names = [
     #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
-    factor_names = ['CTCF',]
+    factor_names = ['CTCF',] #'YY1']
     #factor_names=None
     all_sample_peaks_and_labels = [
         SamplePeaksAndLabels(
