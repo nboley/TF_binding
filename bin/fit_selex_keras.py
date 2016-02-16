@@ -495,10 +495,12 @@ class LogAnyBound(Layer):
         print "LogAnyBound", self.output_shape
         X = self.get_input(train)
         log_none_bnd = K.sum(
-            K.log(1-K.clip(K.exp(X), 1e-6, 1)), axis=3, keepdims=True)
+            K.log(1-K.clip(K.exp(X), 1e-6, 1-1e-6)), axis=3, keepdims=True)
         at_least_1_bnd = 1-K.exp(log_none_bnd)
         rv = K.log(
-            0.01*K.max(K.exp(X), axis=-1, keepdims=True) + 0.99*at_least_1_bnd)
+            # we take the weighted sum because the max is easier to fit, and 
+            # thus this helps to regularize the optimization procedure
+            0.05*K.max(K.exp(X), axis=-1, keepdims=True) + 0.95*at_least_1_bnd)
         return rv
 
 def cast_if_1D(x):
@@ -550,7 +552,7 @@ class MonitorAccuracy(keras.callbacks.Callback):
     def _calc_val_results(self):
         return calc_val_results(self.model, self.batch_size)
 
-    def on_epoch_end(self, batch, logs):
+    def on_epoch_end(self, batch_num, logs):
         val_losses = []
         for i, data in enumerate(self.model.iter_validation_data(
                 self.batch_size, repeat_forever=False)):
@@ -565,9 +567,11 @@ class MonitorAccuracy(keras.callbacks.Callback):
         # update the in-vitro penalty
         invitro_weight = self.model.invitro_weight.get_value()
         #print "Current Invitro Weight:",  invitro_weight
-        self.model.invitro_weight.set_value(
-            np.array(invitro_weight, dtype='float32'))
-        
+        if batch_num < 100:
+            self.model.invitro_weight.set_value(
+                np.array(1.0/np.log(2+batch_num), dtype='float32'))
+            print "In-vitro weight is %.2f" % (
+                self.model.invitro_weight.get_value())
         # print the validation results
         for key, res in sorted(val_results.iteritems()):
             print key.ljust(40), res
@@ -601,7 +605,7 @@ class JointBindingModel(Graph):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_binding_subdomain_convs = 2
-        self.num_tf_specific_invivo_subdomain_convs = 2
+        self.num_tf_specific_invivo_subdomain_convs = 0
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_binding_subdomain_convs
             + self.num_tf_specific_invivo_subdomain_convs
@@ -888,8 +892,8 @@ class JointBindingModel(Graph):
             return
         self.data[name_prefix] = selex_experiment        
         self.add_invitro_layer(name_prefix, factor_name, seq_length)
-        self.named_losses[name_prefix + 'output'] = 'mse' #weighted_loss_generator(
-            #self.invitro_weight*weight, mse_skip_ambig)
+        self.named_losses[name_prefix + 'output'] = weighted_loss_generator(
+            self.invitro_weight*weight, mse_skip_ambig)
 
     def compile(self, *args, **kwargs):
         compile = functools.partial(
