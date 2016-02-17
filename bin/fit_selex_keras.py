@@ -25,7 +25,7 @@ from pyTFbindtools.DB import load_genome_metadata
 from pyTFbindtools.cross_validation import ClassificationResult
 
 from fit_selex import SelexDBConn, load_fastq, optional_gzip_open
-from pyDNAbinding.binding_model import ConvolutionalDNABindingModel
+from pyDNAbinding.binding_model import ConvolutionalDNABindingModel, EnergeticDNABindingModel
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 from pyDNAbinding.misc import calc_occ, R, T
 from pyDNAbinding.plot import plot_bases, pyplot
@@ -41,7 +41,7 @@ from keras.models import model_from_yaml
 
 from keras.models import Graph, Sequential
 from keras.optimizers import Adam, Adamax, RMSprop, SGD
-from keras.layers.core import Dense, Activation, Flatten, Merge, TimeDistributedDense, Reshape
+from keras.layers.core import Dense, Activation, Flatten, Merge, TimeDistributedDense, Reshape, MaxoutDense
 
 VERBOSE = False
 
@@ -309,6 +309,17 @@ class ConvolutionDNASequenceBinding(Layer):
         #return rv.dimshuffle((0,3,2,1))
         return rv # K.permute_dimensions(rv, (0,3,2,1))
 
+    def extract_binding_models(self):
+        mos = []
+        for i in xrange(self.nb_motifs):
+            ddg_array = self.W[0].get_value()[i,:,0,:]
+            ddg_array = np.vstack(
+                (np.zeros((1, ddg_array.shape[1])), ddg_array)).T
+            ref_energy = self.b[0].get_value()[0]
+            mos.append(EnergeticDNABindingModel(ref_energy, ddg_array))
+        return mos
+
+
 class ConvolutionBindingSubDomains(Layer):
     def __init__(
             self,
@@ -491,6 +502,58 @@ class TrackMax(Layer):
         rv = K.max(X, axis=3, keepdims=True)
         return rv
 
+class OccMaxPool(Layer):
+    def __init__(self, num_tracks, num_bases, **kwargs):
+        self.num_tracks = num_tracks
+        self.num_bases = num_bases
+        self.input = K.placeholder(ndim=4)        
+        super(OccMaxPool, self).__init__(**kwargs)
+
+    def get_config(self):
+        config = {'name': self.__class__.__name__}
+        base_config = super(OccMaxPool, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    @property
+    def output_shape(self):
+        #return self.input_shape
+        assert self.input_shape[2] == 1
+        num_output_tracks = (
+            1 if self.num_tracks == 'full' 
+            else self.input_shape[1]//self.num_tracks )
+        num_output_bases = (
+            1 if self.num_bases == 'full' 
+            else self.input_shape[3]//self.num_bases )
+        return (
+            self.input_shape[0],
+            num_output_tracks, # + (
+            #    1 if self.input_shape[1]%self.num_tracks > 0 else 0),
+            1,
+            num_output_bases# + (
+            #    1 if self.input_shape[3]%self.num_bases > 0 else 0)
+        )
+
+    def get_output(self, train=False):
+        print "OccMaxPool", self.output_shape
+        num_tracks = (
+            self.input_shape[1] if self.num_tracks == 'full' 
+            else self.num_tracks
+        )
+        num_bases = (
+            self.input_shape[3] if self.num_bases == 'full' 
+            else self.num_bases
+        )
+        X = self.get_input(train)
+        X = K.permute_dimensions(X, (0,2,1,3))
+        rv = K.pool2d(
+            X, 
+            pool_size=(num_tracks, num_bases), 
+            strides=(num_tracks, num_bases),
+            pool_mode='max'
+        )
+        return K.permute_dimensions(rv, (0,2,1,3))
+
+
 class LogAnyBoundOcc(Layer):
     def __init__(self, **kwargs):
         self.input = K.placeholder(ndim=4)        
@@ -515,10 +578,10 @@ class LogAnyBoundOcc(Layer):
         log_none_bnd = K.sum(
             K.log(1-K.clip(K.exp(X), 1e-6, 1-1e-6)), axis=3, keepdims=True)
         at_least_1_bnd = 1-K.exp(log_none_bnd)
-        rv = K.log(
-            # we take the weighted sum because the max is easier to fit, and 
-            # thus this helps to regularize the optimization procedure
-            0.05*K.max(K.exp(X), axis=-1, keepdims=True) + 0.95*at_least_1_bnd)
+        max_occ = K.max(K.exp(X), axis=3, keepdims=True)
+        # we take the weighted sum because the max is easier to fit, and 
+        # thus this helps to regularize the optimization procedure
+        rv = K.log(0.05*max_occ + 0.95*at_least_1_bnd)
         return rv
 
 def cast_if_1D(x):
@@ -558,7 +621,8 @@ def calc_val_results(model, batch_size):
                 # the prefix. Note that we also assume htat TFnames is 
                 # correctly set
                 name += "_%s" % model.data[
-                    key.replace('output', '')].factor_names[i]
+                    key.replace('chipseq_output', '').replace('output', '')
+                ].factor_names[i]
             val_results[name] = res
     return val_results
 
@@ -622,7 +686,7 @@ class JointBindingModel(Graph):
     def _init_shared_convolution_layer(self):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_binding_subdomain_convs = 2
+        self.num_tf_specific_invitro_binding_subdomain_convs = 1
         self.num_tf_specific_invivo_subdomain_convs = 0
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_binding_subdomain_convs
@@ -633,7 +697,7 @@ class JointBindingModel(Graph):
             + self.num_invivo_convs
         )
         
-        self.binding_subdomain_conv_size = 9
+        self.binding_subdomain_conv_size = 8
         self.stacked_subdomains_layer_shape = (
             self.num_affinity_outputs,
             3, 
@@ -773,31 +837,27 @@ class JointBindingModel(Graph):
             self, occupancies_input_name, name_prefix, output_dim):
         self.add_node(
             LogAnyBoundOcc(),
-            name=name_prefix+'max.1', 
-            input=name_prefix+'occupancies.1')
+            name=name_prefix+'csr.'+'max.1', 
+            input=occupancies_input_name)
         self.add_node(
-            Permute((1,2)),
-            name=name_prefix+'max.2', 
-            input=name_prefix+'max.1')
-        self.add_node(
-            MaxPooling2D(pool_size=(2*self.num_tf_specific_convs, 1)),
-            name=name_prefix+'max.3',
-            input=name_prefix+'max.2'
-        )
-        self.add_node(
-            Lambda(lambda x: K.exp(x)),
-            name=name_prefix+'max.4',
-            input=name_prefix+'max.3'
+            OccMaxPool(2*self.num_tf_specific_convs, 'full'),
+            name=name_prefix+'csr.'+'max.2',
+            input=name_prefix+'csr.'+'max.1'
         )
         self.add_node(
             Flatten(),
-            name=name_prefix+'max.5',
-            input=name_prefix+'max.4'
+            name=name_prefix+'csr.'+'max.3',
+            input=name_prefix+'csr.'+'max.2'
+        )
+        self.add_node(
+            Lambda(lambda x: K.exp(x)),
+            name=name_prefix+'csr.'+'max.4',
+            input=name_prefix+'csr.'+'max.3'
         )
         self.add_output(
-            name=name_prefix+'chipseq.output', 
-            input=name_prefix+'max.5')
-        self.named_losses[name_prefix + 'chipseq.output'] = weighted_loss_generator(
+            name=name_prefix+'chipseq_output', 
+            input=name_prefix+'csr.'+'max.4')
+        self.named_losses[name_prefix + 'chipseq_output'] = weighted_loss_generator(
             1.0, mse_skip_ambig) 
         return
     
@@ -806,23 +866,53 @@ class JointBindingModel(Graph):
         self.add_input(
             name=name_prefix+'fwd_seqs', 
             input_shape=(4, 1, seq_length))
-
         self.add_affinity_layers(
             input_name=name_prefix+'fwd_seqs', 
             output_name=name_prefix+'binding_affinities.1')
-        self.add_node(
-            ConvolutionBindingSubDomains(
-                nb_domains=self.num_affinity_outputs, 
-                domain_len=32,
-            ),
-            name=name_prefix + 'binding_affinities.2',
-            input=name_prefix+'binding_affinities.1'
-        )
+        #self.add_node(
+        #    ConvolutionBindingSubDomains(
+        #        nb_domains=self.num_affinity_outputs, 
+        #        domain_len=32,
+        #    ),
+        #    name=name_prefix + 'binding_affinities.2',
+        #    input=name_prefix+'binding_affinities.1'
+        #)
         self.add_occupancy_layers(
-            name_prefix + 'binding_affinities.2', 
-            name_prefix + 'occupancies.1')
+            input_name=name_prefix+'binding_affinities.1', 
+            output_name=name_prefix+'occupancies.1'
+        )
+
+        ###################################################################
         self.add_chipseq_regularization(
             name_prefix+'occupancies.1', name_prefix, output_dim)
+
+        ###################################################################
+        self.add_node(
+            OccMaxPool(1, 32), #961),
+            name=name_prefix +'max.3',
+            input=name_prefix +'occupancies.1'
+        )
+        self.add_node(
+            Lambda(lambda x: K.exp(x)),
+            name=name_prefix +'max.4',
+            input=name_prefix +'max.3'
+        )
+        self.add_node(
+            Flatten(),
+            name=name_prefix +'max.5',
+            input=name_prefix +'max.4'
+        )
+        self.add_node(
+            Dense(output_dim=output_dim),
+            name=name_prefix +'dense',
+            input=name_prefix +'max.5'
+        )
+        self.add_output(
+            name=name_prefix+'output', 
+            input=name_prefix +'dense')
+        self.named_losses[name_prefix + 'output'] = weighted_loss_generator(
+            1.0, mse_skip_ambig) 
+        
         return
     
     def add_chipseq_samples(self, pks_and_labels): 
@@ -1151,7 +1241,9 @@ class SamplePeaksAndLabels():
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             yield {'fwd_seqs': fwd_seqs[subset], 
                    'accessibility_data': accessibility_data[subset], 
-                   'output': labels[subset]}
+                   'chipseq_output': labels[subset],
+                   'output': labels[subset]
+            }
             i += 1
         
         return
@@ -1378,8 +1470,8 @@ def main():
     ]
     selex_experiments = SelexData(n_samples)
     #selex_experiments.add_all_selex_experiments()
-    #for factor_name in factor_names:
-    #    selex_experiments.add_all_selex_experiments_for_factor(factor_name)
+    for factor_name in factor_names:
+        selex_experiments.add_all_selex_experiments_for_factor(factor_name)
     #all_factor_names = list(set(
     #    list(all_sample_peaks_and_labels[0].factor_names) 
     #    + list(selex_experiments.factor_names)
@@ -1390,10 +1482,14 @@ def main():
     for sample_peaks_and_labels in all_sample_peaks_and_labels:
         model.add_chipseq_samples(sample_peaks_and_labels)
     model.add_selex_experiments(selex_experiments)
-
+    
     print "Compiling Model"
     model.compile()
-    model.fit(validation_split=0.1, batch_size=1000, nb_epoch=200)
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=30)
+
+    for i, mo in enumerate(
+            model.binding_subdomains_layer.extract_binding_models()):
+        mo.build_pwm_model(-6.0).plot("conv.%i.png" % i)
     return
 
     model = JointBindingModel(n_samples, factor_names)
