@@ -56,6 +56,10 @@ class NoBackgroundSequences(Exception):
 
 global_model_W = None
 
+def test_normalization():
+    occs = np.array([1.0,1.0,0.0,0.0,0.0])
+    pass
+
 def circular_crosscorelation(X, y):
     """ 
     Input:
@@ -104,9 +108,9 @@ def mse_skip_ambig(y_true, y_pred):
     #return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
     #return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
     #p_op = theano.printing.Print('non_ambig')
-
     non_ambig = (y_true > -0.5)
-    return K.mean(K.square(y_pred*non_ambig - y_true*non_ambig), axis=-1)
+    cnts = non_ambig.sum(axis=0, keepdims=True)
+    return K.mean(K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts, axis=-1) 
     #return rv*len(y_true)/K.sum(non_ambig)
 
 def weighted_loss_generator(weight, loss_fn):
@@ -398,9 +402,17 @@ class ConvolutionBindingSubDomains(Layer):
         return rv #K.permute_dimensions(rv, (0,3,2,1))
 
 class LogNormalizedOccupancy(Layer):
-    def __init__(self, init_chem_affinity=0.0, **kwargs):
+    def __init__(
+            self, 
+            init_chem_affinity=0.0, 
+            steric_hindrance_win_len=None, 
+            **kwargs):
         self.input = K.placeholder(ndim=4)
         self.init_chem_affinity = init_chem_affinity
+        self.steric_hindrance_win_len = (
+            0 if steric_hindrance_win_len is None 
+            else steric_hindrance_win_len
+        )
         super(LogNormalizedOccupancy, self).__init__(**kwargs)
 
     def get_config(self):
@@ -424,30 +436,36 @@ class LogNormalizedOccupancy(Layer):
                 2*self.input_shape[1],
                 # sequence length minus the motif length
                 1, #-self.domain_len+1,
-                self.input_shape[3])
+                self.input_shape[3] #-2*(self.steric_hindrance_win_len-1)
+        )
     
     def get_output(self, train=False):
         print "LogNormalizedOccupancy", self.output_shape
-
         X = self.get_input(train)
-        #rv = theano_logistic(-X, self.chem_affinity)
-        rv = theano_calc_log_occs(-X, self.chem_affinity) # TT.exp(
-        rv = K.concatenate([rv[:,:,0:1,:], rv[:,:,1:2,:]], axis=1)
-        return rv
-        return K.permute_dimensions(rv, (0,3,2,1))
-        #p_op = theano.printing.Print("="*40)
-        log_occs = TT.flatten(
-            theano_calc_log_occs(X, self.chem_affinity), outdim=2)
-        return K.exp(theano_calc_log_occs(X, self.chem_affinity))
-        scale_factor = K.max(log_occs, axis=1)
-        centered_log_occs = log_occs - K.reshape(scale_factor, (X.shape[0],1))
-        norm_occs = K.sum(K.exp(centered_log_occs), axis=1)
-        log_sum_log_occs = TT.reshape(K.log(norm_occs) + scale_factor, (X.shape[0],1))
-        return K.flatten(K.exp(log_sum_log_occs))
-        norm_log_occs = log_occs-log_sum_log_occs
-        norm_occs = K.exp(norm_log_occs)
-        return K.reshape(norm_occs, X.shape)
-        return K.max(norm_occs, axis=1) #K.reshape(norm_occs, X.shape)
+        # calculate the log occupancies
+        log_occs = theano_calc_log_occs(-X, self.chem_affinity)
+        # reshape the output so that the forward and reverse complement 
+        # occupancies are viewed as different tracks 
+        log_occs = K.reshape(log_occs, (X.shape[0], 1, 2*X.shape[1], X.shape[3]))
+        if self.steric_hindrance_win_len == 0:
+            log_norm_factor = 0
+        else:
+            # correct occupancies for overlapping binding sites
+            occs = K.exp(log_occs)
+            kernel = K.ones((1, 1, 1, 2*self.steric_hindrance_win_len-1), dtype='float32')
+            win_occ_sum = K.conv2d(occs, kernel, border_mode='same').sum(axis=2, keepdims=True)
+            win_prb_all_unbnd = TT.exp(
+                K.conv2d(K.log(1-occs), kernel, border_mode='same')).sum(axis=2, keepdims=True)
+            log_norm_factor = TT.log(win_occ_sum + win_prb_all_unbnd)
+        #start = max(0, self.steric_hindrance_win_len-1)
+        #stop = min(self.output_shape[3], 
+        #           self.output_shape[3]-(self.steric_hindrance_win_len-1))
+        #rv = log_occs[:,:,:,start:stop] - log_norm_factor
+        rv = log_occs - log_norm_factor
+        return K.reshape(
+            rv, 
+            (X.shape[0], 2*X.shape[1], 1, X.shape[3])
+        )
 
 class TrackMax(Layer):
     def __init__(self, **kwargs):
@@ -473,14 +491,14 @@ class TrackMax(Layer):
         rv = K.max(X, axis=3, keepdims=True)
         return rv
 
-class LogAnyBound(Layer):
+class LogAnyBoundOcc(Layer):
     def __init__(self, **kwargs):
         self.input = K.placeholder(ndim=4)        
-        super(LogAnyBound, self).__init__(**kwargs)
+        super(LogAnyBoundOcc, self).__init__(**kwargs)
 
     def get_config(self):
         config = {'name': self.__class__.__name__}
-        base_config = super(LogAnyBound, self).get_config()
+        base_config = super(LogAnyBoundOcc, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
     @property
@@ -492,7 +510,7 @@ class LogAnyBound(Layer):
                 1)
 
     def get_output(self, train=False):
-        print "LogAnyBound", self.output_shape
+        print "LogAnyBoundOcc", self.output_shape
         X = self.get_input(train)
         log_none_bnd = K.sum(
             K.log(1-K.clip(K.exp(X), 1e-6, 1-1e-6)), axis=3, keepdims=True)
@@ -727,31 +745,13 @@ class JointBindingModel(Graph):
             )
         return
     
-    def add_invivo_layer(self, name_prefix, seq_length, output_dim):
-        print "add_invivo_layer", name_prefix, seq_length, output_dim
-        self.add_input(
-            name=name_prefix+'fwd_seqs', 
-            input_shape=(4, 1, seq_length))
-
-        # this fixes an implementation bug in Keras. If this is not true,
-        # then the code runs much more slowly
-        self.add_affinity_layers(
-            input_name=name_prefix+'fwd_seqs', 
-            output_name=name_prefix+'binding_affinities.1')
-
+    
+    def add_occupancy_layers(self, input_name, output_name):
         self.add_node(
-            ConvolutionBindingSubDomains(
-                nb_domains=self.num_affinity_outputs, 
-                domain_len=32,
-            ),
-            name=name_prefix + 'binding_affinities.2',
-            input=name_prefix+'binding_affinities.1'
+            LogNormalizedOccupancy(-10.0, None),
+            name=output_name,
+            input=input_name
         )
-
-        self.add_node(
-            LogNormalizedOccupancy(-10.0),
-            name=name_prefix + 'occupancies.1',
-            input=name_prefix + 'binding_affinities.2')
 
         #self.add_input(
         #    name=name_prefix+'accessibility_data', 
@@ -765,8 +765,14 @@ class JointBindingModel(Graph):
         #        name_prefix+'accessibility_data'
         #    ]
         #)
+        # find the log any bound occupancy for every track
+        
+        return
+    
+    def add_chipseq_regularization(
+            self, occupancies_input_name, name_prefix, output_dim):
         self.add_node(
-            LogAnyBound(),
+            LogAnyBoundOcc(),
             name=name_prefix+'max.1', 
             input=name_prefix+'occupancies.1')
         self.add_node(
@@ -783,34 +789,41 @@ class JointBindingModel(Graph):
             name=name_prefix+'max.4',
             input=name_prefix+'max.3'
         )
-        #N X 1 X 1 X 200
-
         self.add_node(
             Flatten(),
             name=name_prefix+'max.5',
             input=name_prefix+'max.4'
         )
-        """
-
-        self.add_node(
-            Dense(64, activation='sigmoid'), # numOutputNodes
-            input=name_prefix+'occupancies.2',
-            name=name_prefix+'dense1'            
-        ) 
-        self.add_node(
-            Dropout(0.5),
-            name=name_prefix + 'dense2',
-            input=name_prefix + 'dense1')
-        """
-        #self.add_node(
-        #    Dense(output_dim, activation='hard_sigmoid'), # numOutputNodes
-        #    input=name_prefix+'max.5',
-        #    name=name_prefix+'dense'            
-        #)
-
         self.add_output(
-            name=name_prefix+'output', 
+            name=name_prefix+'chipseq.output', 
             input=name_prefix+'max.5')
+        self.named_losses[name_prefix + 'chipseq.output'] = weighted_loss_generator(
+            1.0, mse_skip_ambig) 
+        return
+    
+    def add_invivo_layer(self, name_prefix, seq_length, output_dim):
+        print "add_invivo_layer", name_prefix, seq_length, output_dim
+        self.add_input(
+            name=name_prefix+'fwd_seqs', 
+            input_shape=(4, 1, seq_length))
+
+        self.add_affinity_layers(
+            input_name=name_prefix+'fwd_seqs', 
+            output_name=name_prefix+'binding_affinities.1')
+        self.add_node(
+            ConvolutionBindingSubDomains(
+                nb_domains=self.num_affinity_outputs, 
+                domain_len=32,
+            ),
+            name=name_prefix + 'binding_affinities.2',
+            input=name_prefix+'binding_affinities.1'
+        )
+        self.add_occupancy_layers(
+            name_prefix + 'binding_affinities.2', 
+            name_prefix + 'occupancies.1')
+        self.add_chipseq_regularization(
+            name_prefix+'occupancies.1', name_prefix, output_dim)
+        return
     
     def add_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
@@ -820,25 +833,6 @@ class JointBindingModel(Graph):
             name_prefix, 
             pks_and_labels.fwd_seqs.shape[3], 
             pks_and_labels.labels.shape[1])
-        self.named_losses[name_prefix + 'output'] = weighted_loss_generator(
-            1.0, mse_skip_ambig) 
-
-        """
-        assert name_prefix+'one_hot_sequence' not in self.named_inputs
-        self.named_inputs[name_prefix+'one_hot_sequence'] = pks_and_labels.train_fwd_seqs
-        assert name_prefix + 'output' not in self.named_inputs
-        self.named_inputs[name_prefix + 'output'] = pks_and_labels.train_labels
-        num_zeros = (pks_and_labels.train_labels == 0.0).sum()
-        num_ones = (pks_and_labels.train_labels == 1.0).sum()
-        weights = np.zeros_like(pks_and_labels.train_labels)
-        weights[pks_and_labels.train_labels == 0.0] = (1 - num_zeros/float(num_ones + num_zeros))
-        weights[pks_and_labels.train_labels == 1.0] = (1 - num_ones/float(num_ones + num_zeros))
-        self.sample_weights[name_prefix + 'output'] = weights.ravel()
-
-        self.named_validation_inputs[
-            name_prefix+'one_hot_sequence'] = pks_and_labels.validation_fwd_seqs
-        self.named_validation_inputs[name_prefix+'output'] = pks_and_labels.validation_labels
-        """
         return
 
     def add_invitro_layer(self, name_prefix, factor_name, seq_length):
@@ -860,7 +854,7 @@ class JointBindingModel(Graph):
         #N X 1 X seq_len X 2*num_filters
 
         self.add_node(
-            LogAnyBound(),
+            LogAnyBoundOcc(),
             name=name_prefix + 'max.1',
             input=name_prefix + 'occupancies')
 
@@ -896,11 +890,16 @@ class JointBindingModel(Graph):
             self.invitro_weight*weight, mse_skip_ambig)
 
     def compile(self, *args, **kwargs):
+        #sample_weight_modes = {}
+        #for key in self.named_losses.keys():
+        #    if key.startswith('invivo'): 
+        #        sample_weight_modes[key] = None
+        
         compile = functools.partial(
             super(JointBindingModel, self).compile,
             loss=self.named_losses,
             optimizer=Adam(),
-            #sample_weight_modes=dict((key, None) for key in self.sample_weights)
+            #sample_weight_modes=sample_weight_modes
         )
         return compile(*args, **kwargs)
 
@@ -1360,15 +1359,17 @@ def fit_selex(n_samples):
 
 from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
-    n_samples = 50000 # 50000 # 300000
+    n_samples = 100000 #100000 # 50000 # 300000
     sample_ids = ['E123',] # 'E119']
     factor_names = [
-        'MAX', 'YY1', 'CTCF', 'BHLHE40', 'CEBPB', 'CUX1', 'ELF1', 'HNF4A', 
-        'HSF1', 'SP1', 'TCF3', 'GATA1', 'RELA', 'POLR2AphosphoS2', 'IRF1', 
-        'JUN', 'JUND', 'KAT2B', 'FOS', 'SPI1', 'USF2']
+        'BHLHE40',  'CEBPB', 'CTCF', 'ELF1',  'ELK1', 'ETS1', 'MAX', #'MAX', #'NANOG'# 'ESRRA', 
+        'POLR2AphosphoS2', 'SP1' #'HSF1', 'SP1', 'TCF3', 'GATA1', 'RELA', 'POLR2AphosphoS2', 'IRF1', 
+    ] 
+    #    'HSF1', 'SP1', 'TCF3', 'GATA1', 'RELA', 'POLR2AphosphoS2', 'IRF1', 
+    #    'JUN', 'JUND', 'KAT2B', 'FOS', 'SPI1', 'USF2']
     #factor_names = [
     #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
-    factor_names = ['CTCF',] #'YY1']
+    factor_names = ['CTCF', 'MAX'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
     #factor_names=None
     all_sample_peaks_and_labels = [
         SamplePeaksAndLabels(
@@ -1377,8 +1378,8 @@ def main():
     ]
     selex_experiments = SelexData(n_samples)
     #selex_experiments.add_all_selex_experiments()
-    for factor_name in factor_names:
-        selex_experiments.add_all_selex_experiments_for_factor(factor_name)
+    #for factor_name in factor_names:
+    #    selex_experiments.add_all_selex_experiments_for_factor(factor_name)
     #all_factor_names = list(set(
     #    list(all_sample_peaks_and_labels[0].factor_names) 
     #    + list(selex_experiments.factor_names)
@@ -1392,7 +1393,7 @@ def main():
 
     print "Compiling Model"
     model.compile()
-    model.fit(validation_split=0.1, batch_size=200, nb_epoch=200)
+    model.fit(validation_split=0.1, batch_size=1000, nb_epoch=200)
     return
 
     model = JointBindingModel(n_samples, factor_names)

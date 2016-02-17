@@ -46,7 +46,7 @@ class ClassificationResult(object):
                  is_cross_celltype=None, sample_type=None,
                  train_chromosomes=None, train_samples=None,
                  validation_chromosomes=None, validation_samples=None):
-        # filter out ambigfuous labels
+        # filter out ambiguous labels
         index = labels > -0.5
         predicted_labels = predicted_labels[index]
         predicted_prbs = predicted_prbs[index]
