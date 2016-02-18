@@ -150,7 +150,7 @@ class SelexDBConn(object):
         self.conn.commit()
         return
 
-    def get_fnames(self):
+    def get_primer_and_fnames(self):
         cur = self.conn.cursor()
         query = """
         SELECT rnd, primer, fname 
@@ -179,7 +179,10 @@ class SelexDBConn(object):
         else:
             bg_fname = res[0][0]
         
-        return fnames, bg_fname
+        return primer, fnames, bg_fname
+
+    def get_fnames(self):
+        return self.get_primer_and_fnames()[1:]
 
     def get_dna_and_prot_conc(self):
         cur = self.conn.cursor()

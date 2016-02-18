@@ -1,5 +1,6 @@
 import sys
 import hashlib
+import re
 
 import functools
 from collections import defaultdict
@@ -316,7 +317,7 @@ class ConvolutionDNASequenceBinding(Layer):
             ddg_array = np.vstack(
                 (np.zeros((1, ddg_array.shape[1])), ddg_array)).T
             ref_energy = self.b[0].get_value()[0]
-            mos.append(EnergeticDNABindingModel(ref_energy, ddg_array))
+            mos.append(EnergeticDNABindingModel(-ref_energy, -ddg_array))
         return mos
 
 
@@ -686,8 +687,8 @@ class JointBindingModel(Graph):
     def _init_shared_convolution_layer(self):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_binding_subdomain_convs = 1
-        self.num_tf_specific_invivo_subdomain_convs = 0
+        self.num_tf_specific_invitro_binding_subdomain_convs = 4
+        self.num_tf_specific_invivo_subdomain_convs = 4
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_binding_subdomain_convs
             + self.num_tf_specific_invivo_subdomain_convs
@@ -697,7 +698,7 @@ class JointBindingModel(Graph):
             + self.num_invivo_convs
         )
         
-        self.binding_subdomain_conv_size = 8
+        self.binding_subdomain_conv_size = 32
         self.stacked_subdomains_layer_shape = (
             self.num_affinity_outputs,
             3, 
@@ -1037,34 +1038,6 @@ class JointBindingModel(Graph):
         )
         return fit(*args, **kwargs)
 
-def get_coded_seqs_and_labels(unbnd_seqs, bnd_seqs):
-    num_seqs = min(len(unbnd_seqs), len(bnd_seqs))
-    unbnd_seqs = FixedLengthDNASequences(unbnd_seqs[:num_seqs], include_shape=False)
-    bnd_seqs = FixedLengthDNASequences(bnd_seqs[:num_seqs], include_shape=False)
-    
-    permutation = np.random.permutation(2*num_seqs)
-    fwd_one_hot_seqs = np.vstack(
-        (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs)
-    )[permutation,:,:]
-    fwd_one_hot_seqs = np.swapaxes(fwd_one_hot_seqs, 1, 2)[:,:,None,:]
-
-    if unbnd_seqs.fwd_shape_features is None:
-        shape_seqs = None
-    else:
-        fwd_shape_seqs = np.vstack(
-            (unbnd_seqs.fwd_shape_features, bnd_seqs.fwd_shape_features)
-        )[permutation,:,:]
-        rc_shape_seqs = np.vstack(
-            (unbnd_seqs.rc_shape_features, bnd_seqs.rc_shape_features)
-        )[permutation,:,:]
-        shape_seqs = np.concatenate((fwd_shape_seqs, rc_shape_seqs), axis=2)[:,None,:,:]
-
-    labels = np.hstack(
-        (np.zeros(len(unbnd_seqs), dtype='float32'), 
-         np.ones(len(bnd_seqs), dtype='float32'))
-    )[permutation]
-    return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
-
 class SamplePeaksAndLabels():
     def one_hot_code_peaks_sequence(self):
         cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(self.pks.view(np.uint8)).hexdigest()
@@ -1259,9 +1232,47 @@ class SelexExperiment():
     def seq_length(self):
         return self.fwd_seqs.shape[3]
 
-    def __init__(self, selex_exp_id, n_samples, validation_split=0.1):
+    def get_coded_seqs_and_labels(self, unbnd_seqs, bnd_seqs, primer):
+        left_flank, right_flank = re.split('[0-9]{1,4}N', primer)
+        left_flank = left_flank.rjust(self.seq_pad).replace(' ', 'N')
+        right_flank = right_flank.ljust(self.seq_pad).replace(' ', 'N')
+
+        num_seqs = min(len(unbnd_seqs), len(bnd_seqs))
+        unbnd_seqs = FixedLengthDNASequences(
+            [left_flank + x + right_flank for x in unbnd_seqs[:num_seqs]], 
+            include_shape=False)
+        bnd_seqs = FixedLengthDNASequences(
+            [left_flank + x + right_flank for x in bnd_seqs[:num_seqs]], 
+            include_shape=False)
+
+        permutation = np.random.permutation(2*num_seqs)
+        fwd_one_hot_seqs = np.vstack(
+            (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs)
+        )[permutation,:,:]
+        fwd_one_hot_seqs = np.swapaxes(fwd_one_hot_seqs, 1, 2)[:,:,None,:]
+
+        if unbnd_seqs.fwd_shape_features is None:
+            shape_seqs = None
+        else:
+            fwd_shape_seqs = np.vstack(
+                (unbnd_seqs.fwd_shape_features, bnd_seqs.fwd_shape_features)
+            )[permutation,:,:]
+            rc_shape_seqs = np.vstack(
+                (unbnd_seqs.rc_shape_features, bnd_seqs.rc_shape_features)
+            )[permutation,:,:]
+            shape_seqs = np.concatenate((fwd_shape_seqs, rc_shape_seqs), axis=2)[:,None,:,:]
+
+        labels = np.hstack(
+            (np.zeros(len(unbnd_seqs), dtype='float32'), 
+             np.ones(len(bnd_seqs), dtype='float32'))
+        )[permutation]
+        
+        return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
+
+    def __init__(self, selex_exp_id, n_samples, validation_split=0.1, seq_pad=40):
         self.selex_exp_id = selex_exp_id
         self.n_samples = n_samples
+        self.seq_pad = seq_pad
         self.validation_split = validation_split
         self._training_index = int(self.n_samples*self.validation_split)
 
@@ -1275,7 +1286,7 @@ class SelexExperiment():
         if VERBOSE:
             print "Loading sequences for %s-%s (exp ID %i)" % (
                 self.factor_name, self.factor_id, self.selex_exp_id)
-        fnames, bg_fname = selex_db_conn.get_fnames()
+        self.primer, fnames, bg_fname = selex_db_conn.get_primer_and_fnames()
         if bg_fname is None:
             raise NoBackgroundSequences(
                 "No background sequences for %s (%i)." % (
@@ -1294,8 +1305,9 @@ class SelexExperiment():
         if len(bnd_seqs) < self.n_samples/2:
             bnd_seqs = upsample(bnd_seqs, self.n_samples/2)
 
-        self.fwd_seqs, self.shape_seqs, self.labels = get_coded_seqs_and_labels(
-            unbnd_seqs, bnd_seqs)
+        (self.fwd_seqs, self.shape_seqs, self.labels 
+             ) = self.get_coded_seqs_and_labels(
+                 unbnd_seqs, bnd_seqs, self.primer)
 
         self.train_fwd_seqs = self.fwd_seqs[self._training_index:]
         self.train_labels = self.labels[self._training_index:]
@@ -1451,17 +1463,17 @@ def fit_selex(n_samples):
 
 from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
-    n_samples = 100000 #100000 # 50000 # 300000
+    n_samples = 50000 #100000 # 50000 # 300000
     sample_ids = ['E123',] # 'E119']
     factor_names = [
         'BHLHE40',  'CEBPB', 'CTCF', 'ELF1',  'ELK1', 'ETS1', 'MAX', #'MAX', #'NANOG'# 'ESRRA', 
-        'POLR2AphosphoS2', 'SP1' #'HSF1', 'SP1', 'TCF3', 'GATA1', 'RELA', 'POLR2AphosphoS2', 'IRF1', 
+        #'SP1', 'HSF1', 'TCF3', 'GATA1', 'RELA', 'IRF1', 
     ] 
     #    'HSF1', 'SP1', 'TCF3', 'GATA1', 'RELA', 'POLR2AphosphoS2', 'IRF1', 
     #    'JUN', 'JUND', 'KAT2B', 'FOS', 'SPI1', 'USF2']
     #factor_names = [
     #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
-    factor_names = ['CTCF', 'MAX'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
+    factor_names = ['ELK1', 'BHLHE40'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
     #factor_names=None
     all_sample_peaks_and_labels = [
         SamplePeaksAndLabels(
@@ -1485,7 +1497,7 @@ def main():
     
     print "Compiling Model"
     model.compile()
-    model.fit(validation_split=0.1, batch_size=100, nb_epoch=30)
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=300)
 
     for i, mo in enumerate(
             model.binding_subdomains_layer.extract_binding_models()):
