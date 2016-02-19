@@ -14,6 +14,7 @@ Region = namedtuple('Region', ['chrom', 'start', 'stop'])
 import cPickle as pickle
 
 import numpy as np
+from scipy.stats import itemfreq
 
 from pysam import FastaFile
 
@@ -26,64 +27,22 @@ from pyTFbindtools.DB import load_genome_metadata
 from pyTFbindtools.cross_validation import ClassificationResult
 
 from fit_selex import SelexDBConn, load_fastq, optional_gzip_open
-from pyDNAbinding.binding_model import ConvolutionalDNABindingModel, EnergeticDNABindingModel
-from pyDNAbinding.binding_model import FixedLengthDNASequences
-from pyDNAbinding.misc import calc_occ, R, T
+from pyDNAbinding.binding_model import (
+    FixedLengthDNASequences, 
+    ConvolutionalDNABindingModel, 
+    EnergeticDNABindingModel
+)
 from pyDNAbinding.plot import plot_bases, pyplot
 from pyDNAbinding.sequence import one_hot_encode_sequence
-
-import keras.callbacks
-
-from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.layers.core import Lambda, Layer, Dropout, Permute
-from keras import initializations
-from keras import backend as K
-from keras.models import model_from_yaml
-
-from keras.models import Graph, Sequential
-from keras.optimizers import Adam, Adamax, RMSprop, SGD
-from keras.layers.core import Dense, Activation, Flatten, Merge, TimeDistributedDense, Reshape, MaxoutDense
+from pyDNAbinding.keraslib import *
 
 VERBOSE = False
-
-import theano
-import theano.tensor as TT
 
 class SeqsTooShort(Exception):
     pass
 
 class NoBackgroundSequences(Exception):
     pass
-
-global_model_W = None
-
-def test_normalization():
-    occs = np.array([1.0,1.0,0.0,0.0,0.0])
-    pass
-
-def circular_crosscorelation(X, y):
-    """ 
-    Input:
-        symbols for X [n, m]
-        and y[m,]
-
-    Returns: 
-        symbol for circular cross corelation of each of row in X with 
-        cc[n, m]
-    """
-    n, m = X.shape
-    corr_expr = T.signal.conv.conv2d(
-        X, y[::-1].reshape((1, -1)), image_shape=(1, m), border_mode='full')
-    corr_len = corr_expr.shape[1]
-    pad = m - corr_len%m
-    v_padded = T.concatenate([corr_expr, T.zeros((n, pad))], axis=1)
-    circ_corr_exp = T.sum(v_padded.reshape((n, v_padded.shape[1] / m, m)), axis=1)
-    return circ_corr_exp[:, ::-1]
-
-def test_loss(y_true, y_pred):
-    mse = K.mean(K.square(y_true - y_pred))
-    penalty = circular_crosscorelation(global_model_W, global_model_W)
-    return mse + penalty
 
 def expected_F1_loss(y_true, y_pred, beta=0.1):
     min_label = TT.min(y_true)
@@ -103,50 +62,14 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
     return rv
 
 def mse_skip_ambig(y_true, y_pred):
-    #clipped_pred = K.clip(y_pred, 0.01, 0.99)
-    #loss = K.sum(y_true*K.log(clipped_pred))/K.sum(y_true)
-    #return loss
-    #return K.mean((1-y_true)*y_pred) - K.mean(y_true*y_pred)
-    #return K.mean(K.square(y_pred*(y_true > -0.5) - y_true*(y_true > -0.5)), axis=-1)
-    #p_op = theano.printing.Print('non_ambig')
     non_ambig = (y_true > -0.5)
     cnts = non_ambig.sum(axis=0, keepdims=True)
     return K.mean(K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts, axis=-1) 
-    #return rv*len(y_true)/K.sum(non_ambig)
 
 def weighted_loss_generator(weight, loss_fn):
     def f(y_true, y_pred):
         return weight*loss_fn(y_true, y_pred)
     return f
-
-def weighted_mse(y_true, y_pred):
-    return K.mean(K.square(y_pred - y_true), axis=-1)
-
-def softmax(x, axis):
-    scale_factor = x.max(axis=axis, keepdims=True)
-    e_x = TT.exp(x - scale_factor)
-    weights = e_x/e_x.sum(axis=axis, keepdims=True)
-    return (x*weights).sum(axis)
-
-def theano_calc_log_occs(affinities, chem_pot):
-    inner = (-chem_pot+affinities)/(R*T)
-    lower = TT.switch(inner<-10, TT.exp(inner), 0)
-    mid = TT.switch((inner >= -10)&(inner <= 35), 
-                    TT.log(1.0 + TT.exp(inner)),
-                    0 )
-    upper = TT.switch(inner>35, inner, 0)
-    return -(lower + mid + upper)
-
-def theano_logistic(affinities, chem_pot):
-    return 1/(1+TT.exp(affinities + chem_pot))
-
-def theano_log_sum_log_occs(log_occs):
-    # theano.printing.Print('scale_factor')
-    scale_factor = (
-        TT.max(log_occs, axis=1, keepdims=True))
-    centered_log_occs = (log_occs - scale_factor)
-    centered_rv = TT.log(TT.sum(TT.exp(centered_log_occs), axis=1))
-    return centered_rv + scale_factor.flatten()
 
 class ConvolutionDNAShapeBinding(Layer):
     def __init__(
@@ -199,396 +122,6 @@ class ConvolutionDNAShapeBinding(Layer):
                 + K.reshape(self.b, (1, self.nb_motifs, 1, 1))
         return K.concatenate((fwd_rv, rc_rv), axis=3)
         #return rc_rv
-
-
-class ConvolutionDNASequenceBinding(Layer):
-    def __init__(
-            self,
-            nb_motifs,
-            motif_len, 
-            use_three_base_encoding=True,
-            init='glorot_uniform', 
-            **kwargs):
-        self.nb_motifs = nb_motifs
-        self.motif_len = motif_len
-        self.input = K.placeholder(ndim=4)
-        self.use_three_base_encoding = use_three_base_encoding
-        self.kwargs = kwargs
-        
-        self.W = None
-        self.b = None
-        
-        if isinstance(init, ConvolutionalDNABindingModel):
-            self.init = lambda x: (
-                K.variable(-init.ddg_array[None,None,:,:]), 
-                K.variable(np.array([-init.ref_energy,])[:,None]) 
-            )
-        else:
-            self.init = lambda x: (
-                initializations.get(init)(x), 
-                K.zeros((self.nb_motifs,)) 
-            )
-        super(ConvolutionDNASequenceBinding, self).__init__(**kwargs)
-
-    def get_config(self):
-        config = {'name': self.__class__.__name__,
-                  'nb_motifs': self.nb_motifs,
-                  'motif_len': self.motif_len, 
-                  'use_three_base_encoding': self.use_three_base_encoding,
-                  'init': self.init.__name__}
-        base_config = super(ConvolutionDNASequenceBinding, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    def create_clone(self):
-        """
-        
-        """
-        rv = type(self)(
-            self.nb_motifs, 
-            self.motif_len, 
-            self.use_three_base_encoding, 
-            self.init,
-            **self.kwargs)
-        rv.W = self.W
-        rv.b = self.b
-        rv.W_shape = self.W_shape
-        return rv
-
-    def init_filters(self):
-        if self.use_three_base_encoding:
-            self.W_shape = (
-                self.nb_motifs, 3, 1, self.motif_len)
-        else:
-            self.W_shape = (
-                self.nb_motifs, 4, 1, self.motif_len)
-        self.W, self.b = self.init(self.W_shape)
-        return
-
-    def build(self):
-        #print "Small Domains W SHAPE:", self.W_shape
-        assert self.input_shape[1]==4, "Expecting one-hot-encoded DNA sequence."
-        if self.W is None:
-            assert self.b is None
-            self.init_filters()
-        self.params = [self.W[0], self.b[0]]
-    
-    @property
-    def output_shape(self):
-        return (# number of obseravations
-                self.input_shape[0],
-                self.nb_motifs,
-                2,
-                # sequence length minus the motif length
-                self.input_shape[3]-self.motif_len+1,
-                )
-    
-    def get_output(self, train=False):
-        print "Input Shape", self.input_shape
-        print "ConvolutionDNASequenceBinding", self.output_shape
-        X = self.get_input(train)
-        if self.use_three_base_encoding:
-            X_fwd = X[:,1:,:,:]
-            X_rc = X[:,:3,:,:]
-        else:
-            X_fwd = X
-            X_rc = X
-
-        if self.W[1] is not None:
-            W = self.W[0][self.W[1],:,:,:]
-        else:
-            W = self.W[0]
-        if self.b[1] is not None:
-            b = self.b[0][self.b[1]]
-        else:
-            b = self.b[0]
-        
-        fwd_rv = K.conv2d(X_fwd, W, border_mode='valid') \
-                 + K.reshape(b, (1, self.nb_motifs, 1, 1))
-        rc_rv = K.conv2d(X_rc, W[:,::-1,:,::-1], border_mode='valid') \
-                + K.reshape(b, (1, self.nb_motifs, 1, 1))
-        rv = K.concatenate((fwd_rv, rc_rv), axis=2)            
-        #return rv.dimshuffle((0,3,2,1))
-        return rv # K.permute_dimensions(rv, (0,3,2,1))
-
-    def extract_binding_models(self):
-        mos = []
-        for i in xrange(self.nb_motifs):
-            ddg_array = self.W[0].get_value()[i,:,0,:]
-            ddg_array = np.vstack(
-                (np.zeros((1, ddg_array.shape[1])), ddg_array)).T
-            ref_energy = self.b[0].get_value()[0]
-            mos.append(EnergeticDNABindingModel(-ref_energy, -ddg_array))
-        return mos
-
-
-class ConvolutionBindingSubDomains(Layer):
-    def __init__(
-            self,
-            nb_domains, 
-            domain_len, 
-            init='glorot_uniform', 
-            **kwargs):
-        self.nb_domains = nb_domains
-        self.domain_len = domain_len
-
-        self.input = K.placeholder(ndim=4)
-        
-        self.init = lambda x: (
-            (initializations.get(init)(x), None),
-            (K.zeros((self.nb_domains,)), None) 
-        )
-        self.kwargs = kwargs
-        
-        self.W_shape = None
-        self.W = None
-        self.b = None
-        
-        super(ConvolutionBindingSubDomains, self).__init__(**kwargs)
-
-    def get_config(self):
-        config = {'name': self.__class__.__name__,
-                  'nb_domains': self.nb_domains,
-                  'domain_len': self.domain_len, 
-                  'init': self.init.__name__}
-        base_config = super(ConvolutionBindingSubDomains, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    def create_clone(self):
-        """
-        
-        """
-        rv = type(self)(
-            self.nb_domains, 
-            self.domain_len, 
-            self.init,
-            **self.kwargs)
-        rv.W = self.W
-        rv.b = self.b
-        rv.W_shape = self.W_shape
-        return rv
-
-    def init_filters(self, num_input_filters):
-        self.W_shape = (
-            self.nb_domains, num_input_filters, 1, self.domain_len)
-        self.W, self.b = self.init(self.W_shape)
-        return
-
-    def build(self):
-        # make sure the last input dimension has dimension exactly 2, for the 
-        # fwd and rc sequence
-        assert self.input_shape[2] == 2
-        if self.W is None:
-            assert self.b is None
-            self.init_filters(self.input_shape[1])
-        print "Subdomains Filter Shape:", self.W_shape
-        #assert self.input_shape[3] == self.W_shape[3]
-        self.params = [self.W[0], self.b[0]]
-    
-    @property
-    def output_shape(self):
-        return (# number of obseravations
-                self.input_shape[0], 
-                self.nb_domains,
-                # sequence length minus the motif length
-                2,
-                self.input_shape[3]-self.domain_len+1)
-    
-    def get_output(self, train=False):
-        print "ConvolutionBindingSubDomains", self.output_shape
-        X = self.get_input(train)
-        if self.W[1] is not None:
-            W = self.W[0][self.W[1],:,:,:]
-        else:
-            W = self.W[0]
-        if self.b[1] is not None:
-            b = self.b[0][self.b[1]]
-        else:
-            b = self.b[0]
-        fwd_rv = K.conv2d(X[:,:,0:1,:], W, border_mode='valid')  \
-                 + K.reshape(b, (1, self.nb_domains, 1, 1))
-        # # [:,:,::-1,::-1]
-        rc_rv = K.conv2d(X[:,:,1:2,:], W[:,:,:,::-1], border_mode='valid') \
-                + K.reshape(b, (1, self.nb_domains, 1, 1))
-        rv = K.concatenate((fwd_rv, rc_rv), axis=2)
-        #return rv.dimshuffle((0,3,2,1))
-        return rv #K.permute_dimensions(rv, (0,3,2,1))
-
-class LogNormalizedOccupancy(Layer):
-    def __init__(
-            self, 
-            init_chem_affinity=0.0, 
-            steric_hindrance_win_len=None, 
-            **kwargs):
-        self.input = K.placeholder(ndim=4)
-        self.init_chem_affinity = init_chem_affinity
-        self.steric_hindrance_win_len = (
-            0 if steric_hindrance_win_len is None 
-            else steric_hindrance_win_len
-        )
-        super(LogNormalizedOccupancy, self).__init__(**kwargs)
-
-    def get_config(self):
-        config = {'name': self.__class__.__name__}
-        base_config = super(LogNormalizedOccupancy, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-        
-    def build(self):
-        # make sure the last input dimension has dimension exactly 2, for the 
-        # fwd and rc sequence
-        #assert self.input_shape[3] == 2
-        self.chem_affinity = K.variable(self.init_chem_affinity)
-        self.params = [self.chem_affinity]
-    
-    @property
-    def output_shape(self):
-        #return self.input_shape
-        assert self.input_shape[2] == 2
-        return (# number of obseravations
-                self.input_shape[0], 
-                2*self.input_shape[1],
-                # sequence length minus the motif length
-                1, #-self.domain_len+1,
-                self.input_shape[3] #-2*(self.steric_hindrance_win_len-1)
-        )
-    
-    def get_output(self, train=False):
-        print "LogNormalizedOccupancy", self.output_shape
-        X = self.get_input(train)
-        # calculate the log occupancies
-        log_occs = theano_calc_log_occs(-X, self.chem_affinity)
-        # reshape the output so that the forward and reverse complement 
-        # occupancies are viewed as different tracks 
-        log_occs = K.reshape(log_occs, (X.shape[0], 1, 2*X.shape[1], X.shape[3]))
-        if self.steric_hindrance_win_len == 0:
-            log_norm_factor = 0
-        else:
-            # correct occupancies for overlapping binding sites
-            occs = K.exp(log_occs)
-            kernel = K.ones((1, 1, 1, 2*self.steric_hindrance_win_len-1), dtype='float32')
-            win_occ_sum = K.conv2d(occs, kernel, border_mode='same').sum(axis=2, keepdims=True)
-            win_prb_all_unbnd = TT.exp(
-                K.conv2d(K.log(1-occs), kernel, border_mode='same')).sum(axis=2, keepdims=True)
-            log_norm_factor = TT.log(win_occ_sum + win_prb_all_unbnd)
-        #start = max(0, self.steric_hindrance_win_len-1)
-        #stop = min(self.output_shape[3], 
-        #           self.output_shape[3]-(self.steric_hindrance_win_len-1))
-        #rv = log_occs[:,:,:,start:stop] - log_norm_factor
-        rv = log_occs - log_norm_factor
-        return K.reshape(
-            rv, 
-            (X.shape[0], 2*X.shape[1], 1, X.shape[3])
-        )
-
-class TrackMax(Layer):
-    def __init__(self, **kwargs):
-        self.input = K.placeholder(ndim=4)        
-        super(TrackMax, self).__init__(**kwargs)
-
-    def get_config(self):
-        config = {'name': self.__class__.__name__}
-        base_config = super(TrackMax, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    @property
-    def output_shape(self):
-        #return self.input_shape
-        return (self.input_shape[0],
-                self.input_shape[1],
-                self.input_shape[2],
-                1)
-
-    def get_output(self, train=False):
-        print "TrackMax", self.output_shape
-        X = self.get_input(train)
-        rv = K.max(X, axis=3, keepdims=True)
-        return rv
-
-class OccMaxPool(Layer):
-    def __init__(self, num_tracks, num_bases, **kwargs):
-        self.num_tracks = num_tracks
-        self.num_bases = num_bases
-        self.input = K.placeholder(ndim=4)        
-        super(OccMaxPool, self).__init__(**kwargs)
-
-    def get_config(self):
-        config = {'name': self.__class__.__name__}
-        base_config = super(OccMaxPool, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    @property
-    def output_shape(self):
-        #return self.input_shape
-        assert self.input_shape[2] == 1
-        num_output_tracks = (
-            1 if self.num_tracks == 'full' 
-            else self.input_shape[1]//self.num_tracks )
-        num_output_bases = (
-            1 if self.num_bases == 'full' 
-            else self.input_shape[3]//self.num_bases )
-        return (
-            self.input_shape[0],
-            num_output_tracks, # + (
-            #    1 if self.input_shape[1]%self.num_tracks > 0 else 0),
-            1,
-            num_output_bases# + (
-            #    1 if self.input_shape[3]%self.num_bases > 0 else 0)
-        )
-
-    def get_output(self, train=False):
-        print "OccMaxPool", self.output_shape
-        num_tracks = (
-            self.input_shape[1] if self.num_tracks == 'full' 
-            else self.num_tracks
-        )
-        num_bases = (
-            self.input_shape[3] if self.num_bases == 'full' 
-            else self.num_bases
-        )
-        X = self.get_input(train)
-        X = K.permute_dimensions(X, (0,2,1,3))
-        rv = K.pool2d(
-            X, 
-            pool_size=(num_tracks, num_bases), 
-            strides=(num_tracks, num_bases),
-            pool_mode='max'
-        )
-        return K.permute_dimensions(rv, (0,2,1,3))
-
-
-class LogAnyBoundOcc(Layer):
-    def __init__(self, **kwargs):
-        self.input = K.placeholder(ndim=4)        
-        super(LogAnyBoundOcc, self).__init__(**kwargs)
-
-    def get_config(self):
-        config = {'name': self.__class__.__name__}
-        base_config = super(LogAnyBoundOcc, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-    @property
-    def output_shape(self):
-        #return self.input_shape
-        return (self.input_shape[0],
-                self.input_shape[1],
-                self.input_shape[2],
-                1)
-
-    def get_output(self, train=False):
-        print "LogAnyBoundOcc", self.output_shape
-        X = self.get_input(train)
-        log_none_bnd = K.sum(
-            K.log(1-K.clip(K.exp(X), 1e-6, 1-1e-6)), axis=3, keepdims=True)
-        at_least_1_bnd = 1-K.exp(log_none_bnd)
-        max_occ = K.max(K.exp(X), axis=3, keepdims=True)
-        # we take the weighted sum because the max is easier to fit, and 
-        # thus this helps to regularize the optimization procedure
-        rv = K.log(0.05*max_occ + 0.95*at_least_1_bnd)
-        return rv
-
-def cast_if_1D(x):
-    if len(x.shape) == 1:
-        return x[:,None]
-    return x
 
 def calc_val_results(model, batch_size):
     data_iterator = model.iter_validation_data(
@@ -687,8 +220,8 @@ class JointBindingModel(Graph):
     def _init_shared_convolution_layer(self):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_binding_subdomain_convs = 4
-        self.num_tf_specific_invivo_subdomain_convs = 4
+        self.num_tf_specific_invitro_binding_subdomain_convs = 1
+        self.num_tf_specific_invivo_subdomain_convs = 0
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_binding_subdomain_convs
             + self.num_tf_specific_invivo_subdomain_convs
@@ -888,31 +421,45 @@ class JointBindingModel(Graph):
             name_prefix+'occupancies.1', name_prefix, output_dim)
 
         ###################################################################
-        self.add_node(
-            OccMaxPool(1, 32), #961),
-            name=name_prefix +'max.3',
-            input=name_prefix +'occupancies.1'
-        )
-        self.add_node(
-            Lambda(lambda x: K.exp(x)),
-            name=name_prefix +'max.4',
-            input=name_prefix +'max.3'
-        )
-        self.add_node(
-            Flatten(),
-            name=name_prefix +'max.5',
-            input=name_prefix +'max.4'
-        )
-        self.add_node(
-            Dense(output_dim=output_dim),
-            name=name_prefix +'dense',
-            input=name_prefix +'max.5'
-        )
-        self.add_output(
-            name=name_prefix+'output', 
-            input=name_prefix +'dense')
-        self.named_losses[name_prefix + 'output'] = weighted_loss_generator(
-            1.0, mse_skip_ambig) 
+        if True:
+            #self.add_node(
+            #    OccMaxPool(1, 8), #961),
+            #    name=name_prefix +'max.1',
+            #    input=name_prefix +'occupancies.1'
+            #)
+            #self.add_node(
+            #    ConvolutionCoOccupancy(
+            #        2, 1
+            #        self.num_affinity_outputs, 32
+            #    ),
+            #    name=name_prefix + 'max.2',
+            #    input=name_prefix+'occupancies.1'
+            #)
+            self.add_node(
+                OccMaxPool(1, 64), #961),
+                name=name_prefix +'max.4',
+                input=name_prefix +'occupancies.1'
+            )
+            self.add_node(
+                Lambda(lambda x: K.exp(x)),
+                name=name_prefix +'max.8',
+                input=name_prefix +'max.4'
+            )
+            self.add_node(
+                Flatten(),
+                name=name_prefix +'max.9',
+                input=name_prefix +'max.8'
+            )
+            self.add_node(
+                Dense(output_dim=output_dim),
+                name=name_prefix +'dense',
+                input=name_prefix +'max.9'
+            )
+            self.add_output(
+                name=name_prefix+'output', 
+                input=name_prefix +'dense')
+            self.named_losses[name_prefix + 'output'] = weighted_loss_generator(
+                1.0, mse_skip_ambig) 
         
         return
     
@@ -994,24 +541,32 @@ class JointBindingModel(Graph):
         )
         return compile(*args, **kwargs)
 
-    def iter_batches(self, batch_size, data_subset, repeat_forever):
+    def iter_batches(
+            self, batch_size, data_subset, repeat_forever, oversample=True):
         assert data_subset in ('train', 'validation')
         # initialize the set of iterators
         iterators = {}
         for key, data in self.data.iteritems():
             iterators[key] = data.iter_batches(
                 batch_size, data_subset, repeat_forever)
-        
+
+        # decide how much to oversample
+        if oversample is True and data_subset == 'train':
+            num_oversamples = 5
+        else:
+            num_oversamples = 1
+
         def iter_data():
             while True:
-                output = {}
+                merged_output = {}
                 for name_prefix, iterator in iterators.iteritems():
                     data_dict = next(iterator)
                     for key, data in data_dict.iteritems():
-                        output[name_prefix + key] = data
-                yield output
+                        assert name_prefix + key not in merged_output
+                        merged_output[name_prefix + key] = data
+                yield merged_output
         
-        return iter_data()
+        return iter_weighted_batch_samples(self, iter_data(), num_oversamples)
     
     def iter_train_data(self, batch_size, repeat_forever=False):
         return self.iter_batches(batch_size, 'train', repeat_forever)
@@ -1034,7 +589,7 @@ class JointBindingModel(Graph):
             samples_per_epoch=int(self.num_samples*(1-self.validation_split)),
             nb_epoch=nb_epoch,
             verbose=1,
-            callbacks=[monitor_accuracy_cb, early_stop],
+            callbacks=[monitor_accuracy_cb,], # early_stop],
         )
         return fit(*args, **kwargs)
 
@@ -1209,13 +764,17 @@ class SamplePeaksAndLabels():
         n = fwd_seqs.shape[0]//batch_size
         if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
            % (fwd_seqs.shape[0], batch_size)
+        permutation = None
         while repeat_forever is True or i < n:
+            if i%n == 0:
+                permutation = np.random.permutation(labels.shape[0])
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
-            yield {'fwd_seqs': fwd_seqs[subset], 
-                   'accessibility_data': accessibility_data[subset], 
-                   'chipseq_output': labels[subset],
-                   'output': labels[subset]
+            indices = permutation[subset]
+            yield {'fwd_seqs': fwd_seqs[indices], 
+                   'accessibility_data': accessibility_data[indices], 
+                   'chipseq_output': labels[indices],
+                   'output': labels[indices]
             }
             i += 1
         
@@ -1334,7 +893,7 @@ class SelexExperiment():
         while repeat_forever is True or i < n:
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
-            yield {'fwd_seqs': fwd_seqs[subset], 'output': labels[subset]}
+            yield {'fwd_seqs': fwd_seqs[subset], 'output': labels[subset,None]}
             i += 1
         
         return
@@ -1473,7 +1032,8 @@ def main():
     #    'JUN', 'JUND', 'KAT2B', 'FOS', 'SPI1', 'USF2']
     #factor_names = [
     #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
-    factor_names = ['ELK1', 'BHLHE40'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
+    factor_names = ['ELK1', 'BHLHE40', 'CTCF', 'MAX'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
+    factor_names = ['CTCF',] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
     #factor_names=None
     all_sample_peaks_and_labels = [
         SamplePeaksAndLabels(
@@ -1497,7 +1057,7 @@ def main():
     
     print "Compiling Model"
     model.compile()
-    model.fit(validation_split=0.1, batch_size=100, nb_epoch=300)
+    model.fit(validation_split=0.1, batch_size=100, nb_epoch=50)
 
     for i, mo in enumerate(
             model.binding_subdomains_layer.extract_binding_models()):
