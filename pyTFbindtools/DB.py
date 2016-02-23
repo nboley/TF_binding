@@ -1,106 +1,15 @@
 import os
 
 from collections import defaultdict, namedtuple
+from itertools import chain
+#from ENCODE_ChIPseq_tools import find_target_info
+#    find_ENCODE_DCC_peaks, find_target_info )
 
 ################################################################################
 #
 # Insert ENCODE meta-data into the local database
 #
 ################################################################################
-
-def find_or_insert_experiment_from_called_peaks(called_peaks):
-    cur = conn.cursor()
-
-    # first check to see if the experiment is already in the DB. If
-    # so, we are done
-    encode_exp_ids = set(
-        called_peak.exp_id for called_peak in called_peaks)
-    assert len(encode_exp_ids) == 1, str(encode_exp_ids)
-    encode_exp_id = encode_exp_ids.pop()
-    query = """
-    SELECT encode_experiment_id 
-      FROM encode_chipseq_experiments 
-     WHERE encode_experiment_id = %s;
-    """
-    cur.execute(query, [encode_exp_id,])
-    # if the experiment is already there, we are done
-    if len(cur.fetchall()) == 1:
-        return
-    # otherwise, insert everything
-    encode_target_ids = set(
-        called_peak.target_id for called_peak in called_peaks)
-    assert len(encode_target_ids) == 1
-    encode_target_id = encode_target_ids.pop()
-    
-    # find our associated target id 
-    query = """
-    SELECT chipseq_target_id 
-      FROM chipseq_targets 
-     WHERE encode_target_id = %s
-    """
-    cur.execute(query, [encode_target_id,])
-    res = cur.fetchall()
-    
-    # if we can't find a matching tf id, insert it
-    if len(res) == 0:
-        target_info = find_target_info(encode_target_id)
-        query = "INSERT INTO chipseq_targets (encode_target_id, tf_id, organism, tf_name, uniprot_ids, ensemble_gene_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING chipseq_target_id"
-        cur.execute(query, [encode_target_id, 
-                            target_info.cisbp_id, 
-                            target_info.organism,
-                            target_info.tf_name,
-                            target_info.uniprot_ids, 
-                            target_info.ensemble_ids])
-        res = cur.fetchall()
-    assert len(res) == 1
-    target_id = res[0][0]
-
-    sample_types = set(
-        called_peak.sample_type for called_peak in called_peaks)
-    assert len(sample_types) == 1
-    sample_type = sample_types.pop()
-    # add the experiment data
-    query = "INSERT INTO encode_chipseq_experiments " \
-          + "(encode_experiment_id, target, sample_type) " \
-          + "VALUES (%s, %s, %s)"
-    cur.execute(query, [
-        encode_exp_id, target_id, sample_type])
-    return
-
-def insert_chipseq_experiment_into_db(exp_id):
-    """Download and insert ENCODE experiment metadata.
-    """
-    if encode_exp_is_in_db(exp_id):
-        return
-    
-    called_peaks = list(find_called_peaks(exp_id, only_merged=False))
-    if len(called_peaks) == 0: return
-    
-    # insert the experiment and target into the DB if necessary
-    num_inserted = find_or_insert_experiment_from_called_peaks(called_peaks)
-    cur = conn.cursor()
-    for called_peak in called_peaks:
-        # add the peak data
-        query = """
-        INSERT INTO encode_chipseq_peak_files
-        (encode_experiment_id, bsid, rep_key, 
-         file_format, file_format_type, file_output_type, remote_filename)
-        VALUES 
-        (%s, %s, %s, %s, %s, %s, %s)
-        """
-        try: 
-            cur.execute(query, [
-                called_peak.exp_id, called_peak.bsid, called_peak.rep_key,
-                called_peak.file_format,
-                called_peak.file_format_type,
-                called_peak.output_type,
-                called_peak.file_loc])
-        except psycopg2.IntegrityError:
-            print( "ERROR" )
-            raise
-            pass
-    conn.commit()
-    return
 
 def build_local_ENCODE_peak_fname(peak_id):
     from ENCODE_ChIPseq_tools import chipseq_peaks_base_dir
@@ -202,7 +111,7 @@ def sync_roadmap_DNASE_peak_files():
 # Get data from the local database
 #
 ################################################################################
-Genome = namedtuple('Genome', ['name', 'revision', 'species', 'filename'])
+Genome = namedtuple('Genome', ['id', 'name', 'revision', 'species', 'filename'])
 def load_genome_metadata(annotation_id):
     cur = conn.cursor()
     query = """
@@ -217,7 +126,24 @@ def load_genome_metadata(annotation_id):
             "No genome exists in the DB with annotation_id '%i' " \
                 % annotation_id
     assert len(res) == 1
-    return Genome(*(res[0]))
+    return Genome(*([annotation_id,] + list(res[0])))
+
+def load_genome_metadata_from_name(genome_name):
+    cur = conn.cursor()
+    query = """
+    SELECT annotation_id 
+      FROM genomes 
+     WHERE name=%s;
+    """
+    cur.execute(query, [genome_name,])
+    res = cur.fetchall()
+    if len(res) == 0: 
+        raise ValueError, \
+            "No genome exists in the DB with name '%s' " \
+                % genome_name
+    assert len(res) == 1
+    return load_genome_metadata(res[0][0])
+
 
 def find_cisbp_tfids(species, tf_name, uniprot_ids, ensemble_ids):
     cur = conn.cursor()
@@ -282,6 +208,27 @@ def load_optimal_chipseq_peaks_and_matching_DNASE_files_from_db(
         rv[sample_id][0].add(chipseq_peak_fname)
         rv[sample_id][1].add(dnase_peak_fname)
     return rv
+
+def encode_ChIPseq_peak_file_is_in_db(remote_filename):
+    """Check if a ENCODE ChIPseq file has a database entry.
+
+    returns True if the file is in the database, False if not
+    """
+    cur = conn.cursor()
+    query = """
+    SELECT * 
+      FROM encode_chipseq_peak_files
+     WHERE remote_filename ~ %s; 
+    -- use a suffix match so that it will match even if 
+    -- the http://encodeproject.org prefix is missing
+    """
+    cur.execute(query, [remote_filename,])
+    # if the experiment is already there, we are done
+    res = cur.fetchall()
+    assert len(res) in (0,1)
+    if len(res) == 1:
+        return True
+    return False
 
 def load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
         tfid, annotation_id):

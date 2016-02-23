@@ -16,6 +16,8 @@ import gzip, io
 
 from multiprocessing import Value
 
+from DB import conn, find_cisbp_tfids
+
 ExperimentFile = namedtuple('ExperimentFile', [
     'exp_id', 'assay',
     'target_id', 
@@ -26,6 +28,65 @@ ExperimentFile = namedtuple('ExperimentFile', [
 BASE_URL = "https://www.encodeproject.org/"
 
 chipseq_peaks_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_ChIPseq_peaks/"
+
+def find_or_insert_experiment_from_called_peaks(called_peaks):
+    cur = conn.cursor()
+
+    # first check to see if the experiment is already in the DB. If
+    # so, we are done
+    encode_exp_ids = set(
+        called_peak.exp_id for called_peak in called_peaks)
+    assert len(encode_exp_ids) == 1, str(encode_exp_ids)
+    encode_exp_id = encode_exp_ids.pop()
+    query = """
+    SELECT encode_experiment_id 
+      FROM encode_chipseq_experiments 
+     WHERE encode_experiment_id = %s;
+    """
+    cur.execute(query, [encode_exp_id,])
+    # if the experiment is already there, we are done
+    if len(cur.fetchall()) == 1:
+        return
+    # otherwise, insert everything
+    encode_target_ids = set(
+        called_peak.target_id for called_peak in called_peaks)
+    assert len(encode_target_ids) == 1
+    encode_target_id = encode_target_ids.pop()
+    
+    # find our associated target id 
+    query = """
+    SELECT chipseq_target_id 
+      FROM chipseq_targets 
+     WHERE encode_target_id = %s
+    """
+    cur.execute(query, [encode_target_id,])
+    res = cur.fetchall()
+    
+    # if we can't find a matching tf id, insert it
+    if len(res) == 0:
+        target_info = find_target_info(encode_target_id)
+        query = "INSERT INTO chipseq_targets (encode_target_id, tf_id, organism, tf_name, uniprot_ids, ensemble_gene_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING chipseq_target_id"
+        cur.execute(query, [encode_target_id, 
+                            target_info.cisbp_id, 
+                            target_info.organism,
+                            target_info.tf_name,
+                            target_info.uniprot_ids, 
+                            target_info.ensemble_ids])
+        res = cur.fetchall()
+    assert len(res) == 1
+    target_id = res[0][0]
+
+    sample_types = set(
+        called_peak.sample_type for called_peak in called_peaks)
+    assert len(sample_types) == 1
+    sample_type = sample_types.pop()
+    # add the experiment data
+    query = "INSERT INTO encode_chipseq_experiments " \
+          + "(encode_experiment_id, target, sample_type) " \
+          + "VALUES (%s, %s, %s)"
+    cur.execute(query, [
+        encode_exp_id, target_id, sample_type])
+    return
 
 ################################################################################
 #
