@@ -44,6 +44,9 @@ class SeqsTooShort(Exception):
 class NoBackgroundSequences(Exception):
     pass
 
+def zero_loss(y_true, y_pred):
+    return np.zeros(1)
+
 def expected_F1_loss(y_true, y_pred, beta=0.1):
     min_label = TT.min(y_true)
     max_label = TT.max(y_true)
@@ -64,7 +67,10 @@ def expected_F1_loss(y_true, y_pred, beta=0.1):
 def mse_skip_ambig(y_true, y_pred):
     non_ambig = (y_true > -0.5)
     cnts = non_ambig.sum(axis=0, keepdims=True)
-    return K.mean(K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts, axis=-1) 
+    return K.mean(
+        K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts, 
+        axis=-1
+    ) 
 
 def weighted_loss_generator(weight, loss_fn):
     def f(y_true, y_pred):
@@ -78,6 +84,8 @@ def calc_val_results(model, batch_size):
     labels = defaultdict(list)
     for i, data in enumerate(data_iterator):
         for key, prbs in model.predict_on_batch(data).iteritems():
+            print key
+            if key.endswith('.accessibility_data'): continue
             # make sure every set of predicted prbs have an associated key
             assert key in data, "Predicted prbs don't have associated labels"
             pred_prbs[key].append(prbs)
@@ -86,7 +94,7 @@ def calc_val_results(model, batch_size):
 
     val_results = {}
     assert set(pred_prbs.keys()) == set(labels.keys())
-    for key in pred_prbs.keys():
+    for key in pred_prbs.keys():        
         inner_prbs = np.concatenate(pred_prbs[key], axis=0)
         inner_labels = np.concatenate(labels[key], axis=0)
 
@@ -168,8 +176,8 @@ class JointBindingModel(Graph):
     def _init_shared_convolution_layer(self):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_binding_subdomain_convs = 1
-        self.num_tf_specific_invivo_subdomain_convs = 0
+        self.num_tf_specific_invitro_binding_subdomain_convs = 4
+        self.num_tf_specific_invivo_subdomain_convs = 4
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_binding_subdomain_convs
             + self.num_tf_specific_invivo_subdomain_convs
@@ -238,6 +246,7 @@ class JointBindingModel(Graph):
 
         self.data = {}
         self.named_losses = {}
+        self.occupancy_layers = []
 
         self.invitro_weight = K.variable(1.0)
         
@@ -291,13 +300,19 @@ class JointBindingModel(Graph):
         return
     
     
-    def add_occupancy_layers(self, input_name, output_name):
+    def add_occupancy_layers(self, name_prefix, input_name, output_name):
         self.model.add_node(
             LogNormalizedOccupancy(-10.0, None),
             name=output_name,
             input=input_name
         )
 
+        self.model.add_output(
+            name=name_prefix+'binding_occupancies', 
+            input=output_name)
+        self.named_losses[name_prefix+'binding_occupancies'] = zero_loss
+
+        self.occupancy_layers.append(name_prefix+'binding_occupancies')
         #self.model.add_input(
         #    name=name_prefix+'accessibility_data', 
         #    input_shape=(1, 977, 1)) # seq_length        
@@ -313,6 +328,18 @@ class JointBindingModel(Graph):
         # find the log any bound occupancy for every track
         
         return
+    
+    def predict_occupancies(self, data_iter=None):
+        rv = defaultdict(list)
+        if data_iter is None:
+            data_iter = self.iter_train_data(100, repeat_forever=False)
+        for data in data_iter:
+            output = self.predict_on_batch(data)
+            for key in self.occupancy_layers:
+                rv[key].append(output[key])
+        for key, val in rv.iteritems():
+            rv[key] = np.vstack(val)
+        return dict(rv)
     
     def add_chipseq_regularization(
             self, occupancies_input_name, name_prefix, output_dim):
@@ -359,6 +386,7 @@ class JointBindingModel(Graph):
         #    input=name_prefix+'binding_affinities.1'
         #)
         self.add_occupancy_layers(
+            name_prefix,
             input_name=name_prefix+'binding_affinities.1', 
             output_name=name_prefix+'occupancies.1'
         )
@@ -368,7 +396,7 @@ class JointBindingModel(Graph):
             name_prefix+'occupancies.1', name_prefix, output_dim)
 
         ###################################################################
-        if True:
+        if False:
             #self.model.add_node(
             #    OccMaxPool(1, 8), #961),
             #    name=name_prefix +'max.1',
@@ -512,7 +540,7 @@ class JointBindingModel(Graph):
 
         # decide how much to oversample
         if oversample is True and data_subset == 'train':
-            num_oversamples = 1
+            num_oversamples = 2
         else:
             num_oversamples = 1
 
@@ -529,11 +557,11 @@ class JointBindingModel(Graph):
         return iter_weighted_batch_samples(
             self.model, iter_data(), num_oversamples)
     
-    def iter_train_data(self, batch_size, repeat_forever=False):
-        return self.iter_batches(batch_size, 'train', repeat_forever)
+    def iter_train_data(self, batch_size, repeat_forever=False, oversample=False):
+        return self.iter_batches(batch_size, 'train', repeat_forever, oversample)
     
     def iter_validation_data(self, batch_size, repeat_forever=False):
-        return self.iter_batches(batch_size, 'validation', repeat_forever)
+        return self.iter_batches(batch_size, 'validation', repeat_forever=repeat_forever, oversample=False)
 
     def fit_generator(self, 
             samples_per_epoch,
@@ -685,7 +713,7 @@ class SamplePeaksAndLabels():
         self.ambiguous_labels = self.clean_labels[index,:]
 
         training_index = int(self.n_samples*0.1)        
-        self.labels = self.ambiguous_labels # idr_optimal_labels
+        self.labels = self.idr_optimal_labels # ambiguous_labels
         self.train_labels = self.labels[training_index:]
         self.validation_labels = self.labels[:training_index]
         
@@ -699,7 +727,7 @@ class SamplePeaksAndLabels():
 
         print "Loading Accessibility Data"
         self.accessibility_data = self.load_accessibility_data()[:,:,:977,:]
-        assert self.accessibility_data.shape[0] == n_samples
+        #assert self.accessibility_data.shape[0] == n_samples
         self.train_accessibility_data = self.accessibility_data[training_index:]
         self.validation_accessibility_data = self.accessibility_data[
             :training_index]
@@ -730,7 +758,8 @@ class SamplePeaksAndLabels():
             yield {'fwd_seqs': fwd_seqs[indices], 
                    'accessibility_data': accessibility_data[indices], 
                    'chipseq_output': labels[indices],
-                   'output': labels[indices]
+                   'output': labels[indices],
+                   'binding_occupancies': np.zeros(1)
             }
             i += 1
         
@@ -980,12 +1009,6 @@ def build_model_from_factor_names_and_sample_ids(
         n_samples, factor_names, sample_ids, include_selex=True, include_invivo=True):
     model = JointBindingModel(factor_names)
 
-    if include_selex:
-        selex_experiments = SelexData(n_samples)
-        for factor_name in factor_names:
-            selex_experiments.add_all_selex_experiments_for_factor(factor_name)
-        model.add_selex_experiments(selex_experiments)
-    
     if include_invivo:
         for sample_id in sample_ids:
             model.add_chipseq_samples(
@@ -993,11 +1016,18 @@ def build_model_from_factor_names_and_sample_ids(
                     sample_id, n_samples, factor_names=factor_names)
             )
 
+    if include_selex:
+        selex_experiments = SelexData(n_samples)
+        for factor_name in factor_names:
+            selex_experiments.add_all_selex_experiments_for_factor(factor_name)
+        model.add_selex_experiments(selex_experiments)
+    
+
     return model
 
 from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
-    n_samples = 50000 #100000 # 50000 # 300000
+    n_samples = 1000 #500000 #100000 # 50000 # 300000
 
     sample_ids = ['E123',] # 'E119']
     factor_names = [
@@ -1007,14 +1037,20 @@ def main():
     #factor_names = [
     #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
     factor_names = ['ELK1', 'BHLHE40', 'CTCF', 'MAX'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
-    factor_names = ['CTCF','MAX'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
+    factor_names = ['CTCF',] #'YY1', 'MYC'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
 
     model = build_model_from_factor_names_and_sample_ids(
         n_samples, factor_names, sample_ids, 
         include_selex=True, include_invivo=True)
+
     print "Compiling Model"
     model.compile()
-    model.fit_generator(n_samples*0.9, batch_size=100, nb_epoch=5)
+    occs = model.predict_occupancies()
+    print occs.keys()
+    for x in occs.values():
+        print "="*20, x.shape
+    
+    model.fit_generator(n_samples*0.9, batch_size=100, nb_epoch=1)
     model.model.save_weights('test.hdf5', overwrite=True)
     return
 
