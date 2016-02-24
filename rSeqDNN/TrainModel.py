@@ -13,12 +13,13 @@ from pyTFbindtools.peaks import (
     merge_peaks_and_labels,
     load_labeled_peaks_from_beds,
     load_labeled_peaks_from_fastas,
-    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
+    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    load_matching_dnase_foldchange_fnames_from_DB
 )
 from pyTFbindtools.cross_validation import (
     ClassificationResult, ClassificationResults
 )
-from get_signal import get_peaks_signal_arrays
+from get_signal import get_peaks_signal_arrays, get_peaks_signal_arrays_by_samples
 from KerasModel import KerasModel, load_model
 from grid_search import MOESearch
 
@@ -41,6 +42,8 @@ def parse_args():
                         help='bigwig file to get features')
     parser.add_argument('--exclude-sequence',  action='store_true',
                         help='ignore sequence features')
+    parser.add_argument('--include-dnase-foldchange',  action='store_true',
+                        help='integrate dnase features when loading from db')
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
     train_parser = subparsers.add_parser('train', help='training help')
     test_parser = subparsers.add_parser('test', help='testing help')
@@ -104,6 +107,8 @@ def parse_args():
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
             include_ambiguous_peaks=True)
+        if args.include_dnase_foldchange:
+            args.bigwig_features = load_matching_dnase_foldchange_fnames_from_DB(args.tf_id, args.annotation_id)
     else:
         if args.pos_regions != None:
             assert args.neg_regions != None, \
@@ -157,6 +162,7 @@ def main_train(main_args, train_args):
       jitter_peaks_by,
       target_metric,
       run_grid_search ) = train_args
+    peaks_and_labels = peaks_and_labels.remove_ambiguous_labeled_entries()
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -165,11 +171,15 @@ def main_train(main_args, train_args):
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
+        print 'single celltype: ', single_celltype
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
-            validation_contigs, single_celltype))
+            validation_contigs=validation_contigs, single_celltype=single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
+        print ('Testing Samples: %s' % valid.sample_ids)
         # preprocess peaks, get signal, initialize model, train, test
         fitting_data, stopping_data = next(train.iter_train_validation_subsets())
+        print('Fitting Samples: %s' % fitting_data.sample_ids)
+        print('Stopping Samples: %s' % stopping_data.sample_ids)
         # preprocess peaks
         if jitter_peaks_by is not None:
             fitting_data_positives = fitting_data.filter_by_label(1)
@@ -178,15 +188,30 @@ def main_train(main_args, train_args):
                 for jitter in jitter_peaks_by)
             fitting_data = merge_peaks_and_labels((fitting_data, jittered_positives))
         # get signal arrays
-        fitting_signal_arrays = get_peaks_signal_arrays(
-            fitting_data.peaks, genome_fasta, bigwig_features, reverse_complement=True)
-        fitting_labels = np.concatenate((fitting_data.labels, fitting_data.labels))
-        fitting_scores = np.concatenate((fitting_data.scores, fitting_data.scores))
-        stopping_signal_arrays = get_peaks_signal_arrays(
-            stopping_data.peaks, genome_fasta, bigwig_features, reverse_complement=False)
-        stopping_labels = stopping_data.labels
-        stopping_scores = stopping_data.scores
-        signal_arrays_shapes = [np.shape(signal_array) for signal_array in stopping_signal_arrays]
+        if isinstance(bigwig_features, dict):
+            (fitting_signal_arrays,
+             fitting_labels,
+             fitting_scores ) = get_peaks_signal_arrays_by_samples(fitting_data, genome_fasta, bigwig_features,
+                                                                   reverse_complement=True,
+                                                                   return_labels=True, return_scores=True)
+            (stopping_signal_arrays,
+             stopping_labels,
+             stopping_scores ) = get_peaks_signal_arrays_by_samples(stopping_data, genome_fasta, bigwig_features,
+                                                                    reverse_complement=False,
+                                                                    return_labels=True, return_scores=True)
+        else:
+            if isinstance(bigwig_features, dict):
+                bigwig_features = bigwig_features[train.sample_ids[0]]
+            fitting_signal_arrays = get_peaks_signal_arrays(
+                fitting_data.peaks, genome_fasta, bigwig_features, reverse_complement=True)
+            fitting_labels = np.concatenate((fitting_data.labels, fitting_data.labels))
+            fitting_scores = np.concatenate((fitting_data.scores, fitting_data.scores))
+            stopping_signal_arrays = get_peaks_signal_arrays(
+                stopping_data.peaks, genome_fasta, bigwig_features, reverse_complement=False)
+            stopping_labels = stopping_data.labels
+            stopping_scores = stopping_data.scores
+        signal_arrays_shapes = [np.shape(signal_array) for signal_array in fitting_signal_arrays]
+        print 'signal_arrays_shapes: ', signal_arrays_shapes
         if run_grid_search:
             param_grid  = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
                                    [[1,5], [10, 60], [8, 30], [5,50], [0, 0.01], [0, 0.5]]))
@@ -217,10 +242,17 @@ def main_train(main_args, train_args):
                 fitting_signal_arrays, fitting_labels, fitting_scores,
                 stopping_signal_arrays, stopping_labels, stopping_scores,
                 '%s.%i' % (model_ofname_prefix, fold_index+1))
-        valid_signal_arrays = get_peaks_signal_arrays(
-            valid.peaks, genome_fasta, bigwig_features, reverse_complement=False)
-        valid_labels = valid.labels
-        valid_scores = valid.scores
+        if isinstance(bigwig_features, dict):
+            (valid_signal_arrays,
+             valid_labels,
+             valid_scores ) = get_peaks_signal_arrays_by_samples(valid, genome_fasta, bigwig_features,
+                                                                 reverse_complement=False,
+                                                                 return_labels=True, return_scores=True)
+        else:
+            valid_signal_arrays = get_peaks_signal_arrays(
+                valid.peaks, genome_fasta, bigwig_features, reverse_complement=False)
+            valid_labels = valid.labels
+            valid_scores = valid.scores
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid_signal_arrays,
             valid_labels,
@@ -280,12 +312,21 @@ def main_test(main_args, test_args):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
-            validation_contigs, single_celltype))
+            validation_contigs=validation_contigs, single_celltype=single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
-        valid_signal_arrays = get_peaks_signal_arrays(
-            valid.peaks, genome_fasta, bigwig_features, reverse_complement=False)
-        valid_labels = valid.labels
-        valid_scores = valid.scores
+        if len(peaks_and_labels.sample_ids) > 1:
+            (valid_signal_arrays,
+             valid_labels,
+             valid_scores ) = get_peaks_signal_arrays_by_samples(valid, genome_fasta, bigwig_features,
+                                                                 reverse_complement=False,
+                                                                 return_labels=True, return_scores=True)
+        else:
+            if isinstance(bigwig_features, dict):
+                bigwig_features = bigwig_features[train.sample_ids[0]]
+            valid_signal_arrays = get_peaks_signal_arrays(
+                valid.peaks, genome_fasta, bigwig_features, reverse_complement=False)
+            valid_labels = valid.labels
+            valid_scores = valid.scores
         clean_res = fit_model.evaluate_peaks_and_labels(
             valid_signal_arrays,
             valid_labels,

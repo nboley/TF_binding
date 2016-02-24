@@ -52,7 +52,8 @@ def encode_peaks_sequence_into_array(peaks, fasta):
 
     return data
 
-def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None):
+def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache='./',
+                                   local_norm_halfwidth=5000):
     """
     Extracts bigwig input arrays.
 
@@ -61,6 +62,11 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None):
     peaks : sequence of NarrowPeak
     bigwig_fnames : list
         Expects list of bigwig filenames.
+    cache : path, default: cwd
+        Bigwig features cached here.
+    local_norm_halfwidth : int, default: 5000
+        Window halfwidth context used to normalize signal with z-scores.
+        Note: must be greater then peak width.
 
     Returns
     -------
@@ -71,12 +77,36 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None):
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    if isinstance(cache, basestring):
-        return bigWigFeaturize.new(bigwig_fnames, pk_width,
-                                   intervals=get_intervals_from_peaks(peaks), cache=cache)
+    assert local_norm_halfwidth>pk_width
+    print('num of peaks: %i' % len(peaks))
+    intervals=get_intervals_from_peaks(peaks)
+    print('num of intervals: %i' % len(intervals))
+    if local_norm_halfwidth:
+            width = intervals[0].stop - intervals[0].start
+            offset = width // 2 - local_norm_halfwidth
+            slopped_intervals = [Interval(interval.chrom,
+                                          interval.start + offset,
+                                          interval.stop - offset)
+                                 for interval in intervals]
+            print('num of slopped intervals: %i' % len(slopped_intervals))
+            if isinstance(cache, basestring):
+                data = bigWigFeaturize.new(bigwig_fnames, 2*local_norm_halfwidth,
+                                           intervals=slopped_intervals, cache=cache)
+            else:
+                data = bigWigFeaturize.new(bigwig_fnames, 2*local_norm_halfwidth,
+                                           intervals=slopped_intervals)
+            print('finished loadin bigwig')
+            mean = data.mean(axis=3, keepdims=True)
+            std = data.std(axis=3, keepdims=True)
+            data_norm = (data[:, :, :, -offset:(-offset+width)] - mean) / std
+            return data_norm
     else:
-        return bigWigFeaturize.new(bigwig_fnames, pk_width,
-                                   intervals=get_intervals_from_peaks(peaks))
+        if isinstance(cache, basestring):
+            return bigWigFeaturize.new(bigwig_fnames, pk_width,
+                                       intervals=intervals, cache=cache)
+        else:
+            return bigWigFeaturize.new(bigwig_fnames, pk_width,
+                                       intervals=intervals)
 
 def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
                             reverse_complement=False):
@@ -99,3 +129,70 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
         signal_arrays.append(bigwig_array)
 
     return signal_arrays
+
+def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fname_dict,
+                                       reverse_complement=False,
+                                       return_labels=False, return_scores=False):
+    """
+    Get sequence of signal arrays for each sample in PeaksAndLabels.
+
+    Parameters
+    ----------
+    peaks_and_labels : PeaksAndLabels obj
+    genome_fasta : FastaFile
+    bigwig_fname_dict : dict
+        dictionary with sample names as keys and filenames as values.
+    reverse_complement : boolean, default: false
+    return_labels : boolean, default: false
+    return_scores : boolean, default: false
+
+    Returns
+    -------
+    results, a list with sequence of signal arrays
+    and, optionally, labels and scores.
+    """
+    ## TODO: logic is convoluted, needs refactoring
+    results = []
+    per_sample_signal_arrays = []
+    per_sample_labels = []
+    per_sample_scores = []
+    samples = peaks_and_labels.sample_ids
+    contigs = peaks_and_labels.contigs
+    for sample in samples:
+        if sample=='E118': ## E118 DNase file is broken, needs to be fixed
+            continue
+        peaks_and_labels_sample = peaks_and_labels.subset_data([sample], contigs)
+        print 'loading sample %s' % sample
+        per_sample_signal_arrays.append(get_peaks_signal_arrays(peaks_and_labels_sample.peaks,
+                                                                genome_fasta, bigwig_fname_dict[sample],
+                                                                reverse_complement=reverse_complement))
+        if return_labels:
+            if reverse_complement:
+                per_sample_labels.append(np.concatenate((peaks_and_labels_sample.labels,
+                                                         peaks_and_labels_sample.labels)))
+            else:
+                per_sample_labels.append(peaks_and_labels_sample.labels)
+        if return_scores:
+            if reverse_complement:
+                per_sample_scores.append(np.concatenate((peaks_and_labels_sample.scores,
+                                                         peaks_and_labels_sample.scores)))
+            else:
+                per_sample_scores.append(peaks_and_labels_sample.scores)
+    if len(per_sample_signal_arrays)>1:
+        per_sample_signal_arrays = np.asarray(per_sample_signal_arrays)
+        signal_arrays = [np.concatenate(per_sample_signal_arrays[:, i])
+                         for i in xrange(len(per_sample_signal_arrays[0, :]))]
+        results.append(signal_arrays)
+        if return_labels:
+            results.append(np.concatenate(per_sample_labels))
+        if return_scores:
+            results.append(np.concatenate(per_sample_scores))
+    else:
+        signal_arrays = per_sample_signal_arrays[0]
+        results.append(signal_arrays)
+        if return_labels:
+            results.append(per_sample_labels[0])
+        if return_scores:
+            results.append(per_sample_scores[0])
+
+    return results
