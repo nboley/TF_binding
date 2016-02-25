@@ -307,12 +307,12 @@ class JointBindingModel(Graph):
             input=input_name
         )
 
-        self.model.add_output(
-            name=name_prefix+'binding_occupancies', 
-            input=output_name)
-        self.named_losses[name_prefix+'binding_occupancies'] = zero_loss
-
-        self.occupancy_layers.append(name_prefix+'binding_occupancies')
+        #self.model.add_output(
+        #    name=name_prefix+'binding_occupancies', 
+        #    input=output_name)
+        #self.named_losses[name_prefix+'binding_occupancies'] = zero_loss
+        #
+        #self.occupancy_layers.append(name_prefix+'binding_occupancies')
         #self.model.add_input(
         #    name=name_prefix+'accessibility_data', 
         #    input_shape=(1, 977, 1)) # seq_length        
@@ -759,7 +759,7 @@ class SamplePeaksAndLabels():
                    'accessibility_data': accessibility_data[indices], 
                    'chipseq_output': labels[indices],
                    'output': labels[indices],
-                   'binding_occupancies': np.zeros(1)
+                   #'binding_occupancies': np.zeros(1)
             }
             i += 1
         
@@ -772,6 +772,14 @@ class SamplePeaksAndLabels():
         return self.iter_batches(batch_size, 'validation', repeat_forever)
 
 class SelexExperiment():
+    @property
+    def id(self):
+        selex_exp_id = self.selex_exp_id
+        factor_name = self.factor_name
+        factor_id = self.factor_id
+        return 'invitro_%s_%s_%s' % (
+            factor_name, factor_id, selex_exp_id)
+
     @property
     def seq_length(self):
         return self.fwd_seqs.shape[3]
@@ -793,7 +801,7 @@ class SelexExperiment():
         fwd_one_hot_seqs = np.vstack(
             (unbnd_seqs.fwd_one_hot_coded_seqs, bnd_seqs.fwd_one_hot_coded_seqs)
         )[permutation,:,:]
-        fwd_one_hot_seqs = np.swapaxes(fwd_one_hot_seqs, 1, 2)[:,:,None,:]
+        fwd_one_hot_seqs = np.swapaxes(fwd_one_hot_seqs, 1, 2)[:,None,:,:]
 
         if unbnd_seqs.fwd_shape_features is None:
             shape_seqs = None
@@ -1045,15 +1053,14 @@ def main():
 
     print "Compiling Model"
     model.compile()
-    occs = model.predict_occupancies()
-    print occs.keys()
-    for x in occs.values():
-        print "="*20, x.shape
+    #occs = model.predict_occupancies()
+    #print occs.keys()
+    #for x in occs.values():
+    #    print "="*20, x.shape
     
     model.fit_generator(n_samples*0.9, batch_size=100, nb_epoch=1)
     model.model.save_weights('test.hdf5', overwrite=True)
     return
 
-    
-
-main()
+#if __name__ == '__main__':    
+#    main()
