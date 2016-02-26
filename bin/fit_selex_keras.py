@@ -1045,11 +1045,11 @@ def main():
     #factor_names = [
     #    'CTCF', 'MAX', 'TCF12', 'MYC', 'YY1', 'REST', 'TCF21', 'TCF4', 'TCF7']
     factor_names = ['ELK1', 'BHLHE40', 'CTCF', 'MAX'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
-    factor_names = ['CTCF',] #'YY1', 'MYC'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
+    factor_names = ['CTCF', 'MAX'] #'YY1', 'MYC'] #['TBP', 'CTCF', 'YY1', 'MAX', 'TCF21']
 
     model = build_model_from_factor_names_and_sample_ids(
         n_samples, factor_names, sample_ids, 
-        include_selex=True, include_invivo=True)
+        include_selex=True, include_invivo=False)
 
     print "Compiling Model"
     model.compile()
