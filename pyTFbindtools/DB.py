@@ -307,6 +307,7 @@ def load_tf_names(tf_ids):
     query = "select tf_name from roadmap_matched_chipseq_peaks where tf_id = %s limit 1"
     tf_names = []
     for tf_id in tf_ids:
+        #print tf_id
         cur.execute(query, [tf_id,])
         tf_names.append(cur.fetchall()[0][0])
     return tf_names

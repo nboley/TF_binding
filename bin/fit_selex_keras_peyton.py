@@ -2,6 +2,7 @@ import os, sys
 import time
 
 from collections import OrderedDict, defaultdict
+from itertools import chain
 
 import numpy as np
 
@@ -20,14 +21,25 @@ import lasagne.nonlinearities
 import lasagne.updates
 
 import keras.backend as K
+from keras.utils.generic_utils import Progbar
 
 import theano
 import theano.tensor as TT
  
-from fit_selex_keras import SelexData
-from lasagne.layers import Layer, InputLayer, Conv2DLayer, MaxPool2DLayer, DenseLayer, FlattenLayer, ExpressionLayer, GlobalPoolLayer
+from fit_selex_keras import SelexData, SamplePeaksAndLabels
+from lasagne.layers import (
+    Layer, InputLayer, Conv2DLayer, MaxPool2DLayer, 
+    DenseLayer, FlattenLayer, ExpressionLayer, GlobalPoolLayer,
+    DimshuffleLayer, DropoutLayer)
+
 from lasagne import init
 from lasagne.utils import create_param
+
+def mse_skip_ambig(y_true, y_pred):
+    #return (y_true - y_pred)**2
+    non_ambig = (y_true > -0.5)
+    cnts = non_ambig.sum(axis=0, keepdims=True)
+    return K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -104,7 +116,7 @@ class ConvolutionDNASequenceBinding(Layer):
                  input,
                  nb_motifs, motif_len, 
                  use_three_base_encoding=True,
-                 W=init.GlorotUniform(), b=init.Constant(0.),
+                 W=init.HeNormal(), b=init.Constant(-3.0),
                  **kwargs):
         super(ConvolutionDNASequenceBinding, self).__init__(input, **kwargs)
         self.use_three_base_encoding = use_three_base_encoding
@@ -114,9 +126,12 @@ class ConvolutionDNASequenceBinding(Layer):
         filter_shape = (base_size, motif_len)
         self.W = self.add_param(
             W, (nb_motifs, 1, base_size, motif_len), name='W')
-        self.b = self.add_param(
-            b, (nb_motifs, ), name='b')
-
+        if use_three_base_encoding:
+            self.b = self.add_param(
+                b, (nb_motifs, ), name='b')
+        else:
+            self.b = None
+    
     def get_output_shape_for(self, input_shape):
         print "ConvolutionDNASequenceBinding", self.input_shape
         return (# number of obseravations
@@ -136,17 +151,18 @@ class ConvolutionDNASequenceBinding(Layer):
             X_fwd = input
             X_rc = input
 
-        fwd_rv = K.conv2d(X_fwd, self.W, border_mode='valid') \
-                 + TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
-        rc_rv = K.conv2d(X_rc, self.W[:,::-1,:,::-1], border_mode='valid') \
-                + TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
+        fwd_rv = K.conv2d(X_fwd, self.W, border_mode='valid') 
+        rc_rv = K.conv2d(X_rc, self.W[:,::-1,:,::-1], border_mode='valid')
+        if self.b is not None:
+            fwd_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
+            rc_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
         rv = TT.concatenate((fwd_rv, rc_rv), axis=2)
         return rv.dimshuffle((0,2,1,3))
 
 def theano_calc_log_occs(affinities, chem_pot):
+    #inner = (-chem_pot+affinities)/(R*T)
+    #return -TT.log(1.0 + TT.exp(inner))
     inner = (-chem_pot+affinities)/(R*T)
-    return TT.log(1.0 + TT.exp(inner))
-    inner = (-chem_pot+affinities) #/(R*T)
     lower = TT.switch(inner<-10, TT.exp(inner), 0)
     mid = TT.switch((inner >= -10)&(inner <= 35), 
                     TT.log(1.0 + TT.exp(inner)),
@@ -280,7 +296,58 @@ class OccMaxPool(Layer):
         return rv
 
 
-class JointBindingModel():
+class JointBindingModel():    
+    def _init_shared_affinity_params(self):
+        # initialize the full subdomain convolutional filter
+        self.num_invivo_convs = 0
+        self.num_tf_specific_invitro_affinity_convs = 8
+        self.num_tf_specific_invivo_affinity_convs = 8
+        self.num_tf_specific_convs = (
+            self.num_tf_specific_invitro_affinity_convs
+            + self.num_tf_specific_invivo_affinity_convs
+        )
+        self.num_affinity_convs = (
+            len(self.factor_names)*self.num_tf_specific_convs \
+            + self.num_invivo_convs
+        )
+        self.affinity_conv_size = 32
+        affinity_conv_filter_shape = (
+            self.num_affinity_convs,
+            1, 
+            3, 
+            self.affinity_conv_size)
+        self.affinity_conv_filter = create_param(
+            lambda x: init.HeNormal().sample(x),
+            affinity_conv_filter_shape,
+            'affinity_convolutions'
+        )
+        self.affinity_conv_bias = create_param(
+            lambda x: init.Constant(0.0).sample(x),
+            (affinity_conv_filter_shape[0],),
+            'affinity_convolutions'
+        )
+        
+        self.invitro_slices = OrderedDict()
+        self.invivo_slices = OrderedDict()
+        for factor_index, factor in enumerate(self.factor_names):
+            self.invitro_slices[factor] = slice(
+                factor_index*self.num_tf_specific_convs,
+                factor_index*self.num_tf_specific_convs 
+                + self.num_tf_specific_invitro_affinity_convs
+            )
+            self.invivo_slices[factor] = slice(
+                factor_index*self.num_tf_specific_convs,
+                factor_index*self.num_tf_specific_convs 
+                + self.num_tf_specific_convs
+            )
+        
+        return
+
+    def get_tf_specific_affinity_params(self, factor_name, only_invitro):
+        W = self.affinity_conv_filter[self.invitro_slices[factor_name],:,:,:]
+        b = self.affinity_conv_bias[self.invitro_slices[factor_name]]
+        return W, b
+
     def add_selex_experiment(self, selex_experiment, weight=1.0):
         seq_length = selex_experiment.fwd_seqs.shape[3]
         name = selex_experiment.id
@@ -294,68 +361,134 @@ class JointBindingModel():
         network = InputLayer(
             shape=(None, 1, 4, seq_length), input_var=input_var)
         
+        W, b = self.get_tf_specific_affinity_params(
+            selex_experiment.factor_name, only_invitro=True)
         network = ConvolutionDNASequenceBinding(
-            network, nb_motifs=4, motif_len=16)
+            network, 
+            nb_motifs=self.num_tf_specific_invitro_affinity_convs, 
+            motif_len=self.affinity_conv_size, 
+            W=W, 
+            b=b)
         network = LogNormalizedOccupancy(network, 0.0)
         network = LogAnyBoundOcc(network)
         network = OccMaxPool(network, 'full', 'full' )
-        #network = GlobalPoolLayer(network, TT.max) 
-        #network = ExpressionLayer(network, TT.exp)
-        #network = FlattenLayer(network)
-        #network = DenseLayer(network, 1)
+        network = ExpressionLayer(network, TT.exp)
+        network = FlattenLayer(network)
         
-        #network = Conv2DLayer(network,2, (1,16))
-        #network = DenseLayer(network, 1)
-
         self._networks[name + ".output"] = network
         self._data_iterators[name] = selex_experiment.iter_batches
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(lasagne.objectives.squared_error(prediction, target_var))
-        self._losses[name] = loss
+        self._losses.append(loss)
     
     def add_selex_experiments(self):
         for exp in self.selex_experiments:
             self.add_selex_experiment(exp)
+    
+    def _add_chipseq_regularization(self, occs, target_var):
+        network = LogAnyBoundOcc(occs)
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
+        network = ExpressionLayer(network, TT.exp)
+        network = FlattenLayer(network)
 
-    def add_chipseq_regularization(
-            self, occupancies_input_name, name_prefix, output_dim):
-        seq_length = 1000
+        prediction = lasagne.layers.get_output(network)
+        loss = TT.mean(TT.sum(mse_skip_ambig(target_var, prediction), axis=-1))
+        self._losses.append(loss)
+        
+        return
+
+    def add_chipseq_samples(self, pks_and_labels): 
+        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
+        name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
+        self._invivo_data[name] = pks_and_labels
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
         target_var = TT.matrix(name + '.output')
         self._target_vars[name + '.output'] = target_var
-        
-        network = InputLayer(
-            shape=(None, 1, 4, seq_length), input_var=input_var)
 
-        network = LogAnyBoundOcc(network)
-        network = OccMaxPool(network, 4)
-        network = FlattenLayer(network)
+        network = InputLayer(
+            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
+
+        network = ConvolutionDNASequenceBinding(
+            network, 
+            nb_motifs=self.num_affinity_convs, 
+            motif_len=self.affinity_conv_size, 
+            W=self.affinity_conv_filter, 
+            b=self.affinity_conv_bias)
+        network = LogNormalizedOccupancy(network, 0.0)
+        self._add_chipseq_regularization(network, target_var)
+
+        network = OccMaxPool(network, 1, 32)
+        network = ExpressionLayer(network, TT.exp)
+        network = DenseLayer(network, pks_and_labels.labels.shape[1])
 
         self._networks[name + ".output"] = network
-        self._data_iterators[name] = selex_experiment.iter_batches
+        self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(lasagne.objectives.squared_error(prediction, target_var))
-        self._losses[name] = loss
+        loss = TT.mean(mse_skip_ambig(target_var, prediction))
+        self._losses.append(loss)
+        return
+
+
+    def add_DIGN_chipseq_samples(self, pks_and_labels): 
+        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
+        name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
+        self._invivo_data[name] = pks_and_labels
+        
+        input_var = TT.tensor4(name + '.fwd_seqs')
+        self._input_vars[name + '.fwd_seqs'] = input_var
+        target_var = TT.matrix(name + '.output')
+        self._target_vars[name + '.output'] = target_var
+
+        network = InputLayer(
+            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
+
+        network = Conv2DLayer(
+            network, 25, (4,15),
+            nonlinearity=lasagne.nonlinearities.rectify)
+        network = DropoutLayer(network, 0.2)
+        network = Conv2DLayer(
+            network, 25, (1,15),
+            nonlinearity=lasagne.nonlinearities.rectify)
+        network = DropoutLayer(network, 0.2)
+        network = Conv2DLayer(
+            network, 25, (1,15),
+            nonlinearity=lasagne.nonlinearities.rectify)
+        network = DropoutLayer(network, 0.2)
+        network = DimshuffleLayer(network, (0,2,1,3))
+        network = MaxPool2DLayer(network, (1, 35))
+        network = DenseLayer(
+            network, pks_and_labels.labels.shape[1], 
+            nonlinearity=lasagne.nonlinearities.sigmoid)
+
+        self._networks[name + ".output"] = network
+        self._data_iterators[name] = pks_and_labels.iter_batches
+
+        prediction = lasagne.layers.get_output(network)
+        loss = TT.mean(mse_skip_ambig(target_var, prediction))
+        self._losses.append(loss)
+        return
 
     def _build(self):
         # build the predictions dictionary
-        total_loss = TT.sum(self._losses.values())
+        total_loss = TT.sum(self._losses)
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
         updates = lasagne.updates.adam(total_loss, params)
-
+        #updates = lasagne.updates.apply_momentum(updates, params, 0.9)
         # build the training function
         all_vars = self._input_vars.values() + self._target_vars.values()
         self.train_fn = theano.function(
             all_vars, total_loss, updates=updates)
+        self.test_fn = theano.function(
+            all_vars, total_loss)
         
         # build the prediction functions
         self.predict_fns = {}
-        for key in self._target_vars:
+        for key in self._networks:
             predict_fn = theano.function(
                 self._input_vars.values(), 
                 lasagne.layers.get_output(
@@ -365,38 +498,63 @@ class JointBindingModel():
             self.predict_fns[key] = predict_fn
         
 
-    def __init__(self, n_samples, factor_names):
-        self._losses = {}
+    def __init__(self, n_samples, factor_names, sample_ids):
+        self.factor_names = factor_names
+        self.sample_ids = sample_ids
+        
+        self._invivo_data = {}
+        
+        self._losses = []
         
         self._input_vars = OrderedDict()
         self._target_vars = OrderedDict()
         self._networks = OrderedDict()
         self._data_iterators = OrderedDict()
+
+        self._init_shared_affinity_params()
         
         self.selex_experiments = SelexData(n_samples)
-        for factor_name in factor_names:
+        for factor_name in self.factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        self.add_selex_experiments()
-        
+        #self.add_selex_experiments()
+
+        for sample_id in sample_ids:
+            pks = SamplePeaksAndLabels(
+                sample_id, n_samples, factor_names=factor_names)
+            self.add_DIGN_chipseq_samples(pks)
+            #self.add_chipseq_samples(pks)
+
         self._build()
 
     def iter_data(self, batch_size, data_subset, repeat_forever):
         iterators = OrderedDict()
         for key, iter_inst in self._data_iterators.iteritems():
             iterators[key] = iter_inst(batch_size, data_subset, repeat_forever)
+        assert len(iterators) > 0, 'No data iterators provided'
+        
+        def iter_data():
+            while True:
+                merged_output = {}
+                for name_prefix, iterator in iterators.iteritems():
+                    data_dict = next(iterator)
+                    for key, data in data_dict.iteritems():
+                        assert name_prefix + "." + key not in merged_output
+                        merged_output[name_prefix + "." + key] = data
+                ordered_merged_output = OrderedDict()
+                for key in chain(
+                        self._input_vars.iterkeys(), 
+                        self._target_vars.iterkeys()):
+                    ordered_merged_output[key] = merged_output[key]
+                yield ordered_merged_output
 
-        while True:
-            merged_output = {}
-            for name_prefix, iterator in iterators.iteritems():
-                data_dict = next(iterator)
-                for key, data in data_dict.iteritems():
-                    assert name_prefix + "." + key not in merged_output
-                    merged_output[name_prefix + "." + key] = data
-            yield merged_output
-            
-        return
+        #iter_weighted_batch_samples(self, iter_data(), 
+        return iter_data()
 
+    def get_all_params(self):
+        return lasagne.layers.get_all_params(
+            self._networks.values(), trainable=True)
+    
     def predict_on_batch(self, data):
         predictions = {}
         for output_key, fn in self.predict_fns.iteritems():
@@ -420,39 +578,64 @@ class JointBindingModel():
 
         return pred_prbs, labels
         
-    def train(self, batch_size, num_epochs):
+    def train(self, samples_per_epoch, batch_size, nb_epoch):
         # Finally, launch the training loop.
         print("Starting training...")
         # We iterate over epochs:
-        for epoch in range(num_epochs):
+        for epoch in xrange(nb_epoch):
             # In each epoch, we do a full pass over the training data:
             train_err = 0
-            train_batches = 0
-            start_time = time.time()
-            for data in self.iter_data(batch_size, 'train', False):
-                train_data = [
-                    data[input_key] for input_key in self._input_vars.keys()
-                ] + [ 
-                    data[output_key] for output_key in self._target_vars.keys() 
-                ]
-                err = self.train_fn(*train_data)
+            progbar = Progbar(samples_per_epoch)
+            for nb_train_batches_observed, data in enumerate(
+                    self.iter_data(batch_size, 'train', repeat_forever=True)):
+                if nb_train_batches_observed*batch_size > samples_per_epoch: 
+                    break
+                # we can use the values attriburte because iter_data  
+                # returns an ordered dict
+                err = self.train_fn(*list(data.values()))
+                progbar.update(
+                    nb_train_batches_observed*batch_size, 
+                    [('train_err', err),]
+                )
                 train_err += err
-                train_batches += 1
+                        
+            # calculate the test error
+            validation_err = 0
+            validation_batches = 0
+            for data in self.iter_data(batch_size, 'validation', False):
+                #print data.keys()
+                # we can use the values attriburte because iter_data  
+                # returns an ordered dict
+                err = self.test_fn(*list(data.values()))
+                validation_err += err
+                validation_batches += 1
+            print( 'val_err: %.4e' % (validation_err/validation_batches) )
             
-            # Then we print the results for this epoch:
-            print("Epoch {} of {} took {:.3f}s".format(
-                epoch + 1, num_epochs, time.time() - start_time))
-            print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
+            # Print the validation results for this epoch:
             pred_prbs, labels = self.predict(batch_size)
             for key in pred_prbs.keys():
-                print key.ljust(40), ClassificationResult(
-                    labels[key], pred_prbs[key] > 0.5, pred_prbs[key])
-        
+                for index in xrange(labels[key].shape[1]):
+                    print ("%s-%i" % (key, index)).ljust(40), ClassificationResult(
+                        labels[key][:,index], 
+                        pred_prbs[key][:,index] > 0.5, 
+                        pred_prbs[key][:,index])
+            #for param in self.get_all_params():
+            #    print param, param.get_value()
+            
         pass
 
-def main():    
-    model = JointBindingModel(100000, ['CTCF',]) # 'MAX'])
-    model.train(1000, 500)
+def single_sample_main():
+    tf_name = sys.argv[1]
+    sample_id = sys.argv[2]
+    model = JointBindingModel(100000, [tf_name,], [sample_id,])
+    model.train(100000, 1000, 100)
+    
+def main():        
+    #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
+    tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
+    sample_ids = ['E128',]
+    model = JointBindingModel(100000, tf_names, sample_ids)
+    model.train(100000, 1000, 100)
     return
 
-main()
+single_sample_main()

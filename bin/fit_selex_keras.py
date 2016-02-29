@@ -602,7 +602,7 @@ class SamplePeaksAndLabels():
             rv[i,:,:] = coded_seq
         
         # add the extra dimension for theano
-        rv = np.swapaxes(rv, 1, 2)[:,:,None,:]
+        rv = np.swapaxes(rv, 1, 2)[:,None,:,:]
         
         with open(cached_fname, "w") as ofp:
             print "Saving seqs"
@@ -655,7 +655,6 @@ class SamplePeaksAndLabels():
         self.relaxed_labels = self.relaxed_labels[index,:]
 
         # keep the top n_samples peaks and max_num_tfs tfs
-        print "Loading tf names"
         all_factor_names = load_tf_names(self.tf_ids)
         # make sure all of the tfnames actually exist
         #assert ( self.desired_factor_names is None 
@@ -695,6 +694,7 @@ class SamplePeaksAndLabels():
         self.sample_id = sample_id
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
+        self.seq_length = 2*half_peak_width
         self.n_samples = n_samples
         self.desired_factor_names = factor_names
         self._init_pks_and_label_mats()
@@ -712,25 +712,40 @@ class SamplePeaksAndLabels():
         self.relaxed_labels = self.relaxed_labels[index,:]
         self.ambiguous_labels = self.clean_labels[index,:]
 
-        training_index = int(self.n_samples*0.1)        
-        self.labels = self.idr_optimal_labels # ambiguous_labels
-        self.train_labels = self.labels[training_index:]
-        self.validation_labels = self.labels[:training_index]
+        training_indices = np.arange(0, int(self.n_samples*0.1), dtype=int)
+        training_indices = np.array([
+            i for i, pk in enumerate(self.pks) 
+            if pk[0] not in ('chr1', 'chr2', 'chr8', 'chr9')])
+        validation_indices = np.arange(
+            int(self.n_samples*0.1), self.n_samples, dtype=int)
+        validation_indices = np.array([
+            i for i, pk in enumerate(self.pks) 
+            if pk[0] in ('chr8', 'chr9')])
+
+        self.labels = self.ambiguous_labels # idr_optimal_labels # ambiguous_labels
+        from scipy.stats import itemfreq
+        print itemfreq(self.labels)
+        #assert False
+
+
+        self.train_labels = self.labels[training_indices]
+        self.validation_labels = self.labels[validation_indices]
         
         # code the peaks' sequence
         print "Coding peaks"
         self.genome_fasta = FastaFile(
-            load_genome_metadata(self.annotation_id).filename)
+            'hg19.genome.fa') #load_genome_metadata(self.annotation_id).filename)
         self.fwd_seqs = self.one_hot_code_peaks_sequence()
-        self.train_fwd_seqs = self.fwd_seqs[training_index:]
-        self.validation_fwd_seqs = self.fwd_seqs[:training_index]
+        self.train_fwd_seqs = self.fwd_seqs[training_indices]
+        self.validation_fwd_seqs = self.fwd_seqs[validation_indices]
 
         print "Loading Accessibility Data"
-        self.accessibility_data = self.load_accessibility_data()[:,:,:977,:]
+        self.accessibility_data = np.zeros((n_samples, 1, 977, 1)) # self.load_accessibility_data()[:,:,:977,:]
         #assert self.accessibility_data.shape[0] == n_samples
-        self.train_accessibility_data = self.accessibility_data[training_index:]
+        self.train_accessibility_data = self.accessibility_data[
+            training_indices]
         self.validation_accessibility_data = self.accessibility_data[
-            :training_index]
+            validation_indices]
 
     def iter_batches(self, batch_size, data_subset, repeat_forever):
         if data_subset == 'train':
@@ -812,7 +827,8 @@ class SelexExperiment():
             rc_shape_seqs = np.vstack(
                 (unbnd_seqs.rc_shape_features, bnd_seqs.rc_shape_features)
             )[permutation,:,:]
-            shape_seqs = np.concatenate((fwd_shape_seqs, rc_shape_seqs), axis=2)[:,None,:,:]
+            shape_seqs = np.concatenate(
+                (fwd_shape_seqs, rc_shape_seqs), axis=2)[:,None,:,:]
 
         labels = np.hstack(
             (np.zeros(len(unbnd_seqs), dtype='float32'), 
@@ -844,7 +860,8 @@ class SelexExperiment():
                 "No background sequences for %s (%i)." % (
                     self.factor_name, self.selex_exp_id))
 
-        with optional_gzip_open(fnames[max(fnames.keys())]) as fp:
+        rnd_num = max(fnames.keys())
+        with optional_gzip_open(fnames[rnd_num]) as fp:
             bnd_seqs = load_fastq(fp, self.n_samples/2)
         with optional_gzip_open(bg_fname) as fp:
             unbnd_seqs = load_fastq(fp, self.n_samples/2)
@@ -908,7 +925,8 @@ class SelexData():
 
         pass
 
-    def find_all_selex_experiments(self):
+    @staticmethod
+    def find_all_selex_experiments():
         import psycopg2
         conn = psycopg2.connect(
             "host=%s dbname=%s user=%s" % ('mitra', 'cisbp', 'nboley'))
@@ -1037,7 +1055,7 @@ from pyTFbindtools.peaks import build_peaks_label_mat
 def main():
     n_samples = 1000 #500000 #100000 # 50000 # 300000
 
-    sample_ids = ['E123',] # 'E119']
+    sample_ids = ['E117',] # 'E119']
     factor_names = [
         'BHLHE40',  'CEBPB', 'CTCF', 'ELF1',  'ELK1', 'ETS1', 'MAX', #'MAX', #'NANOG'# 'ESRRA', 
         #'SP1', 'HSF1', 'TCF3', 'GATA1', 'RELA', 'IRF1', 
@@ -1053,6 +1071,7 @@ def main():
 
     print "Compiling Model"
     model.compile()
+    model.fit_generator(100)
     #occs = model.predict_occupancies()
     #print occs.keys()
     #for x in occs.values():
@@ -1062,5 +1081,5 @@ def main():
     model.model.save_weights('test.hdf5', overwrite=True)
     return
 
-#if __name__ == '__main__':    
-#    main()
+if __name__ == '__main__':    
+    main()

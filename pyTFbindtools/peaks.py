@@ -384,6 +384,7 @@ def iter_sample_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         max_n_peaks_per_sample=None,
         include_ambiguous_peaks=False,
         order_by_accessibility=False):
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
         annotation_id, tf_id, )
 
@@ -395,7 +396,7 @@ def build_peaks_label_mat(
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
         annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
-
+    assert not any(x is None for x in peak_fnames.keys())
     # extract the accessibility peaks
     dnase_peaks_fnames = peak_fnames['dnase']
     assert len(dnase_peaks_fnames) == 1
@@ -434,6 +435,9 @@ def build_peaks_label_mat(
                     fname for pk_type, fname in chipseq_peaks_fnames
                     if pk_type == desired_peak_type
                 ]
+                print desired_peak_type
+                print chipseq_peaks_fnames
+                print optimal_chipseq_peaks_fnames
                 for i, pk in enumerate(pks):
                     pk_labels, pk_scores = label_and_score_peak_with_chipseq_peaks(
                         optimal_chipseq_peaks_fnames, pk)
@@ -446,7 +450,7 @@ def build_peaks_label_mat(
             with open(pickle_fname, "w") as ofp:
                 np.save(ofp, labels)
         all_labels.append(labels)
-    
+
     return pks, sorted(peak_fnames.keys()), all_labels
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
