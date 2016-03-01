@@ -35,6 +35,59 @@ from lasagne.layers import (
 from lasagne import init
 from lasagne.utils import create_param
 
+def iter_weighted_batch_samples(model, batch_iterator, oversampling_ratio=1):
+    """Iter batches where poorly predicted samples are more frequently selected.
+
+    model: the model to predict from
+    batch_iterator: batch iterator to draw samples from
+    oversampling_ratio: how many batch_iterator batches to sample from
+    """
+    assert oversampling_ratio > 0
+
+    while True:
+        # group the output of oversampling_ratio batches together
+        all_batches = OrderedDict()
+        for key, val in next(batch_iterator).iteritems():
+            all_batches[key] = [val,]
+        for i in xrange(oversampling_ratio-1):
+            for key, val in next(batch_iterator).iteritems():
+                all_batches[key].append(val)
+        # find the batch size
+        batch_size = next(all_batches.itervalues())[0].shape[0]
+        # stack the output
+        for key, batches in all_batches.iteritems():
+            all_batches[key] = np.vstack(batches)
+
+        # weight the batch values
+        pred_vals = model.predict_on_batch(all_batches)
+        weights = np.zeros(batch_size*oversampling_ratio)
+        for key in pred_vals:
+            if key.endswith('binding_occupancies'): continue
+            losses = (pred_vals[key] - all_batches[key])**2
+            # set ambiguous labels to 0
+            losses[all_batches[key] < -0.5] = 0
+            # add to the losses,
+            inner_weights = losses.sum(1)
+            # re-weight the rows with ambiguous labels
+            inner_weights *= losses.shape[1]/((
+                all_batches[key] > -0.5).sum(1) + 1e-6)
+            # make sure that every row has some weight
+            inner_weights += 1e-6
+            weights += inner_weights
+        # normalize the weights to 1
+        weights /= weights.sum()
+
+        # downsample batch_size observations
+        output = OrderedDict()
+        loss_indices = np.random.choice(
+            len(weights), size=batch_size, replace=False, p=weights)
+        for key in all_batches.keys():
+            output[key] = all_batches[key][loss_indices,:]
+        yield output
+    
+    return
+
+
 def mse_skip_ambig(y_true, y_pred):
     #return (y_true - y_pred)**2
     non_ambig = (y_true > -0.5)
@@ -300,8 +353,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 8
-        self.num_tf_specific_invivo_affinity_convs = 8
+        self.num_tf_specific_invitro_affinity_convs = 4
+        self.num_tf_specific_invivo_affinity_convs = 4
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -310,7 +363,7 @@ class JointBindingModel():
             len(self.factor_names)*self.num_tf_specific_convs \
             + self.num_invivo_convs
         )
-        self.affinity_conv_size = 32
+        self.affinity_conv_size = 16
         affinity_conv_filter_shape = (
             self.num_affinity_convs,
             1, 
@@ -401,12 +454,12 @@ class JointBindingModel():
     def add_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
         name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
-        self._invivo_data[name] = pks_and_labels
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
         target_var = TT.matrix(name + '.output')
         self._target_vars[name + '.output'] = target_var
+        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
 
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
@@ -436,12 +489,12 @@ class JointBindingModel():
     def add_DIGN_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
         name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
-        self._invivo_data[name] = pks_and_labels
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
         target_var = TT.matrix(name + '.output')
         self._target_vars[name + '.output'] = target_var
+        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
 
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
@@ -449,15 +502,15 @@ class JointBindingModel():
         network = Conv2DLayer(
             network, 25, (4,15),
             nonlinearity=lasagne.nonlinearities.rectify)
-        network = DropoutLayer(network, 0.2)
-        network = Conv2DLayer(
-            network, 25, (1,15),
-            nonlinearity=lasagne.nonlinearities.rectify)
-        network = DropoutLayer(network, 0.2)
-        network = Conv2DLayer(
-            network, 25, (1,15),
-            nonlinearity=lasagne.nonlinearities.rectify)
-        network = DropoutLayer(network, 0.2)
+        #network = DropoutLayer(network, 0.2)
+        #network = Conv2DLayer(
+        #    network, 25, (1,15),
+        #    nonlinearity=lasagne.nonlinearities.rectify)
+        #network = DropoutLayer(network, 0.2)
+        #network = Conv2DLayer(
+        #    network, 25, (1,15),
+        #    nonlinearity=lasagne.nonlinearities.rectify)
+        #network = DropoutLayer(network, 0.2)
         network = DimshuffleLayer(network, (0,2,1,3))
         network = MaxPool2DLayer(network, (1, 35))
         network = DenseLayer(
@@ -502,7 +555,7 @@ class JointBindingModel():
         self.factor_names = factor_names
         self.sample_ids = sample_ids
         
-        self._invivo_data = {}
+        self._multitask_labels = {}
         
         self._losses = []
         
@@ -517,22 +570,29 @@ class JointBindingModel():
         for factor_name in self.factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        #self.add_selex_experiments()
+        self.add_selex_experiments()
 
         for sample_id in sample_ids:
             pks = SamplePeaksAndLabels(
                 sample_id, n_samples, factor_names=factor_names)
-            self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
+            #self.add_DIGN_chipseq_samples(pks)
+            self.add_chipseq_samples(pks)
 
         self._build()
 
-    def iter_data(self, batch_size, data_subset, repeat_forever):
+    def iter_data(
+            self, batch_size, data_subset, repeat_forever, oversample=True):
         iterators = OrderedDict()
         for key, iter_inst in self._data_iterators.iteritems():
             iterators[key] = iter_inst(batch_size, data_subset, repeat_forever)
         assert len(iterators) > 0, 'No data iterators provided'
         
+        # decide how much to oversample
+        if oversample is True and data_subset == 'train':
+            num_oversamples = 1
+        else:
+            num_oversamples = 1
+
         def iter_data():
             while True:
                 merged_output = {}
@@ -548,8 +608,7 @@ class JointBindingModel():
                     ordered_merged_output[key] = merged_output[key]
                 yield ordered_merged_output
 
-        #iter_weighted_batch_samples(self, iter_data(), 
-        return iter_data()
+        return iter_weighted_batch_samples(self, iter_data(), num_oversamples)
 
     def get_all_params(self):
         return lasagne.layers.get_all_params(
@@ -603,7 +662,6 @@ class JointBindingModel():
             validation_err = 0
             validation_batches = 0
             for data in self.iter_data(batch_size, 'validation', False):
-                #print data.keys()
                 # we can use the values attriburte because iter_data  
                 # returns an ordered dict
                 err = self.test_fn(*list(data.values()))
@@ -615,7 +673,11 @@ class JointBindingModel():
             pred_prbs, labels = self.predict(batch_size)
             for key in pred_prbs.keys():
                 for index in xrange(labels[key].shape[1]):
-                    print ("%s-%i" % (key, index)).ljust(40), ClassificationResult(
+                    if key in self._multitask_labels:
+                        index_name = self._multitask_labels[key][index]
+                    else:
+                        index_name = str(index)
+                    print ("%s-%s" % (key, index_name)).ljust(40), ClassificationResult(
                         labels[key][:,index], 
                         pred_prbs[key][:,index] > 0.5, 
                         pred_prbs[key][:,index])
@@ -627,15 +689,16 @@ class JointBindingModel():
 def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
-    model = JointBindingModel(100000, [tf_name,], [sample_id,])
-    model.train(100000, 1000, 100)
+    model = JointBindingModel(300000, [tf_name,], [sample_id,]) # 300000
+    model.train(300000, 100, 100)
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
     tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
-    sample_ids = ['E128',]
+    sample_ids = ['E123',]
     model = JointBindingModel(100000, tf_names, sample_ids)
     model.train(100000, 1000, 100)
     return
 
+#main()
 single_sample_main()
