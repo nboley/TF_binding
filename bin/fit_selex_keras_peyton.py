@@ -215,7 +215,7 @@ class ConvolutionDNASequenceBinding(Layer):
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
-    #return -TT.log(1.0 + TT.exp(inner))
+    return -TT.log(1.0 + TT.exp(inner))
     lower = TT.switch(inner<-10, TT.exp(inner), 0)
     mid = TT.switch((inner >= -10)&(inner <= 35), 
                     TT.log(1.0 + TT.exp(inner)),
@@ -419,23 +419,54 @@ class JointBindingModel():
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(lasagne.objectives.squared_error(prediction, target_var))
-        self._losses.append(loss)
-    
+        self._losses[name] = self._selex_penalty*loss
+
     def add_selex_experiments(self):
+        self._selex_penalty = create_param(lambda x: 5.0, (), 'selex_penalty')
         for exp in self.selex_experiments:
             self.add_selex_experiment(exp)
     
-    def _add_chipseq_regularization(self, occs, target_var):
-        network = LogAnyBoundOcc(occs)
+    def add_simple_chipseq_model(self, pks_and_labels):
+        name = 'invivo_%s_sequence.simple' % pks_and_labels.sample_id 
+
+        input_var = TT.tensor4(name + '.fwd_seqs')
+        self._input_vars[name + '.fwd_seqs'] = input_var
+        target_var = TT.matrix(name + '.output')
+        self._target_vars[name + '.output'] = target_var
+        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
+
+        network = InputLayer(
+            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
+
+        network = ConvolutionDNASequenceBinding(
+            network, 
+            nb_motifs=self.num_affinity_convs, 
+            motif_len=self.affinity_conv_size, 
+            W=self.affinity_conv_filter, 
+            b=self.affinity_conv_bias)
+        network = LogNormalizedOccupancy(network, -6.0)
+
+        network = LogAnyBoundOcc(network)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         network = ExpressionLayer(network, TT.exp)
         network = FlattenLayer(network)
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(TT.sum(mse_skip_ambig(target_var, prediction), axis=-1))
-        self._losses.append(loss)
-        
+
+        self._networks[name + ".output"] = network
+        self._data_iterators[name] = pks_and_labels.iter_batches
+        self._losses[name] = loss
+
         return
+    def _add_chipseq_regularization(self, occs, target_var):
+        network = LogAnyBoundOcc(occs)
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
+        network = ExpressionLayer(network, TT.exp)
+        network = FlattenLayer(network)
+        loss = TT.mean(TT.sum(mse_skip_ambig(target_var, network), axis=-1))
+        self._losses[str(target_var) + ".chipseqreg"] = (
+            self._chipseq_regularization_penalty*loss)
 
     def add_chipseq_samples(self, pks_and_labels): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
@@ -457,7 +488,7 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
-        self._add_chipseq_regularization(network, target_var)
+        #self._add_chipseq_regularization(network, target_var)
 
         network = OccMaxPool(network, 1, 32)
         network = ExpressionLayer(network, TT.exp)
@@ -468,7 +499,7 @@ class JointBindingModel():
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(mse_skip_ambig(target_var, prediction))
-        self._losses.append(loss)
+        self._losses[name] = loss
         return
 
 
@@ -508,22 +539,23 @@ class JointBindingModel():
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(mse_skip_ambig(target_var, prediction))
-        self._losses.append(loss)
+        self._losses[name] = loss
         return
 
     def _build(self):
         # build the predictions dictionary
-        total_loss = TT.sum(self._losses)
+        losses = TT.stack(self._losses.values())
+
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
-        updates = lasagne.updates.adam(total_loss, params)
+        updates = lasagne.updates.adam(TT.sum(losses), params)
         #updates = lasagne.updates.apply_momentum(updates, params, 0.9)
         # build the training function
         all_vars = self._input_vars.values() + self._target_vars.values()
         self.train_fn = theano.function(
-            all_vars, total_loss, updates=updates)
+            all_vars, losses, updates=updates)
         self.test_fn = theano.function(
-            all_vars, total_loss)
+            all_vars, losses)
         
         # build the prediction functions
         self.predict_fns = {}
@@ -543,7 +575,7 @@ class JointBindingModel():
         
         self._multitask_labels = {}
         
-        self._losses = []
+        self._losses = OrderedDict()
         
         self._input_vars = OrderedDict()
         self._target_vars = OrderedDict()
@@ -558,11 +590,14 @@ class JointBindingModel():
                 factor_name)
         self.add_selex_experiments()
 
+        self._chipseq_regularization_penalty = create_param(
+            lambda x: 0.1, (), 'chipseq_penalty')
         for sample_id in sample_ids:
             pks = SamplePeaksAndLabels(
                 sample_id, n_samples, factor_names=factor_names)
             #self.add_DIGN_chipseq_samples(pks)
             self.add_chipseq_samples(pks)
+            self.add_simple_chipseq_model(pks)
 
         self._build()
 
@@ -575,7 +610,7 @@ class JointBindingModel():
         
         # decide how much to oversample
         if oversample is True and data_subset == 'train':
-            num_oversamples = 1
+            num_oversamples = 5
         else:
             num_oversamples = 1
 
@@ -628,8 +663,11 @@ class JointBindingModel():
         print("Starting training...")
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
+            self._selex_penalty.set_value( 
+                round(self._selex_penalty.get_value()/1.5, 6) )
+
             # In each epoch, we do a full pass over the training data:
-            train_err = 0
+            train_err = np.zeros(len(self._losses), dtype=float)
             progbar = Progbar(samples_per_epoch)
             for nb_train_batches_observed, data in enumerate(
                     self.iter_data(batch_size, 'train', repeat_forever=True)):
@@ -640,12 +678,12 @@ class JointBindingModel():
                 err = self.train_fn(*list(data.values()))
                 progbar.update(
                     nb_train_batches_observed*batch_size, 
-                    [('train_err', err),]
+                    [('train_err', err.sum()),]
                 )
                 train_err += err
                         
             # calculate the test error
-            validation_err = 0
+            validation_err = np.zeros(len(self._losses), dtype=float)
             validation_batches = 0
             for data in self.iter_data(batch_size, 'validation', False):
                 # we can use the values attriburte because iter_data  
@@ -653,7 +691,8 @@ class JointBindingModel():
                 err = self.test_fn(*list(data.values()))
                 validation_err += err
                 validation_batches += 1
-            print( 'val_err: %.4e' % (validation_err/validation_batches) )
+            print( 'val_err: %s' % zip(
+                self._losses.keys(), (validation_err/validation_batches) ))
             
             # Print the validation results for this epoch:
             pred_prbs, labels = self.predict(batch_size)
@@ -675,8 +714,9 @@ class JointBindingModel():
 def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
-    model = JointBindingModel(50000, [tf_name,], [sample_id,]) # 300000
-    model.train(50000, 100, 100)
+    n_samples = int(sys.argv[3])
+    model = JointBindingModel(n_samples, [tf_name,], [sample_id,])
+    model.train(n_samples, 100, 100)
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
