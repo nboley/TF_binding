@@ -26,7 +26,8 @@ from keras.utils.generic_utils import Progbar
 import theano
 import theano.tensor as TT
  
-from fit_selex_keras import SelexData, SamplePeaksAndLabels
+from pyTFbindtools.peaks import SelexData, SamplePeaksAndLabels
+
 from lasagne.layers import (
     Layer, InputLayer, Conv2DLayer, MaxPool2DLayer, 
     DenseLayer, FlattenLayer, ExpressionLayer, GlobalPoolLayer,
@@ -213,9 +214,8 @@ class ConvolutionDNASequenceBinding(Layer):
         return rv.dimshuffle((0,2,1,3))
 
 def theano_calc_log_occs(affinities, chem_pot):
-    #inner = (-chem_pot+affinities)/(R*T)
-    #return -TT.log(1.0 + TT.exp(inner))
     inner = (-chem_pot+affinities)/(R*T)
+    #return -TT.log(1.0 + TT.exp(inner))
     lower = TT.switch(inner<-10, TT.exp(inner), 0)
     mid = TT.switch((inner >= -10)&(inner <= 35), 
                     TT.log(1.0 + TT.exp(inner)),
@@ -326,26 +326,12 @@ class OccMaxPool(Layer):
             else self.num_bases
         )
         X = input
-        #X = X.dimshuffle((0,2,1,3))
         rv = K.pool2d(
             X, 
             pool_size=(num_tracks, num_bases), 
             strides=(num_tracks, num_bases),
             pool_mode='max'
         )
-        #rv =rv.dimshuffle((0,2,1,3))
-
-        """
-        X = K.permute_dimensions(input, (0,2,1,3))
-        rv = TT.signal.downsample.max_pool_2d(
-            X, 
-            ds=(num_tracks, num_bases), 
-            st=(num_tracks, num_bases),
-            mode='max',
-            ignore_border=True
-        )
-        rv = K.permute_dimensions(rv, (0,2,1,3))
-        """
         return rv
 
 
@@ -422,7 +408,7 @@ class JointBindingModel():
             motif_len=self.affinity_conv_size, 
             W=W, 
             b=b)
-        network = LogNormalizedOccupancy(network, 0.0)
+        network = LogNormalizedOccupancy(network, -6.0)
         network = LogAnyBoundOcc(network)
         network = OccMaxPool(network, 'full', 'full' )
         network = ExpressionLayer(network, TT.exp)
@@ -470,7 +456,7 @@ class JointBindingModel():
             motif_len=self.affinity_conv_size, 
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
-        network = LogNormalizedOccupancy(network, 0.0)
+        network = LogNormalizedOccupancy(network, -6.0)
         self._add_chipseq_regularization(network, target_var)
 
         network = OccMaxPool(network, 1, 32)
@@ -689,8 +675,8 @@ class JointBindingModel():
 def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
-    model = JointBindingModel(300000, [tf_name,], [sample_id,]) # 300000
-    model.train(300000, 100, 100)
+    model = JointBindingModel(50000, [tf_name,], [sample_id,]) # 300000
+    model.train(50000, 100, 100)
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
