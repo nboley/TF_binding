@@ -35,6 +35,13 @@ NarrowPeakData = namedtuple(
                    'score', 'signalValue', 'pValue', 'qValue', 'idrValue', 'seq'])
 NarrowPeakData.__new__.__defaults__ = (None,) * len(NarrowPeakData._fields)
 
+def upsample(seqs, num_seqs):
+    new_seqs = []
+    new_seqs.extend(seqs)
+    while len(new_seqs) < num_seqs:
+        new_seqs.extend(seqs[:num_seqs-len(new_seqs)])
+    return new_seqs
+
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
@@ -636,7 +643,7 @@ class SamplePeaksAndLabels():
         
         return rv
 
-    def _init_pks_and_label_mats(self):
+    def _init_pks_and_label_mats(self, max_num_peaks, use_top_accessible):
         from pyTFbindtools.DB import load_tf_names
         # load the matrix. This is probably cached on disk, but may need to 
         # be recreated
@@ -646,8 +653,16 @@ class SamplePeaksAndLabels():
         self.pk_record_type = type(self.pks[0])
         pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
         self.pks = np.array(self.pks, dtype=zip(self.pks[0]._fields, pk_types))
+
         # sort the peaks by accessibility
-        index = np.lexsort((self.pks['start'], -self.pks['signalValue']))
+        if use_top_accessible:
+            index = np.lexsort((self.pks['start'], -self.pks['signalValue']))
+        # sort the peaks randomly
+        else:
+            # set a seed so we can use cached peaks between debug rounds
+            np.random.seed(0)
+            index = np.argsort(np.random.random(len(self.pks)))
+        
         self.pks = self.pks[index]
         self.idr_optimal_labels = self.idr_optimal_labels[index,:]
         self.relaxed_labels = self.relaxed_labels[index,:]
@@ -667,11 +682,15 @@ class SamplePeaksAndLabels():
                 or factor_name in self.desired_factor_names)
         ])
         self.factor_names, self.tf_ids, tf_indices = zip(*filtered_tfs)
-        self.pks = self.pks[:self.n_samples]
+        
+        # filter out unwanted peaks/columns
+        if max_num_peaks is None:
+            max_num_peaks = len(self.pks)
+        self.pks = self.pks[:max_num_peaks]
         self.idr_optimal_labels = self.idr_optimal_labels[
-            :self.n_samples, np.array(tf_indices)]
+            :max_num_peaks, np.array(tf_indices)]
         self.relaxed_labels = self.relaxed_labels[
-            :self.n_samples, np.array(tf_indices)]
+            :max_num_peaks, np.array(tf_indices)]
         
         # set the ambiguous labels to -1
         self.ambiguous_pks_mask = (
@@ -679,23 +698,18 @@ class SamplePeaksAndLabels():
         self.clean_labels = self.idr_optimal_labels.copy()
         self.clean_labels[self.ambiguous_pks_mask] = -1
 
-        # print out balance statistics
-        #print (self.idr_optimal_labels.sum(axis=0)/self.idr_optimal_labels.shape[0])
-        #print (self.relaxed_labels.sum(axis=0)/self.relaxed_labels.shape[0])
-        #print (self.ambiguous_pk_indices.sum(axis=0)/float(self.ambiguous_pk_indices.shape[0]))
-
         return
     
     def __init__(
             self, sample_id, n_samples, annotation_id=1, 
-            half_peak_width=500, factor_names=None):
+            half_peak_width=500, factor_names=None, use_top_accessible=False):
         self.sample_id = sample_id
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
         self.seq_length = 2*half_peak_width
         self.n_samples = n_samples
         self.desired_factor_names = factor_names
-        self._init_pks_and_label_mats()
+        self._init_pks_and_label_mats(n_samples, use_top_accessible)
 
 
         #res = bigWigFeaturize.new(
@@ -721,10 +735,6 @@ class SamplePeaksAndLabels():
             if pk[0] in ('chr8', 'chr9')])
 
         self.labels = self.ambiguous_labels # idr_optimal_labels # ambiguous_labels
-        from scipy.stats import itemfreq
-        print itemfreq(self.labels)
-        #assert False
-
 
         self.train_labels = self.labels[training_indices]
         self.validation_labels = self.labels[validation_indices]

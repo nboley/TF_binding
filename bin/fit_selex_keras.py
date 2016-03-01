@@ -148,13 +148,6 @@ class MonitorAccuracy(keras.callbacks.Callback):
 def calc_accuracy(pred_probs, labels):
     return float((pred_probs.round() == labels[:,None]).sum())/labels.shape[0]
 
-def upsample(seqs, num_seqs):
-    new_seqs = []
-    new_seqs.extend(seqs)
-    while len(new_seqs) < num_seqs:
-        new_seqs.extend(seqs[:num_seqs-len(new_seqs)])
-    return new_seqs
-
 class JointBindingModel(Graph):
     def calc_accuracy(self, val=True):
         if val == True:
