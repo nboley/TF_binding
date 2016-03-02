@@ -501,8 +501,8 @@ class JointBindingModel():
 
         return
     def _add_chipseq_regularization(self, occs, target_var):
-        network = LogAnyBoundOcc(occs)
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
+        #network = LogAnyBoundOcc(occs)
+        network = OccMaxPool(occs, 2*self.num_tf_specific_convs, 'full')
         network = ExpressionLayer(network, TT.exp)
         network = FlattenLayer(network)
         prediction = lasagne.layers.get_output(network)
@@ -531,14 +531,16 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
-        #self._add_chipseq_regularization(network, target_var)
+        self._add_chipseq_regularization(network, target_var)
 
-        network = OccMaxPool(network, 1, 32)
-        network = DenseLayer(
-            network, 
-            pks_and_labels.labels.shape[1],
-        ) #nonlinearity=lasagne.nonlinearities.sigmoid)
+        network = OccMaxPool(network, 'full', 'full') # 1, 32
+        #network = DenseLayer(
+        #    network, 
+        #    pks_and_labels.labels.shape[1],
+        #    #nonlinearity=lasagne.nonlinearities.sigmoid
+        #)
         network = ExpressionLayer(network, TT.exp)
+        network = FlattenLayer(network)
 
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
@@ -644,7 +646,7 @@ class JointBindingModel():
         for factor_name in invitro_factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        #self.add_selex_experiments()
+        self.add_selex_experiments()
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 0.1, (), 'chipseq_penalty')
@@ -652,8 +654,8 @@ class JointBindingModel():
             pks = SamplePeaksAndLabels(
                 sample_id, n_samples, factor_names=invivo_factor_names)
             #self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
-            self.add_simple_chipseq_model(pks)
+            self.add_chipseq_samples(pks)
+            #self.add_simple_chipseq_model(pks)
 
         self._build()
 
@@ -722,8 +724,8 @@ class JointBindingModel():
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
                 round(self._selex_penalty.get_value()/1.1, 6) )
-            self._chipseq_regularization_penalty.set_value( 
-                round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
+            #self._chipseq_regularization_penalty.set_value( 
+            #    round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
