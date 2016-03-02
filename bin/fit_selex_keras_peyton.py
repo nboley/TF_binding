@@ -28,6 +28,7 @@ import theano.tensor as TT
 from theano.tensor.nnet.conv import conv2d
 from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.signal.pool import Pool
+from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid
  
 from pyTFbindtools.peaks import SelexData, SamplePeaksAndLabels
 
@@ -525,16 +526,25 @@ class JointBindingModel():
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
         self._add_chipseq_regularization(network, target_var)
-
-        network = OccMaxPool(network, 1, 32, 8) # 1, 32
+        network = OccMaxPool(network, 1, 32, 8)
         network = ExpressionLayer(network, TT.exp)
+
+        network = Conv2DLayer(
+            network, 
+            16, 
+            (2*self.num_affinity_convs,8),
+            nonlinearity=lasagne.nonlinearities.sigmoid
+        )
+        network = DimshuffleLayer(network, (0,2,1,3))        
+
         network = DenseLayer(
             network, 
             pks_and_labels.labels.shape[1],
-            nonlinearity=lasagne.nonlinearities.sigmoid
+            nonlinearity=lasagne.nonlinearities.linear
         )
+        network = ExpressionLayer(network, lasagne.nonlinearities.sigmoid)
+        
         network = FlattenLayer(network)
-
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
 
