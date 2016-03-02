@@ -26,6 +26,8 @@ from keras.utils.generic_utils import Progbar
 import theano
 import theano.tensor as TT
 from theano.tensor.nnet.conv import conv2d
+from theano.tensor.signal.downsample import max_pool_2d
+from theano.tensor.signal.pool import Pool
  
 from pyTFbindtools.peaks import SelexData, SamplePeaksAndLabels
 
@@ -335,20 +337,13 @@ class OccMaxPool(Layer):
 
     def get_output_shape_for(self, input_shape):
         assert input_shape[1] == 1
-        num_output_tracks = (
-            1 if self.num_tracks == 'full' 
-            else input_shape[2]//self.num_tracks )
-        num_output_bases = (
-            1 if self.num_bases == 'full' 
-            else input_shape[3]//self.base_stride )
-        return (
-            input_shape[0],
-            1,
-            num_output_tracks, # + (
-            #    1 if input_shape[1]%self.num_tracks > 0 else 0),
-            num_output_bases# + (
-            #    1 if input_shape[3]%self.num_bases > 0 else 0)
-        )
+        num_tracks = input_shape[2] if self.num_tracks == 'full' else self.num_tracks
+        num_bases = input_shape[3] if self.num_bases == 'full' else self.num_bases
+        base_stride = input_shape[3] if self.base_stride == 'full' else self.base_stride
+        
+        ds = (num_tracks, num_bases)
+        st = (num_tracks, base_stride)
+        return Pool.out_shape(self.input_shape, ds, st=st, ignore_border=True)
 
     def get_output_for(self, input, **kwargs):
         assert self.input_shape[1] == 1
@@ -364,14 +359,12 @@ class OccMaxPool(Layer):
             self.input_shape[3] if self.base_stride == 'full' 
             else self.base_stride
         )
+        ds = (num_tracks, num_bases)
+        st = (num_tracks, base_stride)
         assert base_stride <= num_bases
         X = input
-        rv = K.pool2d(
-            X, 
-            pool_size=(num_tracks, num_bases), 
-            strides=(num_tracks, base_stride),
-            pool_mode='max'
-        )
+        rv = max_pool_2d(
+            X, ds=ds, st=st, ignore_border=True, mode='max')
         return rv
 
 
@@ -533,7 +526,7 @@ class JointBindingModel():
         network = LogNormalizedOccupancy(network, -6.0)
         self._add_chipseq_regularization(network, target_var)
 
-        network = OccMaxPool(network, 1, 32) # 1, 32
+        network = OccMaxPool(network, 1, 32, 8) # 1, 32
         network = ExpressionLayer(network, TT.exp)
         network = DenseLayer(
             network, 
@@ -649,7 +642,7 @@ class JointBindingModel():
         self.add_selex_experiments()
 
         self._chipseq_regularization_penalty = create_param(
-            lambda x: 0.1, (), 'chipseq_penalty')
+            lambda x: 2.0, (), 'chipseq_penalty')
         for sample_id in sample_ids:
             pks = SamplePeaksAndLabels(
                 sample_id, n_samples, factor_names=invivo_factor_names)
@@ -724,8 +717,8 @@ class JointBindingModel():
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
                 round(self._selex_penalty.get_value()/1.1, 6) )
-            #self._chipseq_regularization_penalty.set_value( 
-            #    round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
+            self._chipseq_regularization_penalty.set_value( 
+                round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
