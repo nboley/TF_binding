@@ -380,7 +380,7 @@ class JointBindingModel():
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 0
+        self.num_tf_specific_invivo_affinity_convs = 7
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -533,13 +533,13 @@ class JointBindingModel():
         network = LogNormalizedOccupancy(network, -6.0)
         self._add_chipseq_regularization(network, target_var)
 
-        network = OccMaxPool(network, 'full', 'full') # 1, 32
-        #network = DenseLayer(
-        #    network, 
-        #    pks_and_labels.labels.shape[1],
-        #    #nonlinearity=lasagne.nonlinearities.sigmoid
-        #)
+        network = OccMaxPool(network, 1, 32) # 1, 32
         network = ExpressionLayer(network, TT.exp)
+        network = DenseLayer(
+            network, 
+            pks_and_labels.labels.shape[1],
+            nonlinearity=lasagne.nonlinearities.sigmoid
+        )
         network = FlattenLayer(network)
 
         self._networks[name + ".output"] = network
