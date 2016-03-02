@@ -25,6 +25,7 @@ from keras.utils.generic_utils import Progbar
 
 import theano
 import theano.tensor as TT
+from theano.tensor.nnet.conv import conv2d
  
 from pyTFbindtools.peaks import SelexData, SamplePeaksAndLabels
 
@@ -36,7 +37,61 @@ from lasagne.layers import (
 from lasagne import init
 from lasagne.utils import create_param
 
-def iter_weighted_batch_samples(model, batch_iterator, oversampling_ratio=1):
+def subsample_batch(model, batch, subsample_sizes):
+    output = OrderedDict()
+    pred_vals = model.predict_on_batch(batch)
+    for key in pred_vals:
+        print key
+        batch_size = subsample_sizes[key]
+
+        losses = (pred_vals[key] - batch[key])**2
+        weights = np.zeros_like(losses)
+        
+        # set ambiguous labels to 0
+        losses[batch[key] < -0.5] = 0
+        # add to the losses,
+        weights = losses.sum(1)
+        # re-weight the rows with ambiguous labels
+        weights *= losses.shape[1]/((
+            batch[key] > -0.5).sum(1) + 1e-6)
+        # make sure that every row has some weight
+        weights += 1e-6
+        # normalize the weights to 1
+        weights /= weights.sum()
+
+        # choose the max batch sizes random indices
+        loss_indices = np.random.choice(
+            len(weights), size=subsample_sizes[key], replace=False, p=weights)
+        output[key] = batch[key][loss_indices,:]
+    return output
+
+def iter_balanced_batches(batch_iterator):
+    labels = None
+    batch_size = subsample_sizes[key]
+    weights = np.ones(batch_size)
+
+    losses = (pred_vals[key] - batch[key])**2
+    # set ambiguous labels to 0
+    losses[batch[key] < -0.5] = 0
+    # add to the losses,
+    inner_weights = losses.sum(1)
+    # re-weight the rows with ambiguous labels
+    inner_weights *= losses.shape[1]/((
+        batch[key] > -0.5).sum(1) + 1e-6)
+    # make sure that every row has some weight
+    inner_weights += 1e-6
+    weights += inner_weights
+    # normalize the weights to 1
+    weights /= weights.sum()
+
+    # choose the max batch sizes random indices
+    loss_indices = np.random.choice(
+        len(weights), size=subsample_sizes[key], replace=False, p=weights)
+    output[key] = batch[key][loss_indices,:]
+    return output
+
+def iter_weighted_batch_samples(
+        model, batch_iterator, oversampling_ratio=1, callback=subsample_batch):
     """Iter batches where poorly predicted samples are more frequently selected.
 
     model: the model to predict from
@@ -48,43 +103,18 @@ def iter_weighted_batch_samples(model, batch_iterator, oversampling_ratio=1):
     while True:
         # group the output of oversampling_ratio batches together
         all_batches = OrderedDict()
+        batch_sizes = OrderedDict()
         for key, val in next(batch_iterator).iteritems():
             all_batches[key] = [val,]
+            batch_sizes[key] = val.shape[0]
         for i in xrange(oversampling_ratio-1):
             for key, val in next(batch_iterator).iteritems():
                 all_batches[key].append(val)
-        # find the batch size
-        batch_size = next(all_batches.itervalues())[0].shape[0]
         # stack the output
         for key, batches in all_batches.iteritems():
             all_batches[key] = np.vstack(batches)
 
-        # weight the batch values
-        pred_vals = model.predict_on_batch(all_batches)
-        weights = np.zeros(batch_size*oversampling_ratio)
-        for key in pred_vals:
-            if key.endswith('binding_occupancies'): continue
-            losses = (pred_vals[key] - all_batches[key])**2
-            # set ambiguous labels to 0
-            losses[all_batches[key] < -0.5] = 0
-            # add to the losses,
-            inner_weights = losses.sum(1)
-            # re-weight the rows with ambiguous labels
-            inner_weights *= losses.shape[1]/((
-                all_batches[key] > -0.5).sum(1) + 1e-6)
-            # make sure that every row has some weight
-            inner_weights += 1e-6
-            weights += inner_weights
-        # normalize the weights to 1
-        weights /= weights.sum()
-
-        # downsample batch_size observations
-        output = OrderedDict()
-        loss_indices = np.random.choice(
-            len(weights), size=batch_size, replace=False, p=weights)
-        for key in all_batches.keys():
-            output[key] = all_batches[key][loss_indices,:]
-        yield output
+        yield callback(model, all_batches, batch_sizes)
     
     return
 
@@ -169,7 +199,7 @@ class ConvolutionDNASequenceBinding(Layer):
     def __init__(self, 
                  input,
                  nb_motifs, motif_len, 
-                 use_three_base_encoding=True,
+                 use_three_base_encoding=False,
                  W=init.HeNormal(), b=init.Constant(-3.0),
                  **kwargs):
         super(ConvolutionDNASequenceBinding, self).__init__(input, **kwargs)
@@ -205,8 +235,8 @@ class ConvolutionDNASequenceBinding(Layer):
             X_fwd = input
             X_rc = input
 
-        fwd_rv = K.conv2d(X_fwd, self.W, border_mode='valid') 
-        rc_rv = K.conv2d(X_rc, self.W[:,::-1,:,::-1], border_mode='valid')
+        fwd_rv = conv2d(X_fwd, self.W, border_mode='valid') 
+        rc_rv = conv2d(X_rc, self.W[:,:,::-1,::-1], border_mode='valid')
         if self.b is not None:
             fwd_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
             rc_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
@@ -293,9 +323,14 @@ class LogAnyBoundOcc(Layer):
         return rv
 
 class OccMaxPool(Layer):
-    def __init__(self, input, num_tracks, num_bases, **kwargs):
+    def __init__(
+            self, input, num_tracks, num_bases, base_stride=None, **kwargs):
         self.num_tracks = num_tracks
         self.num_bases = num_bases
+        self.base_stride = base_stride
+        # make the base stride default to the number of bases int he convolution
+        if self.base_stride is None:
+            self.base_stride = self.num_bases
         super(OccMaxPool, self).__init__(input, **kwargs)
 
     def get_output_shape_for(self, input_shape):
@@ -305,7 +340,7 @@ class OccMaxPool(Layer):
             else input_shape[2]//self.num_tracks )
         num_output_bases = (
             1 if self.num_bases == 'full' 
-            else input_shape[3]//self.num_bases )
+            else input_shape[3]//self.base_stride )
         return (
             input_shape[0],
             1,
@@ -325,22 +360,27 @@ class OccMaxPool(Layer):
             self.input_shape[3] if self.num_bases == 'full' 
             else self.num_bases
         )
+        base_stride = (
+            self.input_shape[3] if self.base_stride == 'full' 
+            else self.base_stride
+        )
+        assert base_stride <= num_bases
         X = input
         rv = K.pool2d(
             X, 
             pool_size=(num_tracks, num_bases), 
-            strides=(num_tracks, num_bases),
+            strides=(num_tracks, base_stride),
             pool_mode='max'
         )
         return rv
 
 
 class JointBindingModel():    
-    def _init_shared_affinity_params(self):
+    def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 4
-        self.num_tf_specific_invivo_affinity_convs = 4
+        self.num_tf_specific_invitro_affinity_convs = 1
+        self.num_tf_specific_invivo_affinity_convs = 0
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -353,7 +393,7 @@ class JointBindingModel():
         affinity_conv_filter_shape = (
             self.num_affinity_convs,
             1, 
-            3, 
+            3 if use_three_base_encoding else 4, 
             self.affinity_conv_size)
         self.affinity_conv_filter = create_param(
             lambda x: init.HeNormal().sample(x),
@@ -405,7 +445,8 @@ class JointBindingModel():
         network = ConvolutionDNASequenceBinding(
             network, 
             nb_motifs=self.num_tf_specific_invitro_affinity_convs, 
-            motif_len=self.affinity_conv_size, 
+            motif_len=self.affinity_conv_size,
+            use_three_base_encoding=self._use_three_base_encoding,
             W=W, 
             b=b)
         network = LogNormalizedOccupancy(network, -6.0)
@@ -422,7 +463,6 @@ class JointBindingModel():
         self._losses[name] = self._selex_penalty*loss
 
     def add_selex_experiments(self):
-        self._selex_penalty = create_param(lambda x: 5.0, (), 'selex_penalty')
         for exp in self.selex_experiments:
             self.add_selex_experiment(exp)
     
@@ -442,14 +482,15 @@ class JointBindingModel():
             network, 
             nb_motifs=self.num_affinity_convs, 
             motif_len=self.affinity_conv_size, 
+            use_three_base_encoding=self._use_three_base_encoding,
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
-
-        network = LogAnyBoundOcc(network)
+        #network = LogAnyBoundOcc(network)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         network = ExpressionLayer(network, TT.exp)
         network = FlattenLayer(network)
+        #network = DenseLayer(network, pks_and_labels.labels.shape[1])
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(TT.sum(mse_skip_ambig(target_var, prediction), axis=-1))
@@ -464,7 +505,8 @@ class JointBindingModel():
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         network = ExpressionLayer(network, TT.exp)
         network = FlattenLayer(network)
-        loss = TT.mean(TT.sum(mse_skip_ambig(target_var, network), axis=-1))
+        prediction = lasagne.layers.get_output(network)
+        loss = TT.mean(TT.sum(mse_skip_ambig(target_var, prediction), axis=-1))
         self._losses[str(target_var) + ".chipseqreg"] = (
             self._chipseq_regularization_penalty*loss)
 
@@ -485,14 +527,18 @@ class JointBindingModel():
             network, 
             nb_motifs=self.num_affinity_convs, 
             motif_len=self.affinity_conv_size, 
+            use_three_base_encoding=self._use_three_base_encoding,
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
         #self._add_chipseq_regularization(network, target_var)
 
         network = OccMaxPool(network, 1, 32)
+        network = DenseLayer(
+            network, 
+            pks_and_labels.labels.shape[1],
+        ) #nonlinearity=lasagne.nonlinearities.sigmoid)
         network = ExpressionLayer(network, TT.exp)
-        network = DenseLayer(network, pks_and_labels.labels.shape[1])
 
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
@@ -569,9 +615,18 @@ class JointBindingModel():
             self.predict_fns[key] = predict_fn
         
 
-    def __init__(self, n_samples, factor_names, sample_ids):
-        self.factor_names = factor_names
+    def __init__(self, 
+                 n_samples, 
+                 invivo_factor_names, 
+                 sample_ids, 
+                 invitro_factor_names=[],
+                 use_three_base_encoding=True):
+        self.factor_names = invivo_factor_names + [
+            x for x in invitro_factor_names if x not in invivo_factor_names]
+        # make sure the factor names are unique
+        assert len(self.factor_names) == len(set(self.factor_names))
         self.sample_ids = sample_ids
+        self._use_three_base_encoding = use_three_base_encoding
         
         self._multitask_labels = {}
         
@@ -582,38 +637,39 @@ class JointBindingModel():
         self._networks = OrderedDict()
         self._data_iterators = OrderedDict()
 
-        self._init_shared_affinity_params()
-        
+        self._init_shared_affinity_params(self._use_three_base_encoding)
+
+        self._selex_penalty = create_param(lambda x: 2.0, (), 'selex_penalty')
         self.selex_experiments = SelexData(n_samples)
-        for factor_name in self.factor_names:
+        for factor_name in invitro_factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        self.add_selex_experiments()
+        #self.add_selex_experiments()
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 0.1, (), 'chipseq_penalty')
         for sample_id in sample_ids:
             pks = SamplePeaksAndLabels(
-                sample_id, n_samples, factor_names=factor_names)
+                sample_id, n_samples, factor_names=invivo_factor_names)
             #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
+            #self.add_chipseq_samples(pks)
             self.add_simple_chipseq_model(pks)
 
         self._build()
 
     def iter_data(
             self, batch_size, data_subset, repeat_forever, oversample=True):
-        iterators = OrderedDict()
-        for key, iter_inst in self._data_iterators.iteritems():
-            iterators[key] = iter_inst(batch_size, data_subset, repeat_forever)
-        assert len(iterators) > 0, 'No data iterators provided'
-        
         # decide how much to oversample
         if oversample is True and data_subset == 'train':
             num_oversamples = 5
         else:
             num_oversamples = 1
 
+        iterators = OrderedDict()
+        for key, iter_inst in self._data_iterators.iteritems():
+            iterators[key] = iter_inst(batch_size, data_subset, repeat_forever)
+        assert len(iterators) > 0, 'No data iterators provided'
+        
         def iter_data():
             while True:
                 merged_output = {}
@@ -628,8 +684,9 @@ class JointBindingModel():
                         self._target_vars.iterkeys()):
                     ordered_merged_output[key] = merged_output[key]
                 yield ordered_merged_output
-
-        return iter_weighted_batch_samples(self, iter_data(), num_oversamples)
+        
+        return iter_data()
+        #return iter_weighted_batch_samples(self, iter_data(), num_oversamples)
 
     def get_all_params(self):
         return lasagne.layers.get_all_params(
@@ -664,8 +721,10 @@ class JointBindingModel():
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
-                round(self._selex_penalty.get_value()/1.5, 6) )
-
+                round(self._selex_penalty.get_value()/1.1, 6) )
+            self._chipseq_regularization_penalty.set_value( 
+                round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
+            
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
             progbar = Progbar(samples_per_epoch)
@@ -715,7 +774,13 @@ def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
     n_samples = int(sys.argv[3])
-    model = JointBindingModel(n_samples, [tf_name,], [sample_id,])
+    model = JointBindingModel(
+        n_samples, 
+        [tf_name,], 
+        [sample_id,],
+    #    ['CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
+        [tf_name,])
+
     model.train(n_samples, 100, 100)
     
 def main():        
