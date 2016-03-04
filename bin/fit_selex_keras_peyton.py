@@ -43,6 +43,13 @@ from lasagne.regularization import l1, apply_penalty
 from lasagne import init
 from lasagne.utils import create_param
 
+def zero_rows_penalty(x):
+    row_sums = TT.sum(abs(x), axis=0)
+    return TT.sum(TT.log(1+row_sums))/x.shape[0]
+
+def keep_positive_penalty(x):
+    return TT.sum((abs(x) - x)/2 )
+
 def subsample_batch(model, batch, subsample_sizes):
     output = OrderedDict()
     pred_vals = model.predict_on_batch(batch)
@@ -388,8 +395,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 0
+        self.num_tf_specific_invitro_affinity_convs = 8
+        self.num_tf_specific_invivo_affinity_convs = 8 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -398,7 +405,7 @@ class JointBindingModel():
             len(self.factor_names)*self.num_tf_specific_convs \
             + self.num_invivo_convs
         )
-        self.affinity_conv_size = 32
+        self.affinity_conv_size = 16
         affinity_conv_filter_shape = (
             self.num_affinity_convs,
             1, 
@@ -612,7 +619,9 @@ class JointBindingModel():
         # build the predictions dictionary
         losses = TT.stack(self._losses.values())
         regularization_loss = (0.0
-            + 0.002*apply_penalty(self.affinity_conv_filter, l1) 
+            + 0.00001*apply_penalty(self.affinity_conv_filter, l1)
+            + 0.0001*apply_penalty(self.affinity_conv_filter, zero_rows_penalty)
+            #+ 0.01*apply_penalty(self.affinity_conv_filter, keep_positive_penalty)
         )
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
@@ -680,11 +689,10 @@ class JointBindingModel():
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
         for sample_id in sample_ids:
-            pass
-            #pks = SamplePeaksAndLabels(
-            #    sample_id, n_samples, factor_names=invivo_factor_names)
+            pks = SamplePeaksAndLabels(
+                sample_id, n_samples, factor_names=invivo_factor_names)
             #self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
+            self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
 
         self._build()
@@ -756,23 +764,15 @@ class JointBindingModel():
                     (np.zeros((1, ddg_array.shape[1])), ddg_array))
             ref_energy = self.affinity_conv_bias.get_value()[i]
             mo = EnergeticDNABindingModel(ref_energy, -ddg_array.T)
-            mo.build_pwm_model(-16).plot("%s-%i-pwm-fwd.png" % (prefix, i))
+            mo.build_pwm_model(-6).plot("%s-%i-pwm-fwd.png" % (prefix, i))
             mo = EnergeticDNABindingModel(ref_energy, -ddg_array[::-1,::-1].T)
-            mo.build_pwm_model(-16).plot("%s-%i-pwm-rc.png" % (prefix, i))
+            mo.build_pwm_model(-6).plot("%s-%i-pwm-rc.png" % (prefix, i))
+            pyplot.close("all")
         
         if not self._use_three_base_encoding:
             for i in xrange(self.affinity_conv_bias.get_value().shape[0]):
-                if self._use_three_base_encoding:
-                    ddg_array = self.affinity_conv_filter.get_value()[i,0,:,:]
-                    ddg_array = np.vstack(
-                        (np.zeros((1, ddg_array.shape[1])), ddg_array))
-                    ref_energy = self.affinity_conv_bias.get_value()[i]
-                    weights = ddg_array
-                    weights[0,:] += ref_energy/weights.shape[0]
-                    weights = weights
-                else:
-                    weights = self.affinity_conv_filter.get_value()[i,0,:,:]
-                    weights += self.affinity_conv_bias.get_value()[i]/len(weights.ravel())
+                weights = self.affinity_conv_filter.get_value()[i,0,:,:]
+                weights += self.affinity_conv_bias.get_value()[i]/len(weights.ravel())
 
                 plot_bases(weights.T)
                 pyplot.savefig("%s-%i-raw-fwd.png" % (prefix, i))
@@ -847,7 +847,7 @@ def single_sample_main():
         [tf_name,],
         use_three_base_encoding=False)
 
-    model.train(n_samples, 100, 10)
+    model.train(n_samples, 100, 100)
     model.plot_binding_models("test")
 
     
