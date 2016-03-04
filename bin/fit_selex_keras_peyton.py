@@ -32,7 +32,7 @@ from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.signal.pool import Pool
 from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid, binary_crossentropy
  
-from pyTFbindtools.peaks import SelexData, SamplePeaksAndLabels
+from pyTFbindtools.peaks import SelexData, PartitionedSamplePeaksAndLabels
 
 from lasagne.layers import (
     Layer, InputLayer, Conv2DLayer, MaxPool2DLayer, 
@@ -689,8 +689,8 @@ class JointBindingModel():
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
         for sample_id in sample_ids:
-            pks = SamplePeaksAndLabels(
-                sample_id, n_samples, factor_names=invivo_factor_names)
+            pks = PartitionedSamplePeaksAndLabels(
+                sample_id, factor_names=invivo_factor_names)
             #self.add_DIGN_chipseq_samples(pks)
             self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)

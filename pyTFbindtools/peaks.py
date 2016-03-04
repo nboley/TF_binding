@@ -463,6 +463,10 @@ def build_peaks_label_mat(
                 np.save(ofp, labels)
         all_labels.append(labels)
 
+    pk_record_type = type(pks[0])
+    pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
+    pks = np.array(self.pks, dtype=zip(pks[0]._fields, pk_types))
+
     return pks, sorted(peak_fnames.keys()), all_labels
 
 def iter_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
@@ -589,7 +593,8 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
 class SamplePeaksAndLabels():
     def one_hot_code_peaks_sequence(self):
-        cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(self.pks.view(np.uint8)).hexdigest()
+        cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(
+            self.pks.view(np.uint8)).hexdigest()
         try:
             with open(cached_fname) as fp:
                 print "Loading cached seqs"
@@ -643,32 +648,36 @@ class SamplePeaksAndLabels():
         
         return rv
 
-    def _init_pks_and_label_mats(self, max_num_peaks, use_top_accessible):
-        from pyTFbindtools.DB import load_tf_names
-        # load the matrix. This is probably cached on disk, but may need to 
-        # be recreated
-        (self.pks, self.tf_ids, (self.idr_optimal_labels, self.relaxed_labels)
-            ) = build_peaks_label_mat(
-                self.annotation_id, self.sample_id, self.half_peak_width)
-        self.pk_record_type = type(self.pks[0])
-        pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
-        self.pks = np.array(self.pks, dtype=zip(self.pks[0]._fields, pk_types))
+    @property
+    def factor_names(self):
+        if self._factor_names is None:
+            from pyTFbindtools.DB import load_tf_names
+            self._factor_names = load_tf_names(self.tf_ids)
+        return self._factor_names
 
-        # sort the peaks by accessibility
-        if use_top_accessible:
-            index = np.lexsort((self.pks['start'], -self.pks['signalValue']))
-        # sort the peaks randomly
-        else:
-            # set a seed so we can use cached peaks between debug rounds
-            np.random.seed(0)
-            index = np.argsort(np.random.random(len(self.pks)))
-        
-        self.pks = self.pks[index]
-        self.idr_optimal_labels = self.idr_optimal_labels[index,:]
-        self.relaxed_labels = self.relaxed_labels[index,:]
+    def subset_pks(self, pk_indices=slice(), factor_indices=slice()):
+        """Return a copy of self only containing the peaks sepcified by indices
 
+        indices: numpy array of indices to include
+        """
+        return type(self)(
+            self.pks[pk_indices], 
+            self.tf_ids[factor_indices], 
+            self.idr_optimal_labels[pk_indices, factor_indices], 
+            self.relaxed_labels[pk_indices, factor_indices]
+        )
+
+    def subset_tfs(self, desired_factor_names):
+        """Return a copy of self that only contains factor_names.
+
+        """
+        # make chained filtering more convenient by defaulting to 
+        # all tfs if none is passed
+        if desired_factor_names is None:
+            return self
+            
         # keep the top n_samples peaks and max_num_tfs tfs
-        all_factor_names = load_tf_names(self.tf_ids)
+        all_factor_names = self.factor_names
         # make sure all of the tfnames actually exist
         #assert ( self.desired_factor_names is None 
         #         or all(factor_name in all_factor_names 
@@ -678,10 +687,56 @@ class SamplePeaksAndLabels():
         filtered_tfs = sorted([
             (factor_name, tf_id, i) for i, (factor_name, tf_id) 
             in enumerate(zip(all_factor_names, self.tf_ids)) 
-            if (self.desired_factor_names is None 
-                or factor_name in self.desired_factor_names)
+            if factor_name in self.desired_factor_names
         ])
-        self.factor_names, self.tf_ids, tf_indices = zip(*filtered_tfs)
+        factor_names, tf_ids, tf_indices = zip(*filtered_tfs)
+
+        return self.subset_pks(factor_indices=np.array(tf_indices))
+
+    def subset_pks_by_rank(self, max_num_peaks, use_top_accessible, seed=0):
+        """Return a copy of self containing at most max_num_peaks peaks.
+
+        max_num_peaks: the maximum number of peaks to return
+        use_top_accessible: return max_num_peaks most accessible peaks
+        """
+        if max_num_peaks is None:
+            max_num_peaks = len(self.pks)
+        
+        # sort the peaks by accessibility
+        if use_top_accessible:
+            indices = np.lexsort((self.pks['start'], -self.pks['signalValue']))
+        # sort the peaks randomly
+        else:
+            # set a seed so we can use cached peaks between debug rounds
+            np.random.seed(seed)
+            indices = np.argsort(np.random.random(len(self.pks)))
+        return self.subset_pks(index)
+    
+    def subset_pks_by_contig(
+            self, contigs_to_include=[], contigs_to_exclude=[]):
+        assert (len(contigs_to_include) > 0) != (len(contigs_to_exclude) > 0), \
+            "Either contigs_to_include or contigs_to_exclude must be specified"
+        # speed up the search a little
+        contigs_to_include = set(contigs_to_include)
+        contigs_to_exclude = set(contigs_to_include)
+        indices = np.array([
+            i for i, pk in enumerate(self.pks) 
+            if pk[0] not in contigs_to_exclude
+            and pk[0] in contigs_to_include])
+        return self.subset_pks(indices)
+    
+    def _init_pks_and_label_mats(self, max_num_peaks, use_top_accessible):
+        # load the matrix. This is probably cached on disk, but may need to 
+        # be recreated
+        (self.pks, self.tf_ids, (self.idr_optimal_labels, self.relaxed_labels)
+            ) = build_peaks_label_mat(
+                self.annotation_id, self.sample_id, self.half_peak_width)
+
+        
+        self.pks = self.pks[index]
+        self.idr_optimal_labels = self.idr_optimal_labels[index,:]
+        self.relaxed_labels = self.relaxed_labels[index,:]
+
         
         # filter out unwanted peaks/columns
         if max_num_peaks is None:
@@ -700,94 +755,89 @@ class SamplePeaksAndLabels():
 
         return
     
-    def __init__(
-            self, sample_id, n_samples, annotation_id=1, 
-            half_peak_width=500, factor_names=None, use_top_accessible=False):
+    def __init__(self, 
+                 sample_id, tf_ids, 
+                 pks, #seqs, accessibility_data,
+                 idr_optimal_labels, relaxed_labels):
         self.sample_id = sample_id
-        self.annotation_id = annotation_id
-        self.half_peak_width = half_peak_width
-        self.seq_length = 2*half_peak_width
-        self.n_samples = n_samples
-        self.desired_factor_names = factor_names
-        self._init_pks_and_label_mats(n_samples, use_top_accessible)
+        self.tf_ids = tf_ids
 
+        self.pks = pks
+        self.seqs = seqs
+        self.seq_length = len(seqs[0])
+
+        # set the ambiguous labels to -1
+        self.ambiguous_pks_mask = (
+            self.idr_optimal_labels != self.relaxed_labels)
+        self.clean_labels = self.idr_optimal_labels.copy()
+        self.clean_labels[self.ambiguous_pks_mask] = -1
 
         #res = bigWigFeaturize.new(
         #    ["/mnt/data/epigenomeRoadmap/signal/consolidated/macs2signal/foldChange/E123-DNase.fc.signal.bigwig",], 
         #    self., 
         #    intervals=regions)
 
-        # initialize the training and validation data
-        index = np.argsort(np.random.random(len(self.pks)))
-        self.pks = self.pks[index]
-        self.idr_optimal_labels = self.idr_optimal_labels[index,:]
-        self.relaxed_labels = self.relaxed_labels[index,:]
-        self.ambiguous_labels = self.clean_labels[index,:]
-
-        training_indices = np.arange(0, int(self.n_samples*0.1), dtype=int)
-        training_indices = np.array([
-            i for i, pk in enumerate(self.pks) 
-            if pk[0] not in ('chr1', 'chr2', 'chr8', 'chr9')])
-        validation_indices = np.arange(
-            int(self.n_samples*0.1), self.n_samples, dtype=int)
-        validation_indices = np.array([
-            i for i, pk in enumerate(self.pks) 
-            if pk[0] in ('chr8', 'chr9')])
-
         self.labels = self.ambiguous_labels # idr_optimal_labels # ambiguous_labels
-
-        self.train_labels = self.labels[training_indices]
-        self.validation_labels = self.labels[validation_indices]
         
         # code the peaks' sequence
         print "Coding peaks"
         self.genome_fasta = FastaFile(
             'hg19.genome.fa') #load_genome_metadata(self.annotation_id).filename)
         self.fwd_seqs = self.one_hot_code_peaks_sequence()
-        self.train_fwd_seqs = self.fwd_seqs[training_indices]
-        self.validation_fwd_seqs = self.fwd_seqs[validation_indices]
 
         print "Loading Accessibility Data"
         self.accessibility_data = np.zeros((n_samples, 1, 977, 1)) # self.load_accessibility_data()[:,:,:977,:]
-        #assert self.accessibility_data.shape[0] == n_samples
-        self.train_accessibility_data = self.accessibility_data[
-            training_indices]
-        self.validation_accessibility_data = self.accessibility_data[
-            validation_indices]
 
-    def iter_batches(self, batch_size, data_subset, repeat_forever):
-        if data_subset == 'train':
-            accessibility_data = self.train_accessibility_data
-            fwd_seqs = self.train_fwd_seqs
-            labels = self.train_labels
-        elif data_subset == 'validation':
-            accessibility_data = self.validation_accessibility_data
-            fwd_seqs = self.validation_fwd_seqs
-            labels = self.validation_labels
-        else:
-            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
-
+    def iter_batches(self, batch_size, repeat_forever):
         i = 0
-        n = fwd_seqs.shape[0]//batch_size
+        n = self.fwd_seqs.shape[0]//batch_size
         if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
-           % (fwd_seqs.shape[0], batch_size)
+           % (self.fwd_seqs.shape[0], batch_size)
         permutation = None
         while repeat_forever is True or i < n:
             if i%n == 0:
-                permutation = np.random.permutation(labels.shape[0])
+                permutation = np.random.permutation(self.labels.shape[0])
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
-            yield {'fwd_seqs': fwd_seqs[indices], 
-                   'accessibility_data': accessibility_data[indices], 
-                   'chipseq_output': labels[indices],
-                   'output': labels[indices],
-                   #'binding_occupancies': np.zeros(1)
+            yield {'fwd_seqs': self.fwd_seqs[indices], 
+                   'accessibility_data': self.accessibility_data[indices], 
+                   'output': self.labels[indices]
             }
             i += 1
         
         return
+
+class PartitionedSamplePeaksAndLabels():
+    def __init__(self, 
+                 roadmap_sample_id, 
+                 factor_names, 
+                 n_samples=None, 
+                 annotation_id=1, 
+                 half_peak_width=500):
+        pks, tf_ids, (idr_optimal_labels, relaxed_labels) = build_peaks_label_mat(
+            annotation_id, roadmap_sample_id, half_peak_width)
+        self.data = PeaksAndLabels(
+            roadmap_sample_id, tf_ids, 
+            pks, #seqs, accessibility_data,
+            idr_optimal_labels, relaxed_labels
+        ).subset_pks_by_rank(
+            max_num_peaks=n_samples, use_top_accessible=False
+        ).subset_tfs(factor_names)
+        
+        self.train = self.data.subset_pks_by_contig(
+            contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9'))
+        self.validation = self.data.subset_pks_by_contig(
+            contigs_to_include=('chr8', 'chr9'))
     
+    def iter_batches(self, batch_size, data_subset, repeat_forever):
+        if data_subset == 'train':
+            return self.train.iter_batches(batch_size, repeat_forever)
+        elif data_subset == 'validation':
+            return self.validation.iter_batches(batch_size, repeat_forever)
+        else:
+            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
+
     def iter_train_data(self, batch_size, repeat_forever=False):
         return self.iter_batches(batch_size, 'train', repeat_forever)
 
