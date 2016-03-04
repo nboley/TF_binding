@@ -12,6 +12,8 @@ from pyTFbindtools.cross_validation import ClassificationResult
  
 from pyTFbindtools.DB import load_genome_metadata
 from pyDNAbinding.sequence import one_hot_encode_sequence
+from pyDNAbinding.binding_model import EnergeticDNABindingModel
+from pyDNAbinding.plot import plot_bases, pyplot
 from pyDNAbinding.misc import R, T
 
 VERBOSE = True
@@ -28,7 +30,7 @@ import theano.tensor as TT
 from theano.tensor.nnet.conv import conv2d
 from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.signal.pool import Pool
-from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid
+from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid, binary_crossentropy
  
 from pyTFbindtools.peaks import SelexData, SamplePeaksAndLabels
 
@@ -36,6 +38,7 @@ from lasagne.layers import (
     Layer, InputLayer, Conv2DLayer, MaxPool2DLayer, 
     DenseLayer, FlattenLayer, ExpressionLayer, GlobalPoolLayer,
     DimshuffleLayer, DropoutLayer)
+from lasagne.regularization import l1, apply_penalty
 
 from lasagne import init
 from lasagne.utils import create_param
@@ -127,6 +130,18 @@ def mse_skip_ambig(y_true, y_pred):
     non_ambig = (y_true > -0.5)
     cnts = non_ambig.sum(axis=0, keepdims=True)
     return K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts
+
+
+def cross_entropy_skip_ambig(y_true, y_pred):
+    non_ambig = (y_true > -0.5)
+    cnts = non_ambig.sum(axis=0, keepdims=True)
+    rv = binary_crossentropy(
+        TT.clip(y_pred*non_ambig, 1e-6, 1-1e-6), 
+        TT.clip(y_true*non_ambig, 1e-6, 1-1e-6)
+    )
+    return rv*y_true.shape[0]/cnts
+
+global_loss_fn = cross_entropy_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -374,7 +389,7 @@ class JointBindingModel():
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 7
+        self.num_tf_specific_invivo_affinity_convs = 0
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -383,7 +398,7 @@ class JointBindingModel():
             len(self.factor_names)*self.num_tf_specific_convs \
             + self.num_invivo_convs
         )
-        self.affinity_conv_size = 16
+        self.affinity_conv_size = 32
         affinity_conv_filter_shape = (
             self.num_affinity_convs,
             1, 
@@ -480,14 +495,14 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
-        #network = LogAnyBoundOcc(network)
+        network = LogAnyBoundOcc(network)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         network = ExpressionLayer(network, TT.exp)
         network = FlattenLayer(network)
         #network = DenseLayer(network, pks_and_labels.labels.shape[1])
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(TT.sum(mse_skip_ambig(target_var, prediction), axis=-1))
+        loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
 
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
@@ -498,9 +513,10 @@ class JointBindingModel():
         #network = LogAnyBoundOcc(occs)
         network = OccMaxPool(occs, 2*self.num_tf_specific_convs, 'full')
         network = ExpressionLayer(network, TT.exp)
+        #network = DenseLayer(network, len(self.invivo_factor_names))
         network = FlattenLayer(network)
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(TT.sum(mse_skip_ambig(target_var, prediction), axis=-1))
+        loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
         self._losses[str(target_var) + ".chipseqreg"] = (
             self._chipseq_regularization_penalty*loss)
 
@@ -531,7 +547,7 @@ class JointBindingModel():
 
         network = Conv2DLayer(
             network, 
-            16, 
+            self.num_affinity_convs, 
             (2*self.num_affinity_convs,8),
             nonlinearity=lasagne.nonlinearities.sigmoid
         )
@@ -540,16 +556,15 @@ class JointBindingModel():
         network = DenseLayer(
             network, 
             pks_and_labels.labels.shape[1],
-            nonlinearity=lasagne.nonlinearities.linear
+            nonlinearity=lasagne.nonlinearities.sigmoid
         )
-        network = ExpressionLayer(network, lasagne.nonlinearities.sigmoid)
         
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(mse_skip_ambig(target_var, prediction))
+        loss = TT.mean(global_loss_fn(target_var, prediction))
         self._losses[name] = loss
         return
 
@@ -589,22 +604,27 @@ class JointBindingModel():
         self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(mse_skip_ambig(target_var, prediction))
+        loss = TT.mean(global_loss_fn(target_var, prediction))
         self._losses[name] = loss
         return
 
     def _build(self):
         # build the predictions dictionary
         losses = TT.stack(self._losses.values())
-
+        regularization_loss = (0.0
+            + 0.002*apply_penalty(self.affinity_conv_filter, l1) 
+        )
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
-        updates = lasagne.updates.adam(TT.sum(losses), params)
+        updates = lasagne.updates.adam(
+            TT.sum(losses) + regularization_loss, 
+            params
+        )
         #updates = lasagne.updates.apply_momentum(updates, params, 0.9)
         # build the training function
         all_vars = self._input_vars.values() + self._target_vars.values()
         self.train_fn = theano.function(
-            all_vars, losses, updates=updates)
+            all_vars, losses + regularization_loss, updates=updates)
         self.test_fn = theano.function(
             all_vars, losses)
         
@@ -628,6 +648,9 @@ class JointBindingModel():
                  use_three_base_encoding=True):
         self.factor_names = invivo_factor_names + [
             x for x in invitro_factor_names if x not in invivo_factor_names]
+        self.invivo_factor_names = invivo_factor_names
+        self.invitro_factor_names = invitro_factor_names
+        
         # make sure the factor names are unique
         assert len(self.factor_names) == len(set(self.factor_names))
         self.sample_ids = sample_ids
@@ -636,6 +659,7 @@ class JointBindingModel():
         self._multitask_labels = {}
         
         self._losses = OrderedDict()
+        self.regularizers = OrderedDict()
         
         self._input_vars = OrderedDict()
         self._target_vars = OrderedDict()
@@ -644,7 +668,9 @@ class JointBindingModel():
 
         self._init_shared_affinity_params(self._use_three_base_encoding)
 
-        self._selex_penalty = create_param(lambda x: 2.0, (), 'selex_penalty')
+        init_sp = 2.0*len(invivo_factor_names)/(len(invitro_factor_names)+1e-6)
+        self._selex_penalty = create_param(
+            lambda x: init_sp, (), 'selex_penalty')
         self.selex_experiments = SelexData(n_samples)
         for factor_name in invitro_factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
@@ -654,10 +680,11 @@ class JointBindingModel():
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
         for sample_id in sample_ids:
-            pks = SamplePeaksAndLabels(
-                sample_id, n_samples, factor_names=invivo_factor_names)
+            pass
+            #pks = SamplePeaksAndLabels(
+            #    sample_id, n_samples, factor_names=invivo_factor_names)
             #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
+            #self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
 
         self._build()
@@ -719,16 +746,49 @@ class JointBindingModel():
             labels[key] = np.vstack(labels[key])
 
         return pred_prbs, labels
+
+    def plot_binding_models(self, prefix):
+        # build the pwm
+        for i in xrange(self.affinity_conv_bias.get_value().shape[0]):
+            ddg_array = self.affinity_conv_filter.get_value()[i,0,:,:]
+            if self._use_three_base_encoding:
+                ddg_array = np.vstack(
+                    (np.zeros((1, ddg_array.shape[1])), ddg_array))
+            ref_energy = self.affinity_conv_bias.get_value()[i]
+            mo = EnergeticDNABindingModel(ref_energy, -ddg_array.T)
+            mo.build_pwm_model(-16).plot("%s-%i-pwm-fwd.png" % (prefix, i))
+            mo = EnergeticDNABindingModel(ref_energy, -ddg_array[::-1,::-1].T)
+            mo.build_pwm_model(-16).plot("%s-%i-pwm-rc.png" % (prefix, i))
         
+        if not self._use_three_base_encoding:
+            for i in xrange(self.affinity_conv_bias.get_value().shape[0]):
+                if self._use_three_base_encoding:
+                    ddg_array = self.affinity_conv_filter.get_value()[i,0,:,:]
+                    ddg_array = np.vstack(
+                        (np.zeros((1, ddg_array.shape[1])), ddg_array))
+                    ref_energy = self.affinity_conv_bias.get_value()[i]
+                    weights = ddg_array
+                    weights[0,:] += ref_energy/weights.shape[0]
+                    weights = weights
+                else:
+                    weights = self.affinity_conv_filter.get_value()[i,0,:,:]
+                    weights += self.affinity_conv_bias.get_value()[i]/len(weights.ravel())
+
+                plot_bases(weights.T)
+                pyplot.savefig("%s-%i-raw-fwd.png" % (prefix, i))
+                plot_bases(weights[::-1,::-1].T)
+                pyplot.savefig("%s-%i-raw-rc.png" % (prefix, i))
+                pyplot.close("all")
+    
     def train(self, samples_per_epoch, batch_size, nb_epoch):
         # Finally, launch the training loop.
         print("Starting training...")
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
-            self._selex_penalty.set_value( 
-                round(self._selex_penalty.get_value()/1.1, 6) )
-            self._chipseq_regularization_penalty.set_value( 
-                round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
+            #self._selex_penalty.set_value( 
+            #    round(self._selex_penalty.get_value()/1.1, 6) )
+            #self._chipseq_regularization_penalty.set_value( 
+            #    round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
@@ -783,10 +843,13 @@ def single_sample_main():
         n_samples, 
         [tf_name,], 
         [sample_id,],
-    #    ['CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
-        [tf_name,])
+    #    ['YY1', 'CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
+        [tf_name,],
+        use_three_base_encoding=False)
 
-    model.train(n_samples, 100, 100)
+    model.train(n_samples, 100, 10)
+    model.plot_binding_models("test")
+
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
