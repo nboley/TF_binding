@@ -841,14 +841,11 @@ class PartitionedSamplePeaksAndLabels():
         # XXX search for cached data
         pks, tf_ids, (idr_optimal_labels, relaxed_labels) = build_peaks_label_mat(
             annotation_id, roadmap_sample_id, half_peak_width)
-        pks = pks[:10000]
-        idr_optimal_labels = idr_optimal_labels[:10000,:]
-        relaxed_labels = relaxed_labels[:10000,:]
 
         print "Coding peaks"
         from pyDNAbinding.DB import load_genome_metadata
-        genome_fasta = FastaFile(
-            load_genome_metadata(annotation_id).filename)
+        genome_fasta = FastaFile('hg19.genome.fa')
+        # load_genome_metadata(annotation_id).filename)
         fwd_seqs = SamplePeaksAndLabels.one_hot_code_peaks_sequence(
             pks, genome_fasta)
         
