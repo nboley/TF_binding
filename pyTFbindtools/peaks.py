@@ -901,9 +901,11 @@ class PartitionedSamplePeaksAndLabels():
             print "Splitting out validation data"        
             self.validation = self.data.subset_pks_by_contig(
                 contigs_to_include=('chr8', 'chr9'))
-
             self._save_cached()
-    
+        
+        print self.train.fwd_seqs.shape
+        print self.validation.fwd_seqs.shape
+
     def iter_batches(self, batch_size, data_subset, repeat_forever):
         if data_subset == 'train':
             return self.train.iter_batches(batch_size, repeat_forever)
@@ -1127,7 +1129,6 @@ class SelexExperiment():
         self.n_samples = n_samples
         self.seq_pad = seq_pad
         self.validation_split = validation_split
-        self._training_index = int(self.n_samples*self.validation_split)
 
         # load connect to the DB, and find the factor name
         selex_db_conn = SelexDBConn(
@@ -1146,22 +1147,24 @@ class SelexExperiment():
 
         rnd_num = max(fnames.keys())
         with optional_gzip_open(fnames[rnd_num]) as fp:
-            bnd_seqs = load_fastq(fp, self.n_samples/2)
+            bnd_seqs = load_fastq(fp, self.n_samples)
         with optional_gzip_open(bg_fname) as fp:
-            unbnd_seqs = load_fastq(fp, self.n_samples/2)
+            unbnd_seqs = load_fastq(fp, self.n_samples)
         if len(bnd_seqs[0]) < 20:
             raise SeqsTooShort("Seqs too short for %s (exp %i)." % (
                 self.factor_name, selex_exp_id))
         
-        if len(unbnd_seqs) < self.n_samples/2:
-            unbnd_seqs = upsample(unbnd_seqs, self.n_samples/2)
-        if len(bnd_seqs) < self.n_samples/2:
-            bnd_seqs = upsample(bnd_seqs, self.n_samples/2)
+        if self.n_samples is not None:
+            if len(unbnd_seqs) < self.n_samples:
+                unbnd_seqs = upsample(unbnd_seqs, self.n_samples)
+            if len(bnd_seqs) < self.n_samples:
+                bnd_seqs = upsample(bnd_seqs, self.n_samples)
 
         (self.fwd_seqs, self.shape_seqs, self.labels 
              ) = self.get_coded_seqs_and_labels(
                  unbnd_seqs, bnd_seqs, self.primer)
-
+        self.n_samples = self.fwd_seqs.shape[0]
+        self._training_index = int(self.n_samples*self.validation_split)
         self.train_fwd_seqs = self.fwd_seqs[self._training_index:]
         self.train_labels = self.labels[self._training_index:]
         
