@@ -465,7 +465,7 @@ def build_peaks_label_mat(
 
     pk_record_type = type(pks[0])
     pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
-    pks = np.array(self.pks, dtype=zip(pks[0]._fields, pk_types))
+    pks = np.array(pks, dtype=zip(pks[0]._fields, pk_types))
 
     return pks, sorted(peak_fnames.keys()), all_labels
 
@@ -591,10 +591,41 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
     return peaks_and_labels
 
 
+def load_accessibility_data(sample_ids, pks):
+    from pyTFbindtools.DB import load_dnase_fnames
+    # get the correct filename
+    fnames = load_dnase_fnames(sample_ids)
+    
+    pk_width = pks[0]['stop'] - pks[0]['start'] + 1
+    
+    cached_fname = "cachedaccessibility.%s.%s.obj" % (
+        hashlib.sha1(self.pks.view(np.uint8)).hexdigest(),
+        hash(tuple(fnames))
+    )
+    try:
+        with open(cached_fname) as fp:
+            print "Loading cached accessibility data"
+            rv = np.load(fp)
+    except IOError:
+        rv = bigWigFeaturize.new(
+            fnames,
+            pk_width, 
+            intervals=[
+                Region(pk['contig'], pk['start'], pk['stop']) for pk in self.pks
+            ]
+        )
+
+        with open(cached_fname, "w") as ofp:
+            print "Saving accessibility data"
+            np.save(ofp, rv)
+
+    return rv
+
 class SamplePeaksAndLabels():
-    def one_hot_code_peaks_sequence(self):
+    @staticmethod
+    def one_hot_code_peaks_sequence(pks, genome_fasta):
         cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(
-            self.pks.view(np.uint8)).hexdigest()
+            pks.view(np.uint8)).hexdigest()
         try:
             with open(cached_fname) as fp:
                 print "Loading cached seqs"
@@ -602,11 +633,11 @@ class SamplePeaksAndLabels():
         except IOError:
             pass
 
-        pk_width = self.pks[0][2] - self.pks[0][1]
-        rv = 0.25 * np.ones((len(self.pks), pk_width, 4), dtype='float32')
-        for i, data in enumerate(self.pks):
+        pk_width = pks[0][2] - pks[0][1]
+        rv = 0.25 * np.ones((len(pks), pk_width, 4), dtype='float32')
+        for i, data in enumerate(pks):
             assert pk_width == data[2] - data[1]
-            seq = self.genome_fasta.fetch(str(data[0]), data[1], data[2])
+            seq = genome_fasta.fetch(str(data[0]), data[1], data[2])
             if len(seq) != pk_width: continue
             coded_seq = one_hot_encode_sequence(seq)
             rv[i,:,:] = coded_seq
@@ -620,34 +651,6 @@ class SamplePeaksAndLabels():
 
         return rv
 
-    def load_accessibility_data(self):
-        from pyTFbindtools.DB import load_dnase_fnames
-        # get the correct filename
-        fnames = load_dnase_fnames([self.sample_id,])
-
-        cached_fname = "cachedaccessibility.%s.%s.obj" % (
-            hashlib.sha1(self.pks.view(np.uint8)).hexdigest(),
-            hash(tuple(fnames))
-        )
-        try:
-            with open(cached_fname) as fp:
-                print "Loading cached accessibility data"
-                rv = np.load(fp)
-        except IOError:
-            rv = bigWigFeaturize.new(
-                fnames,
-                self.half_peak_width*2, 
-                intervals=[
-                    Region(pk['contig'], pk['start'], pk['stop']) for pk in self.pks
-                ]
-            )
-
-            with open(cached_fname, "w") as ofp:
-                print "Saving accessibility data"
-                np.save(ofp, rv)
-        
-        return rv
-
     @property
     def factor_names(self):
         if self._factor_names is None:
@@ -655,14 +658,17 @@ class SamplePeaksAndLabels():
             self._factor_names = load_tf_names(self.tf_ids)
         return self._factor_names
 
-    def subset_pks(self, pk_indices=slice(), factor_indices=slice()):
+    def subset_pks(self, pk_indices=slice(None), factor_indices=slice(None)):
         """Return a copy of self only containing the peaks sepcified by indices
 
         indices: numpy array of indices to include
         """
-        return type(self)(
+        return SamplePeaksAndLabels(
+            self.sample_id,
+            self.tf_ids[factor_indices],
             self.pks[pk_indices], 
-            self.tf_ids[factor_indices], 
+            self.fwd_seqs[pk_indices],
+            self.accessibility_data[pk_indices],
             self.idr_optimal_labels[pk_indices, factor_indices], 
             self.relaxed_labels[pk_indices, factor_indices]
         )
@@ -687,7 +693,7 @@ class SamplePeaksAndLabels():
         filtered_tfs = sorted([
             (factor_name, tf_id, i) for i, (factor_name, tf_id) 
             in enumerate(zip(all_factor_names, self.tf_ids)) 
-            if factor_name in self.desired_factor_names
+            if factor_name in desired_factor_names
         ])
         factor_names, tf_ids, tf_indices = zip(*filtered_tfs)
 
@@ -710,84 +716,80 @@ class SamplePeaksAndLabels():
             # set a seed so we can use cached peaks between debug rounds
             np.random.seed(seed)
             indices = np.argsort(np.random.random(len(self.pks)))
-        return self.subset_pks(index)
+        return self.subset_pks(pk_indices=indices)
     
     def subset_pks_by_contig(
-            self, contigs_to_include=[], contigs_to_exclude=[]):
-        assert (len(contigs_to_include) > 0) != (len(contigs_to_exclude) > 0), \
+            self, contigs_to_include=None, contigs_to_exclude=None):
+        assert (contigs_to_include is None) != (contigs_to_exclude is None), \
             "Either contigs_to_include or contigs_to_exclude must be specified"
-        # speed up the search a little
-        contigs_to_include = set(contigs_to_include)
-        contigs_to_exclude = set(contigs_to_include)
+        # case these to sets to speed up the search a little
+        if contigs_to_include is not None:
+            contigs_to_include = set(contigs_to_include)
+        if contigs_to_exclude is not None:
+            contigs_to_exclude = set(contigs_to_exclude)
         indices = np.array([
             i for i, pk in enumerate(self.pks) 
-            if pk[0] not in contigs_to_exclude
-            and pk[0] in contigs_to_include])
-        return self.subset_pks(indices)
-    
-    def _init_pks_and_label_mats(self, max_num_peaks, use_top_accessible):
-        # load the matrix. This is probably cached on disk, but may need to 
-        # be recreated
-        (self.pks, self.tf_ids, (self.idr_optimal_labels, self.relaxed_labels)
-            ) = build_peaks_label_mat(
-                self.annotation_id, self.sample_id, self.half_peak_width)
+            if (contigs_to_exclude is None or pk[0] not in contigs_to_exclude)
+            and (contigs_to_include is None or pk[0] in contigs_to_include)
+        ])
+        return self.subset_pks(pk_indices=indices)
 
-        
-        self.pks = self.pks[index]
-        self.idr_optimal_labels = self.idr_optimal_labels[index,:]
-        self.relaxed_labels = self.relaxed_labels[index,:]
+    def save(self, cached_fname_suffix):
+        print "Saving cached peaks and labels"
+        np.save("pks." + cached_fname_suffix, self.pks)
+        np.save("fwd_seqs." + cached_fname_suffix, self.fwd_seqs)
+        np.save("accessibility_data." + cached_fname_suffix, self.accessibility_data)
+        np.save("idr_optimal_labels." + cached_fname_suffix, 
+                self.idr_optimal_labels)
+        np.save("relaxed_labels." + cached_fname_suffix, self.relaxed_labels)
 
-        
-        # filter out unwanted peaks/columns
-        if max_num_peaks is None:
-            max_num_peaks = len(self.pks)
-        self.pks = self.pks[:max_num_peaks]
-        self.idr_optimal_labels = self.idr_optimal_labels[
-            :max_num_peaks, np.array(tf_indices)]
-        self.relaxed_labels = self.relaxed_labels[
-            :max_num_peaks, np.array(tf_indices)]
-        
-        # set the ambiguous labels to -1
-        self.ambiguous_pks_mask = (
-            self.idr_optimal_labels != self.relaxed_labels)
-        self.clean_labels = self.idr_optimal_labels.copy()
-        self.clean_labels[self.ambiguous_pks_mask] = -1
-
-        return
-    
+    @staticmethod
+    def load(cached_fname_suffix):
+        print "Loading cached peaks and labels"
+        with open("pks." + cached_fname_suffix, "w") as fp: 
+            pks = np.load(fp)
+        with open("fwd_seqs." + cached_fname_suffix, "w") as fp: 
+            fwd_seqs = np.load(fp)
+        with open("accessibility_data." + cached_fname_suffix, "w") as fp: 
+            accessibility_data = np.load(fp)
+        with open("idr_optimal_labels." + cached_fname_suffix, "w") as fp: 
+            idr_optimal_labels = np.load(fp)
+        with open("relaxed_labels." + cached_fname_suffix, "w") as fp:
+            relaxed_labels = np.load(fp)
+        return SamplePeaksAndLabels(
+            sample_id, 
+            tf_ids, pks, 
+            fwd_seqs, 
+            accessibility_data, 
+            idr_optimal_labels, 
+            relaxed_labels
+        )
+            
     def __init__(self, 
                  sample_id, tf_ids, 
-                 pks, #seqs, accessibility_data,
+                 pks, seqs, accessibility_data,
                  idr_optimal_labels, relaxed_labels):
         self.sample_id = sample_id
         self.tf_ids = tf_ids
+        self._factor_names = None
 
         self.pks = pks
-        self.seqs = seqs
-        self.seq_length = len(seqs[0])
+        self.fwd_seqs = seqs
+        self.seq_length = self.fwd_seqs.shape[3]
 
+        self.accessibility_data = accessibility_data
+        
+        self.idr_optimal_labels = idr_optimal_labels
+        self.relaxed_labels = relaxed_labels
+        
         # set the ambiguous labels to -1
         self.ambiguous_pks_mask = (
             self.idr_optimal_labels != self.relaxed_labels)
         self.clean_labels = self.idr_optimal_labels.copy()
         self.clean_labels[self.ambiguous_pks_mask] = -1
 
-        #res = bigWigFeaturize.new(
-        #    ["/mnt/data/epigenomeRoadmap/signal/consolidated/macs2signal/foldChange/E123-DNase.fc.signal.bigwig",], 
-        #    self., 
-        #    intervals=regions)
-
-        self.labels = self.ambiguous_labels # idr_optimal_labels # ambiguous_labels
-        
-        # code the peaks' sequence
-        print "Coding peaks"
-        self.genome_fasta = FastaFile(
-            'hg19.genome.fa') #load_genome_metadata(self.annotation_id).filename)
-        self.fwd_seqs = self.one_hot_code_peaks_sequence()
-
-        print "Loading Accessibility Data"
-        self.accessibility_data = np.zeros((n_samples, 1, 977, 1)) # self.load_accessibility_data()[:,:,:977,:]
-
+        self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
+    
     def iter_batches(self, batch_size, repeat_forever):
         i = 0
         n = self.fwd_seqs.shape[0]//batch_size
@@ -809,27 +811,96 @@ class SamplePeaksAndLabels():
         return
 
 class PartitionedSamplePeaksAndLabels():
+    @property
+    def cache_key(self):
+        return str(abs(hash((
+            self.sample_id, 
+            tuple(self.factor_names), 
+            self.n_samples, 
+            self.annotation_id, 
+            self.half_peak_width
+        ))))
+
+    def _save_cached(self):
+        self.data.save(self.cache_key + ".obj")
+        self.train.save(self.cache_key + ".obj")
+        self.validation.save(self.cache_key + ".obj")
+        return
+    
+    def _load_cached(self):
+        self.data = SamplePeaksAndLabels.load(self.cache_key + ".obj")
+        self.train = SamplePeaksAndLabels.load(self.cache_key + ".obj")
+        self.validation = SamplePeaksAndLabels.load(self.cache_key + ".obj")
+    
+    @staticmethod
+    def _load_data(roadmap_sample_id, 
+                   factor_names, 
+                   n_samples, 
+                   annotation_id, 
+                   half_peak_width):
+        # XXX search for cached data
+        pks, tf_ids, (idr_optimal_labels, relaxed_labels) = build_peaks_label_mat(
+            annotation_id, roadmap_sample_id, half_peak_width)
+        pks = pks[:10000]
+        idr_optimal_labels = idr_optimal_labels[:10000,:]
+        relaxed_labels = relaxed_labels[:10000,:]
+
+        print "Coding peaks"
+        from pyDNAbinding.DB import load_genome_metadata
+        genome_fasta = FastaFile(
+            load_genome_metadata(annotation_id).filename)
+        fwd_seqs = SamplePeaksAndLabels.one_hot_code_peaks_sequence(
+            pks, genome_fasta)
+        
+        print "Loading Accessibility Data"
+        accessibility_data = np.zeros(
+            (len(pks), 1, 977, 1)) # load_accessibility_data()[:,:,:977,:]
+
+        print "Filtering Peaks"
+        data = SamplePeaksAndLabels(
+            roadmap_sample_id, tf_ids, 
+            pks, fwd_seqs, accessibility_data,
+            idr_optimal_labels, relaxed_labels
+        ).subset_pks_by_rank(
+            max_num_peaks=n_samples, use_top_accessible=False
+        ).subset_tfs(factor_names)
+        
+        return data
+
     def __init__(self, 
                  roadmap_sample_id, 
                  factor_names, 
                  n_samples=None, 
                  annotation_id=1, 
                  half_peak_width=500):
-        pks, tf_ids, (idr_optimal_labels, relaxed_labels) = build_peaks_label_mat(
-            annotation_id, roadmap_sample_id, half_peak_width)
-        self.data = PeaksAndLabels(
-            roadmap_sample_id, tf_ids, 
-            pks, #seqs, accessibility_data,
-            idr_optimal_labels, relaxed_labels
-        ).subset_pks_by_rank(
-            max_num_peaks=n_samples, use_top_accessible=False
-        ).subset_tfs(factor_names)
+        self.sample_id = roadmap_sample_id
+        self.factor_names = factor_names
+        self.n_samples = n_samples
+        self.annotation_id = annotation_id
+        self.half_peak_width = half_peak_width
+    
+        try: 
+            self._load_cached()
+        except IOError:
+            pass
         
+        self.data = self._load_data(
+            self.sample_id, 
+            self.factor_names, 
+            self.n_samples, 
+            self.annotation_id, 
+            self.half_peak_width)
+        self.seq_length = self.data.seq_length
+        
+        print "Splitting out train data"        
         self.train = self.data.subset_pks_by_contig(
             contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9'))
+        print "Splitting out validation data"        
         self.validation = self.data.subset_pks_by_contig(
             contigs_to_include=('chr8', 'chr9'))
     
+        self._save_cached()
+
     def iter_batches(self, batch_size, data_subset, repeat_forever):
         if data_subset == 'train':
             return self.train.iter_batches(batch_size, repeat_forever)

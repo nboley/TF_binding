@@ -78,7 +78,16 @@ def calc_val_results(model, batch_size):
         batch_size, repeat_forever=False)
     pred_prbs = defaultdict(list)
     labels = defaultdict(list)
-    for i, data in enumerate(data_iterator):
+    pred_prbs = []
+    labels = []
+    for i, (data, labels) in enumerate(data_iterator):
+        prbs = model.predict_on_batch(data)
+        pred_prbs.append(prbs)
+        labels.append(labels)
+    pred_prbs = np.vstack(pred_prbs)
+    labels = np.vstack(labels)
+    return pred_prbs, labels
+    
         for key, prbs in model.predict_on_batch(data).iteritems():
             print key
             if key.endswith('.accessibility_data'): continue

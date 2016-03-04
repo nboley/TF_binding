@@ -562,7 +562,7 @@ class JointBindingModel():
 
         network = DenseLayer(
             network, 
-            pks_and_labels.labels.shape[1],
+            len(pks_and_labels.factor_names), #labels.shape[1],
             nonlinearity=lasagne.nonlinearities.sigmoid
         )
         
@@ -838,7 +838,10 @@ class JointBindingModel():
 def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
-    n_samples = int(sys.argv[3])
+    try: 
+        n_samples = int(sys.argv[3])
+    except IndexError: 
+        n_samples = None
     model = JointBindingModel(
         n_samples, 
         [tf_name,], 
