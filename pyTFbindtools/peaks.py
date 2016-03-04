@@ -716,7 +716,7 @@ class SamplePeaksAndLabels():
             # set a seed so we can use cached peaks between debug rounds
             np.random.seed(seed)
             indices = np.argsort(np.random.random(len(self.pks)))
-        return self.subset_pks(pk_indices=indices)
+        return self.subset_pks(pk_indices=indices[:max_num_peaks])
     
     def subset_pks_by_contig(
             self, contigs_to_include=None, contigs_to_exclude=None):
@@ -744,21 +744,23 @@ class SamplePeaksAndLabels():
         np.save("relaxed_labels." + cached_fname_suffix, self.relaxed_labels)
 
     @staticmethod
-    def load(cached_fname_suffix):
+    def load(cached_fname_suffix, sample_id, tf_ids):
         print "Loading cached peaks and labels"
-        with open("pks." + cached_fname_suffix, "w") as fp: 
+        with open("pks.%s.npy"%cached_fname_suffix) as fp: 
             pks = np.load(fp)
-        with open("fwd_seqs." + cached_fname_suffix, "w") as fp: 
+        with open("fwd_seqs.%s.npy"%cached_fname_suffix) as fp: 
             fwd_seqs = np.load(fp)
-        with open("accessibility_data." + cached_fname_suffix, "w") as fp: 
+        with open("accessibility_data.%s.npy"%cached_fname_suffix) as fp: 
             accessibility_data = np.load(fp)
-        with open("idr_optimal_labels." + cached_fname_suffix, "w") as fp: 
+        with open("idr_optimal_labels.%s.npy"%cached_fname_suffix) as fp: 
             idr_optimal_labels = np.load(fp)
-        with open("relaxed_labels." + cached_fname_suffix, "w") as fp:
+        with open("relaxed_labels.%s.npy"%cached_fname_suffix) as fp:
             relaxed_labels = np.load(fp)
+        print "FINISHED Loading cached peaks and labels"
         return SamplePeaksAndLabels(
             sample_id, 
-            tf_ids, pks, 
+            tf_ids, 
+            pks, 
             fwd_seqs, 
             accessibility_data, 
             idr_optimal_labels, 
@@ -813,24 +815,29 @@ class SamplePeaksAndLabels():
 class PartitionedSamplePeaksAndLabels():
     @property
     def cache_key(self):
-        return str(abs(hash((
+        return hashlib.sha1(str((
             self.sample_id, 
-            tuple(self.factor_names), 
+            tuple(sorted(self.factor_names)), 
             self.n_samples, 
             self.annotation_id, 
             self.half_peak_width
-        ))))
+        ))).hexdigest()
 
     def _save_cached(self):
-        self.data.save(self.cache_key + ".obj")
-        self.train.save(self.cache_key + ".obj")
-        self.validation.save(self.cache_key + ".obj")
+        self.data.save(self.cache_key + ".data.obj")
+        self.train.save(self.cache_key + ".train.obj")
+        self.validation.save(self.cache_key + ".validation.obj")
         return
     
-    def _load_cached(self):
-        self.data = SamplePeaksAndLabels.load(self.cache_key + ".obj")
-        self.train = SamplePeaksAndLabels.load(self.cache_key + ".obj")
-        self.validation = SamplePeaksAndLabels.load(self.cache_key + ".obj")
+    def _load_cached(self, sample_id, tf_ids):
+        print self.cache_key
+        self.data = None
+        #SamplePeaksAndLabels.load(
+        #    self.cache_key + ".data.obj", sample_id, tf_ids)
+        self.train = SamplePeaksAndLabels.load(
+            self.cache_key + ".train.obj", sample_id, tf_ids)
+        self.validation = SamplePeaksAndLabels.load(
+            self.cache_key + ".validation.obj", sample_id, tf_ids)
     
     @staticmethod
     def _load_data(roadmap_sample_id, 
@@ -841,7 +848,6 @@ class PartitionedSamplePeaksAndLabels():
         # XXX search for cached data
         pks, tf_ids, (idr_optimal_labels, relaxed_labels) = build_peaks_label_mat(
             annotation_id, roadmap_sample_id, half_peak_width)
-
         print "Coding peaks"
         from pyDNAbinding.DB import load_genome_metadata
         genome_fasta = FastaFile('hg19.genome.fa')
@@ -875,29 +881,29 @@ class PartitionedSamplePeaksAndLabels():
         self.n_samples = n_samples
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
-    
+        self.seq_length = 2*half_peak_width
+        
         try: 
-            self._load_cached()
-        except IOError:
-            pass
-        
-        self.data = self._load_data(
-            self.sample_id, 
-            self.factor_names, 
-            self.n_samples, 
-            self.annotation_id, 
-            self.half_peak_width)
-        self.seq_length = self.data.seq_length
-        
-        print "Splitting out train data"        
-        self.train = self.data.subset_pks_by_contig(
-            contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9'))
-        print "Splitting out validation data"        
-        self.validation = self.data.subset_pks_by_contig(
-            contigs_to_include=('chr8', 'chr9'))
-    
-        self._save_cached()
+            #raise IOError, "TEST"
+            self._load_cached(roadmap_sample_id, factor_names)
+        except IOError:        
+            self.data = self._load_data(
+                self.sample_id, 
+                self.factor_names, 
+                self.n_samples, 
+                self.annotation_id, 
+                self.half_peak_width)
+            self.seq_length = self.data.seq_length
 
+            print "Splitting out train data"        
+            self.train = self.data.subset_pks_by_contig(
+                contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9'))
+            print "Splitting out validation data"        
+            self.validation = self.data.subset_pks_by_contig(
+                contigs_to_include=('chr8', 'chr9'))
+
+            self._save_cached()
+    
     def iter_batches(self, batch_size, data_subset, repeat_forever):
         if data_subset == 'train':
             return self.train.iter_batches(batch_size, repeat_forever)

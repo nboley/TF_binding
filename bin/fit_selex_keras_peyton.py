@@ -690,7 +690,7 @@ class JointBindingModel():
             lambda x: 2.0, (), 'chipseq_penalty')
         for sample_id in sample_ids:
             pks = PartitionedSamplePeaksAndLabels(
-                sample_id, factor_names=invivo_factor_names)
+                sample_id, factor_names=invivo_factor_names, n_samples=n_samples)
             #self.add_DIGN_chipseq_samples(pks)
             self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
