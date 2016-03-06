@@ -101,6 +101,7 @@ def iter_balanced_batches(batch_iterator):
     loss_indices = np.random.choice(
         len(weights), size=subsample_sizes[key], replace=False, p=weights)
     output[key] = batch[key][loss_indices,:]
+
     return output
 
 def iter_weighted_batch_samples(
@@ -234,7 +235,7 @@ class ConvolutionDNASequenceBinding(Layer):
         base_size = (3 if self.use_three_base_encoding else 4)
         filter_shape = (base_size, motif_len)
         self.W = self.add_param(
-            W, (nb_motifs, 1, base_size, motif_len), name='W')
+             W, (nb_motifs, 1, base_size, motif_len), name='W')
         if use_three_base_encoding:
             self.b = self.add_param(
                 b, (nb_motifs, ), name='b')
@@ -395,8 +396,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 8
-        self.num_tf_specific_invivo_affinity_convs = 8 # HERE 
+        self.num_tf_specific_invitro_affinity_convs = 4
+        self.num_tf_specific_invivo_affinity_convs = 4 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -691,6 +692,9 @@ class JointBindingModel():
         for sample_id in sample_ids:
             pks = PartitionedSamplePeaksAndLabels(
                 sample_id, factor_names=invivo_factor_names, n_samples=n_samples)
+            pks.train = pks.train.balance_data()
+            #pks.validation = pks.validation.balance_data()
+
             #self.add_DIGN_chipseq_samples(pks)
             self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
@@ -698,7 +702,12 @@ class JointBindingModel():
         self._build()
 
     def iter_data(
-            self, batch_size, data_subset, repeat_forever, oversample=True):
+            self, 
+            batch_size, 
+            data_subset, 
+            repeat_forever, 
+            oversample=False, 
+            balanced=False):
         # decide how much to oversample
         if oversample is True and data_subset == 'train':
             num_oversamples = 5
@@ -707,7 +716,12 @@ class JointBindingModel():
 
         iterators = OrderedDict()
         for key, iter_inst in self._data_iterators.iteritems():
-            iterators[key] = iter_inst(batch_size, data_subset, repeat_forever)
+            iterators[key] = iter_inst(
+                batch_size, 
+                data_subset, 
+                repeat_forever=repeat_forever, 
+                balanced=balanced
+            )
         assert len(iterators) > 0, 'No data iterators provided'
         
         def iter_data():
@@ -740,7 +754,12 @@ class JointBindingModel():
         return predictions
             
     def predict(self, batch_size):
-        data_iterator = self.iter_data(batch_size, 'validation', False)
+        data_iterator = self.iter_data(
+            batch_size, 
+            'validation', 
+            repeat_forever=False,
+            balanced=False
+        )
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
         for i, data in enumerate(data_iterator):
@@ -780,21 +799,25 @@ class JointBindingModel():
                 pyplot.savefig("%s-%i-raw-rc.png" % (prefix, i))
                 pyplot.close("all")
     
-    def train(self, samples_per_epoch, batch_size, nb_epoch):
+    def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
         print("Starting training...")
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
-            #self._selex_penalty.set_value( 
-            #    round(self._selex_penalty.get_value()/1.1, 6) )
-            #self._chipseq_regularization_penalty.set_value( 
-            #    round(self._chipseq_regularization_penalty.get_value()/1.1, 6) )
+            self._selex_penalty.set_value( 
+                round(self._selex_penalty.get_value()/1.05, 6) )
+            self._chipseq_regularization_penalty.set_value( 
+                round(self._chipseq_regularization_penalty.get_value()/1.05, 6))
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
             progbar = Progbar(samples_per_epoch)
-            for nb_train_batches_observed, data in enumerate(
-                    self.iter_data(batch_size, 'train', repeat_forever=True)):
+            for nb_train_batches_observed, data in enumerate(self.iter_data(
+                    batch_size, 
+                    'train', 
+                    repeat_forever=True, 
+                    balanced=balanced
+            )):
                 if nb_train_batches_observed*batch_size > samples_per_epoch: 
                     break
                 # we can use the values attriburte because iter_data  
@@ -842,6 +865,11 @@ def single_sample_main():
         n_samples = int(sys.argv[3])
     except IndexError: 
         n_samples = None
+
+    #pks = PartitionedSamplePeaksAndLabels(
+    #    sample_id, factor_names=[tf_name,], n_samples=n_samples)
+    #print pks.train.balance_data()
+    #return
     model = JointBindingModel(
         n_samples, 
         [tf_name,], 
@@ -850,7 +878,10 @@ def single_sample_main():
         [tf_name,],
         use_three_base_encoding=False)
 
-    model.train(n_samples, 100, 100)
+    model.train(
+        n_samples if n_samples is not None else 100000, 10, 100, balanced=True)
+    model.train(
+        n_samples if n_samples is not None else 100000, 10, 100, balanced=False)
     model.plot_binding_models("test")
 
     

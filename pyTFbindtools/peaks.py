@@ -1,4 +1,5 @@
 import os
+import math
 import gzip
 from collections import namedtuple
 from itertools import izip
@@ -673,6 +674,16 @@ class SamplePeaksAndLabels():
             self.relaxed_labels[pk_indices, factor_indices]
         )
 
+    def balance_data(self):
+        labels = self.labels
+        one_indices = np.random.choice(
+            np.nonzero(labels == 1)[0], size=len(labels)/2)
+        zero_indices = np.random.choice(
+            np.nonzero(labels == 0)[0], size=len(labels)/2)
+        indices = np.concatenate((one_indices, zero_indices), axis=0)
+        np.random.shuffle(indices)
+        return self.subset_pks(pk_indices=indices)
+    
     def subset_tfs(self, desired_factor_names):
         """Return a copy of self that only contains factor_names.
 
@@ -791,10 +802,31 @@ class SamplePeaksAndLabels():
         self.clean_labels[self.ambiguous_pks_mask] = -1
 
         self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
-    
-    def iter_batches(self, batch_size, repeat_forever):
+
+    def iter_balanced_batches(self, batch_size, repeat_forever):
         i = 0
-        n = self.fwd_seqs.shape[0]//batch_size
+        n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
+        while repeat_forever is True or i<n:
+            if i%n == 0:
+                one_indices = np.random.choice(
+                    np.nonzero(self.labels == 1)[0], size=len(self.labels)/2)
+                zero_indices = np.random.choice(
+                    np.nonzero(self.labels == 0)[0], size=len(self.labels)/2)
+                permutation = np.concatenate((one_indices, zero_indices), axis=0)
+                np.random.shuffle(permutation)
+            # yield a subset of the data
+            subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
+            indices = permutation[subset]
+            yield {'fwd_seqs': self.fwd_seqs[indices], 
+                   'accessibility_data': self.accessibility_data[indices], 
+                   'output': self.labels[indices]
+            }
+            i += 1
+        return
+    
+    def iter_shuffled_batches(self, batch_size, repeat_forever):
+        i = 0
+        n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
         if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
            % (self.fwd_seqs.shape[0], batch_size)
         permutation = None
@@ -811,6 +843,12 @@ class SamplePeaksAndLabels():
             i += 1
         
         return
+
+    def iter_batches(self, batch_size, repeat_forever, balanced=False):
+        if balanced:
+            return self.iter_balanced_batches(batch_size, repeat_forever)
+        else:
+            return self.iter_shuffled_batches(batch_size, repeat_forever)
 
 class PartitionedSamplePeaksAndLabels():
     @property
@@ -906,19 +944,25 @@ class PartitionedSamplePeaksAndLabels():
         print self.train.fwd_seqs.shape
         print self.validation.fwd_seqs.shape
 
-    def iter_batches(self, batch_size, data_subset, repeat_forever):
+    def iter_batches(
+            self, batch_size, data_subset, repeat_forever, balanced=False):
         if data_subset == 'train':
-            return self.train.iter_batches(batch_size, repeat_forever)
+            return self.train.iter_batches(
+                batch_size, repeat_forever, balanced)
         elif data_subset == 'validation':
-            return self.validation.iter_batches(batch_size, repeat_forever)
+            return self.validation.iter_batches(
+                batch_size, repeat_forever, balanced)
         else:
             raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
 
-    def iter_train_data(self, batch_size, repeat_forever=False):
-        return self.iter_batches(batch_size, 'train', repeat_forever)
+    def iter_train_data(
+            self, batch_size, repeat_forever=False, balanced=False):
+        return self.iter_batches(batch_size, 'train', repeat_forever, balanced)
 
-    def iter_validation_data(self, batch_size, repeat_forever=False):
-        return self.iter_batches(batch_size, 'validation', repeat_forever)
+    def iter_validation_data(
+            self, batch_size, repeat_forever=False, balanced=False):
+        return self.iter_batches(
+            batch_size, 'validation', repeat_forever, balanced)
 
 class SelexDBConn(object):
     def __init__(self, host, dbname, user, exp_id):
@@ -1173,7 +1217,8 @@ class SelexExperiment():
         
         return
 
-    def iter_batches(self, batch_size, data_subset, repeat_forever):
+    def iter_batches(
+            self, batch_size, data_subset, repeat_forever, balanced=False):
         if data_subset == 'train': 
             fwd_seqs = self.train_fwd_seqs
             labels = self.train_labels
