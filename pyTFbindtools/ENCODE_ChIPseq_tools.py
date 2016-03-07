@@ -26,6 +26,7 @@ ExperimentFile = namedtuple('ExperimentFile', [
 BASE_URL = "https://www.encodeproject.org/"
 
 chipseq_peaks_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_ChIPseq_peaks/"
+chipseq_bams_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_ChIPseq_bams/"
 
 ################################################################################
 #
@@ -293,6 +294,17 @@ def download_and_index_peak_file(location, output_fname):
              FNAME=location.split("/")[-1], 
              HR_FNAME=output_fname )
     return os.system(cmd)
+
+def download_and_index_bam(location, output_fname):
+    download_cmd = "wget --quiet {URL} -O {HR_FNAME}"
+    index_cmd = "samtools index {HR_FNAME}"
+    
+    cmd = " && ".join(
+        (download_cmd, index_cmd)
+    ).format(URL=location, 
+             FNAME=location.split("/")[-1], 
+             HR_FNAME=output_fname )
+    return os.system(cmd)
     
 
 def download_sort_and_index_tfs():
@@ -393,14 +405,12 @@ def iterate_hg19_chipseq_experiments():
 
     """
     for experiment_id in find_ENCODE_DNASE_experiment_ids('hg19'):
-        print experiment_id
-        print find_best_ENCODE_DCC_replicate_merged_peak(
-                experiment_id, 'hg19')
-        print
+        yield experiment_id
     return
 
 def main():
-    iterate_hg19_chipseq_experiments()
+    for experiment_id in iterate_hg19_chipseq_experiments():
+        print list(find_ENCODE_DCC_bams(experiment_id))
     
 
 if __name__ == '__main__':

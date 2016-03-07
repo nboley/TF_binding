@@ -11,6 +11,8 @@ from pysam import FastaFile
 from pyTFbindtools.cross_validation import ClassificationResult
  
 from pyTFbindtools.DB import load_genome_metadata
+from pyTFbindtools.DNABindingProteins import ChIPSeqReads
+
 from pyDNAbinding.sequence import one_hot_encode_sequence
 from pyDNAbinding.binding_model import EnergeticDNABindingModel
 from pyDNAbinding.plot import plot_bases, pyplot
@@ -692,7 +694,7 @@ class JointBindingModel():
         for sample_id in sample_ids:
             pks = PartitionedSamplePeaksAndLabels(
                 sample_id, factor_names=invivo_factor_names, n_samples=n_samples)
-            pks.train = pks.train.balance_data()
+            #pks.train = pks.train.balance_data()
             #pks.validation = pks.validation.balance_data()
 
             #self.add_DIGN_chipseq_samples(pks)
@@ -858,6 +860,17 @@ class JointBindingModel():
             
         pass
 
+def load_chipseq_reads(bam_fps):
+    factor_grpd_reads = defaultdict(list)
+    for fp in bam_fps:
+        reads = ChIPSeqReads(fp.name).init()
+        factor_grpd_reads[reads.factor].append(reads)
+    
+    for factor in factor_grpd_reads.iterkeys():
+        factor_grpd_reads[factor] = MergedReads(factor_grpd_reads[factor])
+    
+    return dict(factor_grpd_reads)
+
 def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
@@ -879,11 +892,10 @@ def single_sample_main():
         use_three_base_encoding=False)
 
     model.train(
-        n_samples if n_samples is not None else 100000, 10, 100, balanced=True)
+        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 10, 100, balanced=False)
-    model.plot_binding_models("test")
-
+        n_samples if n_samples is not None else 100000, 500, 50, balanced=False)
+    model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]

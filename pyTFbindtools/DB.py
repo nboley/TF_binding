@@ -102,6 +102,68 @@ def insert_chipseq_experiment_into_db(exp_id):
     conn.commit()
     return
 
+def insert_chipseq_bam_into_db(file_data):
+    """Download and insert ENCODE experiment metadata.
+    """
+    cur = conn.cursor()
+    # add the peak data
+    query = """
+    INSERT INTO encode_chipseq_bam_files
+    (annotation, encode_experiment_id, bsid, rep_key, remote_filename)
+    VALUES 
+    (%s, %s, %s, %s, %s)
+    """
+    assert file_data.assembly == 'hg19'
+    assembly_id = 1
+    try: 
+        cur.execute(query, [
+            assembly_id, 
+            file_data.exp_id, 
+            file_data.bsid, 
+            file_data.rep_key,
+            "http://encodeproject.org" + file_data.file_loc
+        ])
+    except psycopg2.IntegrityError:
+        print( "ERROR" )
+        raise
+        pass
+    conn.commit()
+    return
+
+def build_local_ENCODE_chipseq_bam_fname(encode_chipseq_bam_key):
+    from ENCODE_ChIPseq_tools import chipseq_bams_base_dir
+    cur = conn.cursor()
+    query = """
+    SELECT sample_type, bsid, encode_target_id 
+      FROM encode_chipseq_bam_files, 
+           encode_chipseq_experiments, 
+           chipseq_targets 
+     WHERE chipseq_targets.chipseq_target_id 
+           = encode_chipseq_experiments.target 
+       AND encode_chipseq_bam_files.encode_experiment_id 
+           = encode_chipseq_experiments.encode_experiment_id
+       AND encode_chipseq_bam_key = %s;
+    """
+    cur.execute(query, [encode_chipseq_bam_key,])
+    res = cur.fetchall()
+    if len(res) == 0: return None
+    # encode_chipseq_peak_key is the primary key, so we shouldn't get multiple 
+    # results
+    assert len(res) == 1
+    sample_type, bsid, encode_target_id = res[0]
+    sample_type = sample_type.replace(" ", "__").replace("/", "-")
+    target_name = encode_target_id.strip().split("/")[-2].replace("/", "-")
+
+    output_fname_template = "ChIPseq.{sample_type}.{target_name}.ENCODECHIPSEQBAM{bam_id}.bam"
+    return os.path.join(
+        chipseq_bams_base_dir,
+        output_fname_template.format(
+            sample_type=sample_type, 
+            target_name=target_name, 
+            bam_id=encode_chipseq_bam_key
+        )
+    )
+
 def build_local_ENCODE_peak_fname(peak_id):
     from ENCODE_ChIPseq_tools import chipseq_peaks_base_dir
     cur = conn.cursor()
@@ -168,6 +230,38 @@ def sync_ENCODE_chipseq_peak_files():
         else:
             raise ValueError, "Failed to sync encode TF peak id %s (%s)" % (
                 peak_id, remote_filename)
+    return
+
+def sync_ENCODE_chipseq_bam_files():
+    from ENCODE_ChIPseq_tools import download_and_index_bam
+    # find all files in the database that don't have local copies
+    cur = conn.cursor()
+    query = """
+    SELECT encode_chipseq_bam_key, remote_filename 
+      FROM encode_chipseq_bam_files 
+     WHERE local_filename is NULL;
+    """
+    cur.execute(query)
+    all_peaks = cur.fetchall()
+    for i, (bam_id, remote_filename) in enumerate(all_peaks):
+        print "Processing peak_id '%i' (%i/%i)" % (bam_id, i, len(all_peaks))
+        new_local_fname = build_local_ENCODE_chipseq_bam_fname(bam_id)
+        print new_local_fname
+        rv = download_and_index_bam(remote_filename, new_local_fname)
+        print rv
+        if rv == 0:
+            query = """
+            UPDATE encode_chipseq_bam_files 
+            SET local_filename = %s 
+            WHERE encode_chipseq_bam_key = %s;
+            """
+            #print cur.mogrify(query, [new_local_fname, bam_id])
+            cur.execute(query, [new_local_fname, bam_id])
+            conn.commit()
+        else:
+            raise ValueError, "Failed to sync encode TF peak id %s (%s)" % (
+                bam_id, remote_filename)
+        
     return
 
 ################################################################################
@@ -311,6 +405,19 @@ def load_tf_names(tf_ids):
         cur.execute(query, [tf_id,])
         tf_names.append(cur.fetchall()[0][0])
     return tf_names
+
+def load_ENCODE_target_id(tf_ids):
+    cur = conn.cursor()
+    query = "select ENCODE_target_id from chipseq_targets where tf_id = %s"
+    encode_target_ids = []
+    for tf_id in tf_ids:
+        #print tf_id
+        cur.execute(query, [tf_id,])
+        res = cur.fetchall()
+        if len(res) == 0:
+            raise ValueError, "TFID '%s' does not appear in DB" % tf_id
+        encode_target_ids.append(res[0][0])
+    return encode_target_ids
 
 def load_dnase_fnames(roadmap_sample_ids):
     cur = conn.cursor()
