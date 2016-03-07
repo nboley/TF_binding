@@ -1,6 +1,9 @@
 import os
 
 from collections import defaultdict, namedtuple
+from itertools import chain
+#from ENCODE_ChIPseq_tools import find_target_info
+#    find_ENCODE_DCC_peaks, find_target_info )
 
 ################################################################################
 #
@@ -297,7 +300,7 @@ def sync_roadmap_DNASE_peak_files():
 # Get data from the local database
 #
 ################################################################################
-Genome = namedtuple('Genome', ['name', 'revision', 'species', 'filename'])
+Genome = namedtuple('Genome', ['id', 'name', 'revision', 'species', 'filename'])
 def load_genome_metadata(annotation_id):
     cur = conn.cursor()
     query = """
@@ -312,7 +315,24 @@ def load_genome_metadata(annotation_id):
             "No genome exists in the DB with annotation_id '%i' " \
                 % annotation_id
     assert len(res) == 1
-    return Genome(*(res[0]))
+    return Genome(*([annotation_id,] + list(res[0])))
+
+def load_genome_metadata_from_name(genome_name):
+    cur = conn.cursor()
+    query = """
+    SELECT annotation_id 
+      FROM genomes 
+     WHERE name=%s;
+    """
+    cur.execute(query, [genome_name,])
+    res = cur.fetchall()
+    if len(res) == 0: 
+        raise ValueError, \
+            "No genome exists in the DB with name '%s' " \
+                % genome_name
+    assert len(res) == 1
+    return load_genome_metadata(res[0][0])
+
 
 def find_cisbp_tfids(species, tf_name, uniprot_ids, ensemble_ids):
     cur = conn.cursor()

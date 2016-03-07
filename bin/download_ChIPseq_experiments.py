@@ -18,7 +18,7 @@ def parse_arguments():
         help='Which genome and assembly to target.')
 
     parser.add_argument( '--factors', nargs='*',
-        help='Factors to download - use --list-factors to list avaialble factors')
+        help='Factors to download - use --list-factors to list available factors')
 
     parser.add_argument( '--list-factors', default=False, action='store_true',
         help='List available factors and exit')
