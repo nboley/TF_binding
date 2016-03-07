@@ -399,7 +399,7 @@ class JointBindingModel():
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_affinity_convs = 4
-        self.num_tf_specific_invivo_affinity_convs = 4 # HERE 
+        self.num_tf_specific_invivo_affinity_convs = 28 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -554,7 +554,6 @@ class JointBindingModel():
         self._add_chipseq_regularization(network, target_var)
         network = OccMaxPool(network, 1, 32, 8)
         network = ExpressionLayer(network, TT.exp)
-
         network = Conv2DLayer(
             network, 
             self.num_affinity_convs, 
@@ -595,19 +594,20 @@ class JointBindingModel():
         network = Conv2DLayer(
             network, 25, (4,15),
             nonlinearity=lasagne.nonlinearities.rectify)
-        #network = DropoutLayer(network, 0.2)
-        #network = Conv2DLayer(
-        #    network, 25, (1,15),
-        #    nonlinearity=lasagne.nonlinearities.rectify)
-        #network = DropoutLayer(network, 0.2)
-        #network = Conv2DLayer(
-        #    network, 25, (1,15),
-        #    nonlinearity=lasagne.nonlinearities.rectify)
-        #network = DropoutLayer(network, 0.2)
+        network = DropoutLayer(network, 0.2)
+        network = Conv2DLayer(
+            network, 25, (1,15),
+            nonlinearity=lasagne.nonlinearities.rectify)
+        network = DropoutLayer(network, 0.2)
+        network = Conv2DLayer(
+            network, 25, (1,15),
+            nonlinearity=lasagne.nonlinearities.rectify)
+        network = DropoutLayer(network, 0.2)
         network = DimshuffleLayer(network, (0,2,1,3))
         network = MaxPool2DLayer(network, (1, 35))
         network = DenseLayer(
-            network, pks_and_labels.labels.shape[1], 
+            network, 
+            len(pks_and_labels.factor_names), 
             nonlinearity=lasagne.nonlinearities.sigmoid)
 
         self._networks[name + ".output"] = network
@@ -687,7 +687,7 @@ class JointBindingModel():
         for factor_name in invitro_factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        self.add_selex_experiments()
+        #self.add_selex_experiments()
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
@@ -892,7 +892,7 @@ def single_sample_main():
         use_three_base_encoding=False)
 
     model.train(
-        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
+        n_samples if n_samples is not None else 100000, 500, 20, balanced=True)
     model.train(
         n_samples if n_samples is not None else 100000, 500, 50, balanced=False)
     model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))

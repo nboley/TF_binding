@@ -125,6 +125,7 @@ def insert_chipseq_bam_into_db(file_data):
         ])
     except psycopg2.IntegrityError:
         print( "ERROR" )
+        conn.rollback()
         raise
         pass
     conn.commit()

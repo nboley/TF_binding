@@ -57,7 +57,10 @@ def main():
             if target_ids != None and file_data.target_id not in target_ids: 
                 continue
             print "INSERTING ", file_data
-            insert_chipseq_bam_into_db(file_data)
+            try: 
+                insert_chipseq_bam_into_db(file_data)
+            except Exception, inst:
+                print inst
 
     sync_ENCODE_chipseq_bam_files()
     #for p in ps:
