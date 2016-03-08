@@ -10,6 +10,7 @@ import hashlib
 
 import numpy as np
 
+
 from sklearn.cross_validation import StratifiedKFold
 
 from pysam import Tabixfile, FastaFile
@@ -17,6 +18,7 @@ from pysam import Tabixfile, FastaFile
 from pyDNAbinding.sequence import one_hot_encode_sequence
 
 from grit.lib.multiprocessing_utils import Counter
+from grit.files.reads import ChIPSeqReads, MergedReads
 
 from cross_validation import iter_train_validation_splits
 
@@ -622,6 +624,37 @@ def load_accessibility_data(sample_ids, pks):
 
     return rv
 
+def load_chipseq_coverage(sample_id, tf_id, peaks):
+    from pyTFbindtools.DB import load_chipseq_fnames
+    cached_fname = "cachedtfcov.%s.%s.%s.obj" % (
+        hashlib.sha1(peaks.view(np.uint8)).hexdigest(),
+        sample_id, 
+        tf_id
+    )
+    try:
+        with open(cached_fname) as fp:
+            print "Loading cached chipseq coverage for %s, %s" % (
+                sample_id, tf_id)
+            rv = np.load(fp)
+    except IOError:
+        rv = np.zeros(
+            (len(peaks), peaks[0][2] - peaks[0][1]), 
+            dtype='float32')
+        fnames = load_chipseq_fnames(sample_id, tf_id)
+        reads = MergedReads([
+            ChIPSeqReads(fname).init() for fname in fnames])
+        for i, pk in enumerate(peaks):
+            cov = reads.build_read_coverage_array(
+                pk[0], '.', pk[1], pk[2]-1)
+            rv[i,:] = cov
+            if i%1000 == 0: print i, len(peaks), cov.shape
+        with open(cached_fname, "w") as ofp:
+            print "Saving cached chipseq coverage for %s, %s" % (
+                sample_id, tf_id)
+            np.save(ofp, rv)
+
+    return rv
+
 class SamplePeaksAndLabels():
     @staticmethod
     def one_hot_code_peaks_sequence(pks, genome_fasta):
@@ -654,8 +687,8 @@ class SamplePeaksAndLabels():
 
     @property
     def factor_names(self):
+        from pyTFbindtools.DB import load_tf_names
         if self._factor_names is None:
-            from pyTFbindtools.DB import load_tf_names
             self._factor_names = load_tf_names(self.tf_ids)
         return self._factor_names
 
@@ -664,9 +697,11 @@ class SamplePeaksAndLabels():
 
         indices: numpy array of indices to include
         """
+        
+        #assert False
         return SamplePeaksAndLabels(
             self.sample_id,
-            self.tf_ids[factor_indices],
+            np.array(self.tf_ids)[factor_indices],
             self.pks[pk_indices], 
             self.fwd_seqs[pk_indices],
             self.accessibility_data[pk_indices],
@@ -777,7 +812,16 @@ class SamplePeaksAndLabels():
             idr_optimal_labels, 
             relaxed_labels
         )
-            
+
+    @property
+    def chipseq_coverage(self):
+        if self._chipseq_coverage is None:
+            self._chipseq_coverage = np.concatenate([
+                load_chipseq_coverage(self.sample_id, tf_id, self.pks)[:,None,:]
+                for tf_id in self.tf_ids
+            ], axis=1)
+        return self._chipseq_coverage
+    
     def __init__(self, 
                  sample_id, tf_ids, 
                  pks, seqs, accessibility_data,
@@ -790,6 +834,7 @@ class SamplePeaksAndLabels():
         self.fwd_seqs = seqs
         self.seq_length = self.fwd_seqs.shape[3]
 
+        self._chipseq_coverage = None
         self.accessibility_data = accessibility_data
         
         self.idr_optimal_labels = idr_optimal_labels
@@ -819,6 +864,7 @@ class SamplePeaksAndLabels():
             indices = permutation[subset]
             yield {'fwd_seqs': self.fwd_seqs[indices], 
                    'accessibility_data': self.accessibility_data[indices], 
+                   #'chipseq_cov': self.chipseq_coverage[indices],
                    'output': self.labels[indices]
             }
             i += 1
@@ -838,6 +884,7 @@ class SamplePeaksAndLabels():
             indices = permutation[subset]
             yield {'fwd_seqs': self.fwd_seqs[indices], 
                    'accessibility_data': self.accessibility_data[indices], 
+                   #'chipseq_cov': self.chipseq_coverage[indices],
                    'output': self.labels[indices]
             }
             i += 1

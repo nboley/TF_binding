@@ -1,13 +1,13 @@
 import os, sys
 import subprocess
 
-from ENCODE_ChIPseq_tools import (
+from pyTFbindtools.ENCODE_ChIPseq_tools import (
     find_ENCODE_chipseq_experiment_ids,
     find_ENCODE_DCC_bams, 
     find_ENCODE_DCC_experiment_metadata
 )
 
-from DB import load_ENCODE_target_id, insert_chipseq_bam_into_db, sync_ENCODE_chipseq_bam_files
+from pyTFbindtools.DB import load_ENCODE_target_id, insert_chipseq_bam_into_db, sync_ENCODE_chipseq_bam_files
 
 def parse_arguments():
     import argparse

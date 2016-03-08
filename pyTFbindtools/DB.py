@@ -449,5 +449,19 @@ def load_dnase_fnames(roadmap_sample_ids):
         fnames.append(cur.fetchall()[0][0])
     return fnames
 
+def load_chipseq_fnames(roadmap_sample_id, tf_id):
+    conn = psycopg2.connect("host=mitra dbname=cisbp")
+    cur = conn.cursor()
+    query = """
+        SELECT chipseq_bam_fname
+          FROM roadmap_matched_chipseq_bams
+         WHERE roadmap_sample_id=%s
+           AND tf_id=%s
+    """
+    fnames = []
+    cur.execute(query, [roadmap_sample_id, tf_id])
+    fnames.extend(x[0] for x in cur.fetchall())
+    return fnames
+
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")

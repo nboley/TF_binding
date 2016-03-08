@@ -408,7 +408,7 @@ class JointBindingModel():
             len(self.factor_names)*self.num_tf_specific_convs \
             + self.num_invivo_convs
         )
-        self.affinity_conv_size = 16
+        self.affinity_conv_size = 32
         affinity_conv_filter_shape = (
             self.num_affinity_convs,
             1, 
@@ -493,7 +493,10 @@ class JointBindingModel():
         target_var = TT.matrix(name + '.output')
         self._target_vars[name + '.output'] = target_var
         self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
-
+        #cov_target_var = TT.matrix(name + '.chipseq_cov')
+        #self._target_vars[name + '.chipseq_cov'] = cov_target_var
+        #self._multitask_labels[name + '.chipseq_cov'] = pks_and_labels.factor_names
+        
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
 
@@ -506,17 +509,20 @@ class JointBindingModel():
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
         network = LogAnyBoundOcc(network)
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
         network = ExpressionLayer(network, TT.exp)
+        #occs_prediction = lasagne.layers.get_output(network)
+
+        network = OccMaxPool(network, 'full', 'full')        
         network = FlattenLayer(network)
         #network = DenseLayer(network, pks_and_labels.labels.shape[1])
 
-        prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
-
+        prediction = lasagne.layers.get_output(network) 
+        label_loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
+        cov_loss = 0 #TT.sum((TT.flatten(cov_target_var)-TT.flatten(occs_prediction))**2)
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
-        self._losses[name] = loss
+        self._losses[name] = label_loss + cov_loss
 
         return
     def _add_chipseq_regularization(self, occs, target_var):
@@ -636,9 +642,12 @@ class JointBindingModel():
         # build the training function
         all_vars = self._input_vars.values() + self._target_vars.values()
         self.train_fn = theano.function(
-            all_vars, losses + regularization_loss, updates=updates)
+            all_vars, 
+            losses + regularization_loss, 
+            updates=updates, 
+            on_unused_input='ignore')
         self.test_fn = theano.function(
-            all_vars, losses)
+            all_vars, losses, on_unused_input='ignore')
         
         # build the prediction functions
         self.predict_fns = {}
@@ -698,8 +707,8 @@ class JointBindingModel():
             #pks.validation = pks.validation.balance_data()
 
             #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
-            #self.add_simple_chipseq_model(pks)
+            #self.add_chipseq_samples(pks)
+            self.add_simple_chipseq_model(pks)
 
         self._build()
 
@@ -904,6 +913,26 @@ def main():
     model = JointBindingModel(100000, tf_names, sample_ids)
     model.train(100000, 1000, 100)
     return
+
+def test_chipseq():
+    from pyTFbindtools.peaks import load_chipseq_coverage, build_peaks_label_mat
+    tf_name = sys.argv[1]
+    tf_id = 'T044268_1.02'
+    sample_id = sys.argv[2]
+    #pks, tf_ids, labels = build_peaks_label_mat(1, sample_id, 500)
+    #load_chipseq_coverage(sample_id, x, pks)
+    #from grit.lib.multiprocessing_utils import run_in_parallel
+    #run_in_parallel(
+    #    8, #len(tf_ids), 
+    #    lambda x: load_chipseq_coverage(sample_id, x, pks),
+    #    [[x,] for x in tf_ids]
+    #)
+    n_samples = 1000
+    pks = PartitionedSamplePeaksAndLabels(
+        sample_id, factor_names=[tf_name,], n_samples=n_samples)
+    print pks.data.chipseq_coverage.shape
+
+#test_chipseq()
 
 #main()
 single_sample_main()
