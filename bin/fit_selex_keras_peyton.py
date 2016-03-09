@@ -134,7 +134,6 @@ def iter_weighted_batch_samples(
     
     return
 
-
 def mse_skip_ambig(y_true, y_pred):
     #return (y_true - y_pred)**2
     non_ambig = (y_true > -0.5)
@@ -508,7 +507,7 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = LogNormalizedOccupancy(network, -6.0)
-        network = LogAnyBoundOcc(network)
+        #network = LogAnyBoundOcc(network)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
         network = ExpressionLayer(network, TT.exp)
         #occs_prediction = lasagne.layers.get_output(network)
@@ -707,8 +706,8 @@ class JointBindingModel():
             #pks.validation = pks.validation.balance_data()
 
             #self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
-            self.add_simple_chipseq_model(pks)
+            self.add_chipseq_samples(pks)
+            #self.add_simple_chipseq_model(pks)
 
         self._build()
 
