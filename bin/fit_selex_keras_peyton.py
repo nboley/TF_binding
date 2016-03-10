@@ -32,7 +32,7 @@ import theano.tensor as TT
 from theano.tensor.nnet.conv import conv2d
 from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.signal.pool import Pool
-from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid, binary_crossentropy
+from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid, binary_crossentropy, softmax, softplus
  
 from pyTFbindtools.peaks import SelexData, PartitionedSamplePeaksAndLabels
 
@@ -268,7 +268,9 @@ class ConvolutionDNASequenceBinding(Layer):
             fwd_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
             rc_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
         rv = TT.concatenate((fwd_rv, rc_rv), axis=2)
-        return rv.dimshuffle((0,2,1,3))
+        rv = rv.dimshuffle((0,2,1,3))
+        # no binding site should have a negative affinity to any strand of DNA
+        return softplus(rv) 
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
@@ -280,6 +282,24 @@ def theano_calc_log_occs(affinities, chem_pot):
     upper = TT.switch(inner>35, inner, 0)
     return -(lower + mid + upper)
 
+
+class StackStrands(Layer):
+    """Stack strand independent convolutions.
+
+    """
+    def get_output_shape_for(self, input_shape):
+        # make sure there are exactly 2 signal tracks (one for each strand
+        # in dimension index 1)
+        assert self.input_shape[1] == 2
+        return (self.input_shape[0], 
+                1,
+                2*self.input_shape[2],
+                self.input_shape[3])
+    
+    def get_output_for(self, X, **kwargs):
+        assert self.input_shape[1] == 2
+        return X.reshape((X.shape[0], 1, 2*X.shape[2], X.shape[3]))
+    
 class LogNormalizedOccupancy(Layer):
     def __init__(
             self, 
@@ -349,6 +369,51 @@ class LogAnyBoundOcc(Layer):
         rv = TT.log(0.05*max_occ + 0.95*at_least_1_bnd)
         return rv
 
+class AnyBoundOcc(Layer):
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0], input_shape[1], input_shape[2], 1)
+
+    def get_output_for(self, input, **kwargs):
+        input = TT.clip(input, 1e-6, 1-1e-6)
+        #return softmax(input)
+        #return TT.clip(input.sum(axis=3, keepdims=True), 1e-6, 1-1e-6)
+        log_none_bnd = TT.sum(
+            TT.log(1-input), axis=3, keepdims=True)
+        at_least_1_bnd = 1-TT.exp(log_none_bnd)
+        return at_least_1_bnd
+        ## we take the weighted sum because the max is easier to fit, and 
+        ## thus this helps to regularize the optimization procedure
+        max_occ = TT.max(input, axis=3, keepdims=True)
+        return max_occ # + 0.5*at_least_1_bnd
+
+class OccupancyLayer(Layer):
+    def __init__(
+            self, 
+            input,
+            init_chem_affinity=0.0, 
+            **kwargs):
+        super(OccupancyLayer, self).__init__(input, **kwargs)
+        self.chem_affinity = self.add_param(
+            init.Constant(init_chem_affinity),
+            (), 
+            name='chem_affinity')
+
+    def get_output_shape_for(self, input_shape):
+        return self.input_shape
+
+    def get_output_for(self, input, **kwargs):
+        """
+        inner = (-chem_pot+affinities)/(R*T)
+        return -TT.log(1.0 + TT.exp(inner))
+        lower = TT.switch(inner<-10, TT.exp(inner), 0)
+        mid = TT.switch((inner >= -10)&(inner <= 35), 
+                         TT.log(1.0 + TT.exp(inner)),
+                        0 )
+        upper = TT.switch(inner>35, inner, 0)
+        return -(lower + mid + upper)
+        """
+        return sigmoid(self.chem_affinity+input)
+
 class OccMaxPool(Layer):
     def __init__(
             self, input, num_tracks, num_bases, base_stride=None, **kwargs):
@@ -397,8 +462,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 4
-        self.num_tf_specific_invivo_affinity_convs = 28 # HERE 
+        self.num_tf_specific_invitro_affinity_convs = 1
+        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -467,10 +532,9 @@ class JointBindingModel():
             use_three_base_encoding=self._use_three_base_encoding,
             W=W, 
             b=b)
-        network = LogNormalizedOccupancy(network, -6.0)
-        network = LogAnyBoundOcc(network)
+        network = StackStrands(network)
+        network = OccupancyLayer(network, -6.0)
         network = OccMaxPool(network, 'full', 'full' )
-        network = ExpressionLayer(network, TT.exp)
         network = FlattenLayer(network)
         
         self._networks[name + ".output"] = network
@@ -484,7 +548,7 @@ class JointBindingModel():
         for exp in self.selex_experiments:
             self.add_selex_experiment(exp)
     
-    def add_simple_chipseq_model(self, pks_and_labels):
+    def add_chipseq_trace_model(self, pks_and_labels):
         name = 'invivo_%s_sequence.simple' % pks_and_labels.sample_id 
 
         input_var = TT.tensor4(name + '.fwd_seqs')
@@ -524,10 +588,46 @@ class JointBindingModel():
         self._losses[name] = label_loss + cov_loss
 
         return
-    def _add_chipseq_regularization(self, occs, target_var):
+
+    def add_simple_chipseq_model(self, pks_and_labels):
+        name = 'invivo_%s_sequence.simple' % pks_and_labels.sample_id 
+
+        input_var = TT.tensor4(name + '.fwd_seqs')
+        self._input_vars[name + '.fwd_seqs'] = input_var
+        target_var = TT.matrix(name + '.output')
+        self._target_vars[name + '.output'] = target_var
+        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
+        
+        network = InputLayer(
+            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
+
+        network = ConvolutionDNASequenceBinding(
+            network, 
+            nb_motifs=self.num_affinity_convs, 
+            motif_len=self.affinity_conv_size, 
+            use_three_base_encoding=self._use_three_base_encoding,
+            W=self.affinity_conv_filter, 
+            b=self.affinity_conv_bias)
+        network = StackStrands(network)
+        network = OccupancyLayer(network, -6.0)
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
+        network = AnyBoundOcc(network)
+        network = OccMaxPool(network, 'full', 'full')
+        network = FlattenLayer(network)
+
+        prediction = lasagne.layers.get_output(network) 
+        loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
+        self._networks[name + ".output"] = network
+        self._data_iterators[name] = pks_and_labels.iter_batches
+        self._losses[name] = loss
+
+        return
+
+    def _add_chipseq_regularization(self, network, target_var):
         #network = LogAnyBoundOcc(occs)
-        network = OccMaxPool(occs, 2*self.num_tf_specific_convs, 'full')
-        network = ExpressionLayer(network, TT.exp)
+        network = ExpressionLayer(network, lasagne.nonlinearities.sigmoid)
+        #network = AnyBoundOcc(network)
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         #network = DenseLayer(network, len(self.invivo_factor_names))
         network = FlattenLayer(network)
         prediction = lasagne.layers.get_output(network)
@@ -555,10 +655,9 @@ class JointBindingModel():
             use_three_base_encoding=self._use_three_base_encoding,
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
-        network = LogNormalizedOccupancy(network, -6.0)
+        network = StackStrands(network)
         self._add_chipseq_regularization(network, target_var)
         network = OccMaxPool(network, 1, 32, 8)
-        network = ExpressionLayer(network, TT.exp)
         network = Conv2DLayer(
             network, 
             self.num_affinity_convs, 
@@ -566,12 +665,13 @@ class JointBindingModel():
             nonlinearity=lasagne.nonlinearities.sigmoid
         )
         network = DimshuffleLayer(network, (0,2,1,3))        
+        network = OccMaxPool(network, 'full', 'full')
 
-        network = DenseLayer(
-            network, 
-            len(pks_and_labels.factor_names), #labels.shape[1],
-            nonlinearity=lasagne.nonlinearities.sigmoid
-        )
+        #network = DenseLayer(
+        #    network, 
+        #    len(pks_and_labels.factor_names), #labels.shape[1],
+        #    nonlinearity=lasagne.nonlinearities.sigmoid
+        #)
         
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
@@ -631,6 +731,7 @@ class JointBindingModel():
             + 0.0001*apply_penalty(self.affinity_conv_filter, zero_rows_penalty)
             #+ 0.01*apply_penalty(self.affinity_conv_filter, keep_positive_penalty)
         )
+        #regularization_loss = 0
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
         updates = lasagne.updates.adam(
@@ -695,7 +796,7 @@ class JointBindingModel():
         for factor_name in invitro_factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        #self.add_selex_experiments()
+        self.add_selex_experiments()
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
@@ -706,8 +807,8 @@ class JointBindingModel():
             #pks.validation = pks.validation.balance_data()
 
             #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
-            #self.add_simple_chipseq_model(pks)
+            #self.add_chipseq_samples(pks)
+            self.add_simple_chipseq_model(pks)
 
         self._build()
 
@@ -811,7 +912,7 @@ class JointBindingModel():
     
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
-        print("Starting training...")
+        print("\n\n\n\n\nStarting training...")
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
@@ -863,8 +964,15 @@ class JointBindingModel():
                         labels[key][:,index], 
                         pred_prbs[key][:,index] > 0.5, 
                         pred_prbs[key][:,index])
-            #for param in self.get_all_params():
-            #    print param, param.get_value()
+            for param in self.get_all_params():
+                if str(param) == 'chem_affinity':
+                    print param, param.get_value()
+            print "Affinity Conv Bias: %.2f-%.2f" % (
+                self.affinity_conv_bias.get_value() 
+                + self.affinity_conv_filter.get_value().min(axis=2).sum(axis=-1),
+                self.affinity_conv_bias.get_value() 
+                + self.affinity_conv_filter.get_value().max(axis=2).sum(axis=-1)
+            )
             
         pass
 
@@ -900,9 +1008,9 @@ def single_sample_main():
         use_three_base_encoding=False)
 
     model.train(
-        n_samples if n_samples is not None else 100000, 500, 20, balanced=True)
+        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 500, 50, balanced=False)
+        n_samples if n_samples is not None else 100000, 500, 100, balanced=False)
     model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))
     
 def main():        
