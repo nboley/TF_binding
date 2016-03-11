@@ -354,21 +354,6 @@ class LogNormalizedOccupancy(Layer):
         rv = (log_occs - log_norm_factor)
         return rv
 
-class LogAnyBoundOcc(Layer):
-    def get_output_shape_for(self, input_shape):
-        #return self.input_shape
-        return (input_shape[0], input_shape[1], input_shape[2], 1)
-
-    def get_output_for(self, input, **kwargs):
-        log_none_bnd = TT.sum(
-            TT.log(1-TT.clip(TT.exp(input), 1e-6, 1-1e-6)), axis=3, keepdims=True)
-        at_least_1_bnd = 1-TT.exp(log_none_bnd)
-        max_occ = TT.max(TT.exp(input), axis=3, keepdims=True)
-        # we take the weighted sum because the max is easier to fit, and 
-        # thus this helps to regularize the optimization procedure
-        rv = TT.log(0.05*max_occ + 0.95*at_least_1_bnd)
-        return rv
-
 class AnyBoundOcc(Layer):
     def get_output_shape_for(self, input_shape):
         return (input_shape[0], input_shape[1], input_shape[2], 1)
@@ -612,7 +597,7 @@ class JointBindingModel():
         network = OccupancyLayer(network, -6.0)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = AnyBoundOcc(network)
-        network = OccMaxPool(network, 'full', 'full')
+        network = OccMaxPool(network, 1, 'full')
         network = FlattenLayer(network)
 
         prediction = lasagne.layers.get_output(network) 
@@ -623,12 +608,11 @@ class JointBindingModel():
 
         return
 
-    def _add_chipseq_regularization(self, network, target_var):
-        #network = LogAnyBoundOcc(occs)
-        network = ExpressionLayer(network, lasagne.nonlinearities.sigmoid)
-        #network = AnyBoundOcc(network)
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
-        #network = DenseLayer(network, len(self.invivo_factor_names))
+    def _add_chipseq_regularization(self, affinities, target_var):
+        network = OccupancyLayer(affinities, -6.0)
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
+        network = AnyBoundOcc(network)
+        network = OccMaxPool(network, 1, 'full')
         network = FlattenLayer(network)
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
@@ -657,14 +641,20 @@ class JointBindingModel():
             b=self.affinity_conv_bias)
         network = StackStrands(network)
         self._add_chipseq_regularization(network, target_var)
-        network = OccMaxPool(network, 1, 32, 8)
-        network = Conv2DLayer(
-            network, 
-            self.num_affinity_convs, 
-            (2*self.num_affinity_convs,8),
-            nonlinearity=lasagne.nonlinearities.sigmoid
-        )
-        network = DimshuffleLayer(network, (0,2,1,3))        
+        
+        #network = OccMaxPool(network, 1, 32, 8)
+        #network = Conv2DLayer(
+        #    network, 
+        #    self.num_affinity_convs, 
+        #    (2*self.num_affinity_convs,16),
+        #    nonlinearity=softplus
+        #)
+        #network = DimshuffleLayer(network, (0,2,1,3))
+
+        network = OccupancyLayer(network, -6.0)
+
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 8)
+        network = AnyBoundOcc(network)
         network = OccMaxPool(network, 'full', 'full')
 
         #network = DenseLayer(
@@ -731,6 +721,7 @@ class JointBindingModel():
             + 0.0001*apply_penalty(self.affinity_conv_filter, zero_rows_penalty)
             #+ 0.01*apply_penalty(self.affinity_conv_filter, keep_positive_penalty)
         )
+        ## Don't use regularization
         #regularization_loss = 0
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
@@ -786,7 +777,8 @@ class JointBindingModel():
         self._target_vars = OrderedDict()
         self._networks = OrderedDict()
         self._data_iterators = OrderedDict()
-
+        self._occupancies_fns = None
+        
         self._init_shared_affinity_params(self._use_three_base_encoding)
 
         init_sp = 2.0*len(invivo_factor_names)/(len(invitro_factor_names)+1e-6)
@@ -796,7 +788,7 @@ class JointBindingModel():
         for factor_name in invitro_factor_names:
             self.selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        self.add_selex_experiments()
+        #self.add_selex_experiments()
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
@@ -818,7 +810,8 @@ class JointBindingModel():
             data_subset, 
             repeat_forever, 
             oversample=False, 
-            balanced=False):
+            balanced=False,
+            include_chipseq_signal=False):
         # decide how much to oversample
         if oversample is True and data_subset == 'train':
             num_oversamples = 5
@@ -831,7 +824,8 @@ class JointBindingModel():
                 batch_size, 
                 data_subset, 
                 repeat_forever=repeat_forever, 
-                balanced=balanced
+                balanced=balanced,
+                include_chipseq_signal=include_chipseq_signal
             )
         assert len(iterators) > 0, 'No data iterators provided'
         
@@ -848,6 +842,9 @@ class JointBindingModel():
                         self._input_vars.iterkeys(), 
                         self._target_vars.iterkeys()):
                     ordered_merged_output[key] = merged_output[key]
+                for key in merged_output.iterkeys():
+                    if key not in ordered_merged_output:
+                        ordered_merged_output[key] = merged_output[key]
                 yield ordered_merged_output
         
         return iter_data()
@@ -856,6 +853,42 @@ class JointBindingModel():
     def get_all_params(self):
         return lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
+
+    def _build_predict_occupancies_fns(self):
+        self._occupancies_fns = OrderedDict()
+        for network_id, network in self._networks.iteritems():
+            inputs = []
+            occupancy_layers = []
+            for res in lasagne.layers.get_all_layers(network):
+                if isinstance(res, InputLayer):
+                    inputs.append(res)
+                if isinstance(res, OccupancyLayer):
+                    occupancy_layers.append(res)
+            # For now we only deal with graphs with a single occupancy output
+            assert len(occupancy_layers) == 1 
+            predict_fn = theano.function(
+                self._input_vars.values(),
+                lasagne.layers.get_output(
+                    occupancy_layers[0], deterministic=True),
+                on_unused_input='ignore'
+            )
+            self._occupancies_fns[network_id] = predict_fn
+        return
+
+    def predict_occupancies_on_batch(self, data):
+        if self._occupancies_fns is None:
+            self._build_predict_occupancies_fns()
+        predictions = {}
+        for output_key, fn in self._occupancies_fns.iteritems():
+            # runt he occupancies prediction fuinction, and fitler out
+            # the worthless second diumnensions
+            res = fn(
+                *[data[input_key] for input_key in self._input_vars.keys()]
+            )
+            assert res.shape[1] == 1
+            predictions[output_key] = res[:,0,:,:]
+        
+        return predictions
     
     def predict_on_batch(self, data):
         predictions = {}
@@ -863,7 +896,7 @@ class JointBindingModel():
             predictions[output_key] = fn(
                 *[data[input_key] for input_key in self._input_vars.keys()])
         return predictions
-            
+              
     def predict(self, batch_size):
         data_iterator = self.iter_data(
             batch_size, 
@@ -909,7 +942,23 @@ class JointBindingModel():
                 plot_bases(weights[::-1,::-1].T)
                 pyplot.savefig("%s-%i-raw-rc.png" % (prefix, i))
                 pyplot.close("all")
-    
+
+    def predict_occupancies(self, batch_size):
+        input_data =  next(self.iter_data(
+            50, 'train', False, include_chipseq_signal=True))
+        print input_data.keys()
+        res = self.predict_occupancies_on_batch(input_data)
+        pred_occs_keys = [key for key in res.keys() if key.startswith("invivo")]
+        pred_occs = [res[key] for key in pred_occs_keys]
+        assert len(pred_occs) == 1
+        obs_chipseq_signal = [
+            data for key, data in input_data.iteritems() 
+            if key.endswith('chipseq_cov')
+        ]
+        assert len(obs_chipseq_signal) == 1
+        return pred_occs[0], obs_chipseq_signal[0]
+    #assert False
+
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
         print("\n\n\n\n\nStarting training...")
@@ -917,8 +966,8 @@ class JointBindingModel():
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
                 round(self._selex_penalty.get_value()/1.05, 6) )
-            self._chipseq_regularization_penalty.set_value( 
-                round(self._chipseq_regularization_penalty.get_value()/1.05, 6))
+            #self._chipseq_regularization_penalty.set_value( 
+            #    round(self._chipseq_regularization_penalty.get_value()/1.05, 6))
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
@@ -933,7 +982,11 @@ class JointBindingModel():
                     break
                 # we can use the values attriburte because iter_data  
                 # returns an ordered dict
-                err = self.train_fn(*list(data.values()))
+                filtered_data = [
+                    data[key] for key in 
+                    self._input_vars.keys() + self._target_vars.keys()
+                ]
+                err = self.train_fn(*filtered_data)
                 progbar.update(
                     nb_train_batches_observed*batch_size, 
                     [('train_err', err.sum()),]
@@ -946,7 +999,11 @@ class JointBindingModel():
             for data in self.iter_data(batch_size, 'validation', False):
                 # we can use the values attriburte because iter_data  
                 # returns an ordered dict
-                err = self.test_fn(*list(data.values()))
+                filtered_data = [
+                    data[key] for key in 
+                    self._input_vars.keys() + self._target_vars.keys()
+                ]
+                err = self.test_fn(*filtered_data)
                 validation_err += err
                 validation_batches += 1
             print( 'val_err: %s' % zip(
@@ -967,12 +1024,12 @@ class JointBindingModel():
             for param in self.get_all_params():
                 if str(param) == 'chem_affinity':
                     print param, param.get_value()
-            print "Affinity Conv Bias: %.2f-%.2f" % (
-                self.affinity_conv_bias.get_value() 
-                + self.affinity_conv_filter.get_value().min(axis=2).sum(axis=-1),
-                self.affinity_conv_bias.get_value() 
-                + self.affinity_conv_filter.get_value().max(axis=2).sum(axis=-1)
-            )
+            #print "Affinity Conv Bias: %.2f-%.2f" % (
+            #    self.affinity_conv_bias.get_value() 
+            #    + self.affinity_conv_filter.get_value().min(axis=2).sum(axis=-1),
+            #    self.affinity_conv_bias.get_value() 
+            #    + self.affinity_conv_filter.get_value().max(axis=2).sum(axis=-1)
+            #)
             
         pass
 
@@ -997,8 +1054,6 @@ def single_sample_main():
 
     #pks = PartitionedSamplePeaksAndLabels(
     #    sample_id, factor_names=[tf_name,], n_samples=n_samples)
-    #print pks.train.balance_data()
-    #return
     model = JointBindingModel(
         n_samples, 
         [tf_name,], 
@@ -1008,10 +1063,21 @@ def single_sample_main():
         use_three_base_encoding=False)
 
     model.train(
-        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
+        n_samples if n_samples is not None else 100000, 100, 10, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 500, 100, balanced=False)
-    model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))
+        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+    res = model.predict_occupancies(1)
+    with open("pred.txt", "w") as ofp:
+        for entry in res[0]:
+            for ientry in entry:
+                ofp.write(",".join("%.2e" % x for x in ientry) + "\n")
+    with open("obs.txt", "w") as ofp:
+        for entry in res[1]:
+            for ientry in entry:
+                ofp.write(",".join("%.2e" % x for x in ientry) + "\n")
+    #model.train(
+    #    n_samples if n_samples is not None else 100000, 500, 100, balanced=False)
+    #model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]

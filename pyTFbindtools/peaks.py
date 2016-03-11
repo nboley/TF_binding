@@ -25,6 +25,8 @@ from cross_validation import iter_train_validation_splits
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 
+from pyTFbindtools.DB import load_tf_ids
+
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
         if (mode=="r"):
@@ -848,7 +850,7 @@ class SamplePeaksAndLabels():
 
         self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
 
-    def iter_balanced_batches(self, batch_size, repeat_forever):
+    def iter_balanced_batches(self, batch_size, repeat_forever, include_chipseq_signal=False):
         i = 0
         n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
         while repeat_forever is True or i<n:
@@ -862,15 +864,17 @@ class SamplePeaksAndLabels():
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
-            yield {'fwd_seqs': self.fwd_seqs[indices], 
+            rv =  {'fwd_seqs': self.fwd_seqs[indices], 
                    'accessibility_data': self.accessibility_data[indices], 
-                   #'chipseq_cov': self.chipseq_coverage[indices],
                    'output': self.labels[indices]
             }
+            if include_chipseq_signal:
+                rv['chipseq_cov'] = self.chipseq_coverage[indices]
+            yield rv
             i += 1
         return
     
-    def iter_shuffled_batches(self, batch_size, repeat_forever):
+    def iter_shuffled_batches(self, batch_size, repeat_forever, include_chipseq_signal=False):
         i = 0
         n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
         if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
@@ -882,20 +886,29 @@ class SamplePeaksAndLabels():
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
-            yield {'fwd_seqs': self.fwd_seqs[indices], 
+            rv =  {'fwd_seqs': self.fwd_seqs[indices], 
                    'accessibility_data': self.accessibility_data[indices], 
-                   #'chipseq_cov': self.chipseq_coverage[indices],
                    'output': self.labels[indices]
             }
-            i += 1
-        
+            if include_chipseq_signal:
+                rv['chipseq_cov'] = self.chipseq_coverage[indices]
+            yield rv
+            i += 1        
         return
 
-    def iter_batches(self, batch_size, repeat_forever, balanced=False):
+    def iter_batches(self, batch_size, repeat_forever, balanced=False, include_chipseq_signal=False):
         if balanced:
-            return self.iter_balanced_batches(batch_size, repeat_forever)
+            return self.iter_balanced_batches(
+                batch_size, 
+                repeat_forever, 
+                include_chipseq_signal=include_chipseq_signal
+            )
         else:
-            return self.iter_shuffled_batches(batch_size, repeat_forever)
+            return self.iter_shuffled_batches(
+                batch_size, 
+                repeat_forever, 
+                include_chipseq_signal=include_chipseq_signal
+            )
 
 class PartitionedSamplePeaksAndLabels():
     @property
@@ -914,15 +927,15 @@ class PartitionedSamplePeaksAndLabels():
         self.validation.save(self.cache_key + ".validation.obj")
         return
     
-    def _load_cached(self, sample_id, tf_ids):
-        print self.cache_key
+    def _load_cached(self, sample_id, factor_names):
+        self.tf_ids = load_tf_ids(factor_names)
         self.data = None
         #SamplePeaksAndLabels.load(
         #    self.cache_key + ".data.obj", sample_id, tf_ids)
         self.train = SamplePeaksAndLabels.load(
-            self.cache_key + ".train.obj", sample_id, tf_ids)
+            self.cache_key + ".train.obj", sample_id, self.tf_ids)
         self.validation = SamplePeaksAndLabels.load(
-            self.cache_key + ".validation.obj", sample_id, tf_ids)
+            self.cache_key + ".validation.obj", sample_id, self.tf_ids)
     
     @staticmethod
     def _load_data(roadmap_sample_id, 
@@ -992,24 +1005,24 @@ class PartitionedSamplePeaksAndLabels():
         print self.validation.fwd_seqs.shape
 
     def iter_batches(
-            self, batch_size, data_subset, repeat_forever, balanced=False):
+            self, batch_size, data_subset, repeat_forever, balanced=False, include_chipseq_signal=False):
         if data_subset == 'train':
             return self.train.iter_batches(
-                batch_size, repeat_forever, balanced)
+                batch_size, repeat_forever, balanced, include_chipseq_signal=include_chipseq_signal)
         elif data_subset == 'validation':
             return self.validation.iter_batches(
-                batch_size, repeat_forever, balanced)
+                batch_size, repeat_forever, balanced, include_chipseq_signal=include_chipseq_signal)
         else:
             raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
 
     def iter_train_data(
-            self, batch_size, repeat_forever=False, balanced=False):
-        return self.iter_batches(batch_size, 'train', repeat_forever, balanced)
+            self, batch_size, repeat_forever=False, balanced=False, **kwargs):
+        return self.iter_batches(batch_size, 'train', repeat_forever, balanced, **kwargs)
 
     def iter_validation_data(
-            self, batch_size, repeat_forever=False, balanced=False):
+            self, batch_size, repeat_forever=False, balanced=False, **kwargs):
         return self.iter_batches(
-            batch_size, 'validation', repeat_forever, balanced)
+            batch_size, 'validation', repeat_forever, balanced, **kwargs)
 
 class SelexDBConn(object):
     def __init__(self, host, dbname, user, exp_id):

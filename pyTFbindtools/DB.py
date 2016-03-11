@@ -427,12 +427,20 @@ def load_tf_names(tf_ids):
         tf_names.append(cur.fetchall()[0][0])
     return tf_names
 
+def load_tf_ids(tf_names):
+    cur = conn.cursor()
+    query = "select tf_id from roadmap_matched_chipseq_peaks where tf_name = %s limit 1"
+    tf_ids = []
+    for tf_name in tf_names:
+        cur.execute(query, [tf_name,])
+        tf_ids.append(cur.fetchall()[0][0])
+    return tf_ids
+
 def load_ENCODE_target_id(tf_ids):
     cur = conn.cursor()
     query = "select ENCODE_target_id from chipseq_targets where tf_id = %s"
     encode_target_ids = []
     for tf_id in tf_ids:
-        #print tf_id
         cur.execute(query, [tf_id,])
         res = cur.fetchall()
         if len(res) == 0:
