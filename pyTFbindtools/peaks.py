@@ -850,17 +850,27 @@ class SamplePeaksAndLabels():
 
         self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
 
-    def iter_balanced_batches(self, batch_size, repeat_forever, include_chipseq_signal=False):
+    def build_balanced_indices(self):
+        one_indices = np.random.choice(
+            np.nonzero(self.labels == 1)[0], size=len(self.labels)/2)
+        zero_indices = np.random.choice(
+            np.nonzero(self.labels == 0)[0], size=len(self.labels)/2)
+        permutation = np.concatenate((one_indices, zero_indices), axis=0)
+        np.random.shuffle(permutation)
+        return permutation
+
+    def build_shuffled_indices(self):
+        return np.random.permutation(self.labels.shape[0])
+
+    def iter_batches_from_indices(
+            self, batch_size, repeat_forever, indices_generator, 
+            include_chipseq_signal):
         i = 0
         n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
+        permutation =- None
         while repeat_forever is True or i<n:
             if i%n == 0:
-                one_indices = np.random.choice(
-                    np.nonzero(self.labels == 1)[0], size=len(self.labels)/2)
-                zero_indices = np.random.choice(
-                    np.nonzero(self.labels == 0)[0], size=len(self.labels)/2)
-                permutation = np.concatenate((one_indices, zero_indices), axis=0)
-                np.random.shuffle(permutation)
+                permutation = indices_generator()
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
@@ -874,41 +884,17 @@ class SamplePeaksAndLabels():
             i += 1
         return
     
-    def iter_shuffled_batches(self, batch_size, repeat_forever, include_chipseq_signal=False):
-        i = 0
-        n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
-        if n <= 0: raise ValueError, "Maximum batch size is %i (requested %i)" \
-           % (self.fwd_seqs.shape[0], batch_size)
-        permutation = None
-        while repeat_forever is True or i < n:
-            if i%n == 0:
-                permutation = np.random.permutation(self.labels.shape[0])
-            # yield a subset of the data
-            subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
-            indices = permutation[subset]
-            rv =  {'fwd_seqs': self.fwd_seqs[indices], 
-                   'accessibility_data': self.accessibility_data[indices], 
-                   'output': self.labels[indices]
-            }
-            if include_chipseq_signal:
-                rv['chipseq_cov'] = self.chipseq_coverage[indices]
-            yield rv
-            i += 1        
-        return
-
-    def iter_batches(self, batch_size, repeat_forever, balanced=False, include_chipseq_signal=False):
+    def iter_batches(self, batch_size, repeat_forever, balanced=False, **kwargs):
         if balanced:
-            return self.iter_balanced_batches(
-                batch_size, 
-                repeat_forever, 
-                include_chipseq_signal=include_chipseq_signal
-            )
+            indices_generator = self.build_balanced_indices
         else:
-            return self.iter_shuffled_batches(
-                batch_size, 
-                repeat_forever, 
-                include_chipseq_signal=include_chipseq_signal
-            )
+            indices_generator = self.build_shuffled_indices
+        return self.iter_batches_from_indices(
+            batch_size, 
+            repeat_forever, 
+            indices_generator,
+            **kwargs
+        )
 
 class PartitionedSamplePeaksAndLabels():
     @property

@@ -10,6 +10,59 @@ from itertools import chain
 # Insert ENCODE meta-data into the local database
 #
 ################################################################################
+def find_or_insert_ENCODE_experiment(
+        encode_exp_id, encode_sample_type, assay, encode_target_id=None):
+    cur = conn.cursor()
+
+    # first check to see if the experiment is already in the DB. If
+    # so, we are done
+    query = """
+    SELECT encode_experiment_id 
+      FROM encode_experiments 
+     WHERE encode_experiment_id = %s;
+    """
+    cur.execute(query, [encode_exp_id,])
+    # if the experiment is already there, we are done
+    res = cur.fetchall()
+    if len(res) == 1:
+        return res[0][0]
+        
+    # find target id 
+    if encode_target_id is not None:
+        query = """
+        SELECT chipseq_target_id 
+          FROM chipseq_targets
+         WHERE encode_target_id = %s
+        """
+        cur.execute(query, [encode_target_id,])
+        res = cur.fetchall()
+    
+        # if we can't find a matching tf id, insert it
+        # XXX this section is untested
+        if len(res) == 0:
+            target_info = find_target_info(encode_target_id)
+            query = "INSERT INTO chipseq_targets (encode_target_id, tf_id, organism, tf_name, uniprot_ids, ensemble_gene_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING chipseq_target_id"
+            cur.execute(query, [encode_target_id, 
+                                target_info.cisbp_id, 
+                                target_info.organism,
+                                target_info.tf_name,
+                                target_info.uniprot_ids, 
+                                target_info.ensemble_ids])
+            res = cur.fetchall()
+        assert len(res) == 1
+        target_id = res[0][0]
+    else:
+        target_id = None
+    
+    # add the experiment data
+    query = "INSERT INTO encode_experiments " \
+          + "(encode_experiment_id, target, sample_type, assay) " \
+          + "VALUES (%s, %s, %s, %s)"
+    cur.execute(query, [
+        encode_exp_id, target_id, encode_sample_type, assay])
+    conn.commit()
+    return encode_exp_id
+
 
 def find_or_insert_experiment_from_called_peaks(called_peaks):
     cur = conn.cursor()
@@ -105,16 +158,17 @@ def insert_chipseq_experiment_into_db(exp_id):
     conn.commit()
     return
 
-def insert_chipseq_bam_into_db(file_data):
+def insert_ENCODE_bam_into_db(file_data):
     """Download and insert ENCODE experiment metadata.
     """
     cur = conn.cursor()
     # add the peak data
     query = """
-    INSERT INTO encode_chipseq_bam_files
+    INSERT INTO encode_bam_files
     (annotation, encode_experiment_id, bsid, rep_key, remote_filename)
     VALUES 
     (%s, %s, %s, %s, %s)
+    RETURNING bam_key
     """
     assert file_data.assembly == 'hg19'
     assembly_id = 1
@@ -127,44 +181,47 @@ def insert_chipseq_bam_into_db(file_data):
             "http://encodeproject.org" + file_data.file_loc
         ])
     except psycopg2.IntegrityError:
-        print( "ERROR" )
         conn.rollback()
         raise
         pass
-    conn.commit()
+    else:
+        res = cur.fetchall()
+        assert len(res) == 1
+        assert len(res[0]) == 1
+        conn.commit()
+        return res[0][0]
     return
 
-def build_local_ENCODE_chipseq_bam_fname(encode_chipseq_bam_key):
+def build_local_ENCODE_bam_fname(bam_key):
     from ENCODE_ChIPseq_tools import chipseq_bams_base_dir
     cur = conn.cursor()
     query = """
-    SELECT sample_type, bsid, encode_target_id 
-      FROM encode_chipseq_bam_files, 
-           encode_chipseq_experiments, 
-           chipseq_targets 
-     WHERE chipseq_targets.chipseq_target_id 
-           = encode_chipseq_experiments.target 
-       AND encode_chipseq_bam_files.encode_experiment_id 
-           = encode_chipseq_experiments.encode_experiment_id
-       AND encode_chipseq_bam_key = %s;
+    SELECT sample_type, bsid, encode_target_id, assay 
+      FROM encode_bam_files NATURAL JOIN encode_experiments NATURAL LEFT JOIN chipseq_targets 
+     WHERE bam_key = %s;
     """
-    cur.execute(query, [encode_chipseq_bam_key,])
+    cur.execute(query, [bam_key,])
     res = cur.fetchall()
     if len(res) == 0: return None
     # encode_chipseq_peak_key is the primary key, so we shouldn't get multiple 
     # results
     assert len(res) == 1
-    sample_type, bsid, encode_target_id = res[0]
+    sample_type, bsid, encode_target_id, assay = res[0]
     sample_type = sample_type.replace(" ", "__").replace("/", "-")
-    target_name = encode_target_id.strip().split("/")[-2].replace("/", "-")
+    target_name = ( 
+        'NULL' if encode_target_id is None 
+        else encode_target_id.strip().split("/")[-2].replace("/", "-")
+    )
+    assay = assay.replace("-", "").upper()
 
-    output_fname_template = "ChIPseq.{sample_type}.{target_name}.ENCODECHIPSEQBAM{bam_id}.bam"
+    output_fname_template = "{assay}.{sample_type}.{target_name}.ENCODE{assay}BAM{bam_id}.bam"
     return os.path.join(
         chipseq_bams_base_dir,
         output_fname_template.format(
+            assay=assay,
             sample_type=sample_type, 
             target_name=target_name, 
-            bam_id=encode_chipseq_bam_key
+            bam_id=bam_key
         )
     )
 
@@ -219,8 +276,8 @@ def sync_ENCODE_chipseq_peak_files():
     """
     cur.execute(query)
     all_peaks = cur.fetchall()
-    for i, (peak_id, remote_filename) in enumerate(all_peaks):
-        print "Processing peak_id '%i' (%i/%i)" % (peak_id, i, len(all_peaks))
+
+    def download_and_insert_peak(peak_id, remote_filename):
         new_local_fname = build_local_ENCODE_peak_fname(peak_id)
         rv = download_and_index_peak_file(remote_filename, new_local_fname)
         if rv == 0:
@@ -234,30 +291,37 @@ def sync_ENCODE_chipseq_peak_files():
         else:
             raise ValueError, "Failed to sync encode TF peak id %s (%s)" % (
                 peak_id, remote_filename)
+
+    from grit.lib.multiprocessing_utils import run_in_parallel
+    run_in_parallel(16, download_and_insert_peak, all_peaks) 
+    #for i, (peak_id, remote_filename) in enumerate(all_peaks):
+    #    print "Processing peak_id '%i' (%i/%i)" % (peak_id, i, len(all_peaks))
+    #    download_and_insert_peak(peak_id, remote_filename)
     return
 
-def sync_ENCODE_chipseq_bam_files():
+def sync_ENCODE_bam_files():
     from ENCODE_ChIPseq_tools import download_and_index_bam
     # find all files in the database that don't have local copies
     cur = conn.cursor()
     query = """
-    SELECT encode_chipseq_bam_key, remote_filename 
-      FROM encode_chipseq_bam_files 
+    SELECT bam_key, remote_filename 
+      FROM encode_bam_files 
      WHERE local_filename is NULL;
     """
     cur.execute(query)
     all_peaks = cur.fetchall()
-    for i, (bam_id, remote_filename) in enumerate(all_peaks):
-        print "Processing peak_id '%i' (%i/%i)" % (bam_id, i, len(all_peaks))
-        new_local_fname = build_local_ENCODE_chipseq_bam_fname(bam_id)
-        print new_local_fname
+    def download_and_insert_peak(bam_id, remote_filename):
+        global conn
+        conn = psycopg2.connect("host=mitra dbname=cisbp")
+        cur = conn.cursor()
+        new_local_fname = build_local_ENCODE_bam_fname(bam_id)
         rv = download_and_index_bam(remote_filename, new_local_fname)
-        print rv
+        print bam_id
         if rv == 0:
             query = """
-            UPDATE encode_chipseq_bam_files 
+            UPDATE encode_bam_files 
             SET local_filename = %s 
-            WHERE encode_chipseq_bam_key = %s;
+            WHERE bam_key = %s;
             """
             #print cur.mogrify(query, [new_local_fname, bam_id])
             cur.execute(query, [new_local_fname, bam_id])
@@ -265,7 +329,12 @@ def sync_ENCODE_chipseq_bam_files():
         else:
             raise ValueError, "Failed to sync encode TF peak id %s (%s)" % (
                 bam_id, remote_filename)
-        
+
+    from grit.lib.multiprocessing_utils import run_in_parallel
+    run_in_parallel(4, download_and_insert_peak, all_peaks) 
+    #for i, (bam_id, remote_filename) in enumerate(all_peaks):
+    #    print "Processing peak_id '%i' (%i/%i)" % (bam_id, i, len(all_peaks))
+    #    download_and_insert_peak(bam_id, remote_filename)
     return
 
 ################################################################################
