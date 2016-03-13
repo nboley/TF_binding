@@ -722,7 +722,8 @@ class JointBindingModel():
             #+ 0.01*apply_penalty(self.affinity_conv_filter, keep_positive_penalty)
         )
         ## Don't use regularization
-        #regularization_loss = 0
+        #regularization_loss = 0        
+        
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
         updates = lasagne.updates.adam(
@@ -804,29 +805,10 @@ class JointBindingModel():
 
         self._build()
 
-    def iter_data(
-            self, 
-            batch_size, 
-            data_subset, 
-            repeat_forever, 
-            oversample=False, 
-            balanced=False,
-            include_chipseq_signal=False):
-        # decide how much to oversample
-        if oversample is True and data_subset == 'train':
-            num_oversamples = 5
-        else:
-            num_oversamples = 1
-
+    def iter_data(self, *args, **kwargs_args):
         iterators = OrderedDict()
         for key, iter_inst in self._data_iterators.iteritems():
-            iterators[key] = iter_inst(
-                batch_size, 
-                data_subset, 
-                repeat_forever=repeat_forever, 
-                balanced=balanced,
-                include_chipseq_signal=include_chipseq_signal
-            )
+            iterators[key] = iter_inst(*args, **kwargs_args)
         assert len(iterators) > 0, 'No data iterators provided'
         
         def iter_data():
@@ -902,7 +884,8 @@ class JointBindingModel():
             batch_size, 
             'validation', 
             repeat_forever=False,
-            balanced=False
+            balanced=False,
+            shuffled=False
         )
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
@@ -945,19 +928,45 @@ class JointBindingModel():
 
     def predict_occupancies(self, batch_size):
         input_data =  next(self.iter_data(
-            50, 'train', False, include_chipseq_signal=True))
+            batch_size, 
+            'train', 
+            repeat_forever=False, 
+            balanced=False, 
+            shuffled=False, 
+            include_chipseq_signal=True, 
+            include_dnase_signal=True))
         print input_data.keys()
         res = self.predict_occupancies_on_batch(input_data)
-        pred_occs_keys = [key for key in res.keys() if key.startswith("invivo")]
-        pred_occs = [res[key] for key in pred_occs_keys]
+        pred_occs = [
+            data for key, data in res.iteritems() 
+            if key.startswith("invivo")
+        ]
         assert len(pred_occs) == 1
         obs_chipseq_signal = [
             data for key, data in input_data.iteritems() 
-            if key.endswith('chipseq_cov')
+            if key.startswith('invivo') and key.endswith('chipseq_cov')
         ]
+        dnase_signal = [
+            data for key, data in input_data.iteritems() 
+            if key.startswith('invivo') and key.endswith('dnase_cov')
+        ]
+        obs_labels = [
+            data for key, data in input_data.iteritems() 
+            if key.startswith('invivo') and key.endswith('output')
+        ]
+        assert len(obs_labels) == 1
+        pred_labels = [
+            data for key, data in self.predict_on_batch(input_data).iteritems()
+            if key.startswith('invivo') and key.endswith('output')
+        ]
+        assert len(pred_labels) == 1
         assert len(obs_chipseq_signal) == 1
-        return pred_occs[0], obs_chipseq_signal[0]
-    #assert False
+        assert len(dnase_signal) == 1
+        return { 'obs_labels': obs_labels[0], 
+                 'pred_labels': pred_labels[0], 
+                 'pred_occs': pred_occs[0], 
+                 'chipseq_signal': obs_chipseq_signal[0], 
+                 'dnase_signal': dnase_signal[0] }
 
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
@@ -976,6 +985,7 @@ class JointBindingModel():
                     batch_size, 
                     'train', 
                     repeat_forever=True, 
+                    shuffled=True,
                     balanced=balanced
             )):
                 if nb_train_batches_observed*batch_size > samples_per_epoch: 
@@ -996,7 +1006,12 @@ class JointBindingModel():
             # calculate the test error
             validation_err = np.zeros(len(self._losses), dtype=float)
             validation_batches = 0
-            for data in self.iter_data(batch_size, 'validation', False):
+            for data in self.iter_data(
+                    batch_size, 
+                    'validation', 
+                    repeat_forever=False, 
+                    balanced=False, 
+                    shuffled=False):
                 # we can use the values attriburte because iter_data  
                 # returns an ordered dict
                 filtered_data = [
@@ -1054,6 +1069,9 @@ def single_sample_main():
 
     #pks = PartitionedSamplePeaksAndLabels(
     #    sample_id, factor_names=[tf_name,], n_samples=n_samples)
+    #print next(pks.iter_batches(
+    #    100, 'train', False, include_chipseq_signal=True, include_dnase_signal=True))
+
     model = JointBindingModel(
         n_samples, 
         [tf_name,], 
@@ -1061,20 +1079,16 @@ def single_sample_main():
     #    ['YY1', 'CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
         [tf_name,],
         use_three_base_encoding=False)
-
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 10, balanced=True)
-    model.train(
-        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
-    res = model.predict_occupancies(1)
-    with open("pred.txt", "w") as ofp:
-        for entry in res[0]:
-            for ientry in entry:
-                ofp.write(",".join("%.2e" % x for x in ientry) + "\n")
-    with open("obs.txt", "w") as ofp:
-        for entry in res[1]:
-            for ientry in entry:
-                ofp.write(",".join("%.2e" % x for x in ientry) + "\n")
+        n_samples if n_samples is not None else 100000, 100, 1, balanced=True)
+    #model.train(
+    #    n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+    res = model.predict_occupancies(900)
+    import h5py
+    with h5py.File("predicted_occupancies.{}.{}.hdf5".format(tf_name, sample_id), "w") as f:
+        for key, data in res.iteritems():
+            dset = f.create_dataset(key, data.shape, dtype=data.dtype)
+            dset[:,:] = data
     #model.train(
     #    n_samples if n_samples is not None else 100000, 500, 100, balanced=False)
     #model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))

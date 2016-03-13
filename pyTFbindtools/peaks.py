@@ -635,20 +635,37 @@ def load_chipseq_coverage(sample_id, tf_id, peaks):
     )
     try:
         with open(cached_fname) as fp:
-            print "Loading cached chipseq coverage for %s, %s" % (
-                sample_id, tf_id)
+            print "Loading cached chipseq coverage for %s, %s (%s)" % (
+                sample_id, tf_id, cached_fname)
             rv = np.load(fp)
     except IOError:
         rv = np.zeros(
-            (len(peaks), peaks[0][2] - peaks[0][1]), 
+            (2, len(peaks), peaks[0][2] - peaks[0][1]), 
             dtype='float32')
-        fnames = load_chipseq_fnames(sample_id, tf_id)
+        fnames, control_fnames = load_chipseq_fnames(sample_id, tf_id)
+        fnames = [x.replace("/mnt/lab_data/kundaje/users/nboley/TF_binding/", 
+                            "/srv/scratch/nboley/cached_data/")
+                  for x in fnames]
+        control_fnames = [
+            x.replace("/mnt/lab_data/kundaje/users/nboley/TF_binding/", 
+                      "/srv/scratch/nboley/cached_data/")
+            for x in control_fnames
+        ]
+        for fname in fnames+control_fnames:
+            try: open(fname)
+            except IOError: print fname
+        #assert False
         reads = MergedReads([
             ChIPSeqReads(fname).init() for fname in fnames])
+        control_reads = MergedReads([
+            ChIPSeqReads(fname).init() for fname in control_fnames])
         for i, pk in enumerate(peaks):
             cov = reads.build_read_coverage_array(
                 pk[0], '.', pk[1], pk[2]-1)
-            rv[i,:] = cov
+            bg_cov = control_reads.build_read_coverage_array(
+                pk[0], '.', pk[1], pk[2]-1)
+            rv[0,i,:] = cov
+            rv[1,i,:] = bg_cov
             if i%1000 == 0: print i, len(peaks), cov.shape
         with open(cached_fname, "w") as ofp:
             print "Saving cached chipseq coverage for %s, %s" % (
@@ -656,6 +673,36 @@ def load_chipseq_coverage(sample_id, tf_id, peaks):
             np.save(ofp, rv)
 
     return rv
+
+def load_DNASE_coverage(sample_id, peaks):
+    from pyTFbindtools.DB import load_dnase_fnames
+    cached_fname = "cacheddnasecov.%s.%s.obj" % (
+        hashlib.sha1(peaks.view(np.uint8)).hexdigest(),
+        sample_id
+    )
+    try:
+        with open(cached_fname) as fp:
+            print "Loading cached DNASE coverage for %s (%s)" % (
+                sample_id, cached_fname)
+            rv = np.load(fp)
+    except IOError:
+        rv = np.zeros(
+            (1, len(peaks), peaks[0][2] - peaks[0][1]), 
+            dtype='float32')
+        fnames = load_dnase_fnames(sample_id)
+        reads = MergedReads([
+            ChIPSeqReads(fname).init() for fname in fnames])
+        for i, pk in enumerate(peaks):
+            cov = reads.build_read_coverage_array(
+                pk[0], '.', pk[1], pk[2]-1)
+            rv[0,i,:] = cov
+            if i%1000 == 0: print i, len(peaks), cov.shape
+        with open(cached_fname, "w") as ofp:
+            print "Saving cached DNASE coverage for %s (%s)" % (
+                sample_id, cached_fname)
+            np.save(ofp, rv)
+    return rv
+
 
 class SamplePeaksAndLabels():
     @staticmethod
@@ -706,7 +753,6 @@ class SamplePeaksAndLabels():
             np.array(self.tf_ids)[factor_indices],
             self.pks[pk_indices], 
             self.fwd_seqs[pk_indices],
-            self.accessibility_data[pk_indices],
             self.idr_optimal_labels[pk_indices, factor_indices], 
             self.relaxed_labels[pk_indices, factor_indices]
         )
@@ -786,7 +832,6 @@ class SamplePeaksAndLabels():
         print "Saving cached peaks and labels"
         np.save("pks." + cached_fname_suffix, self.pks)
         np.save("fwd_seqs." + cached_fname_suffix, self.fwd_seqs)
-        np.save("accessibility_data." + cached_fname_suffix, self.accessibility_data)
         np.save("idr_optimal_labels." + cached_fname_suffix, 
                 self.idr_optimal_labels)
         np.save("relaxed_labels." + cached_fname_suffix, self.relaxed_labels)
@@ -798,8 +843,6 @@ class SamplePeaksAndLabels():
             pks = np.load(fp)
         with open("fwd_seqs.%s.npy"%cached_fname_suffix) as fp: 
             fwd_seqs = np.load(fp)
-        with open("accessibility_data.%s.npy"%cached_fname_suffix) as fp: 
-            accessibility_data = np.load(fp)
         with open("idr_optimal_labels.%s.npy"%cached_fname_suffix) as fp: 
             idr_optimal_labels = np.load(fp)
         with open("relaxed_labels.%s.npy"%cached_fname_suffix) as fp:
@@ -810,7 +853,6 @@ class SamplePeaksAndLabels():
             tf_ids, 
             pks, 
             fwd_seqs, 
-            accessibility_data, 
             idr_optimal_labels, 
             relaxed_labels
         )
@@ -819,14 +861,31 @@ class SamplePeaksAndLabels():
     def chipseq_coverage(self):
         if self._chipseq_coverage is None:
             self._chipseq_coverage = np.concatenate([
-                load_chipseq_coverage(self.sample_id, tf_id, self.pks)[:,None,:]
+                load_chipseq_coverage(self.sample_id, tf_id, self.pks)
                 for tf_id in self.tf_ids
             ], axis=1)
+            print self._chipseq_coverage.shape
+            # normalize the coverage
+            sums = self._chipseq_coverage.sum(axis=2).sum(axis=1)
+            self._chipseq_coverage[0] = 1e6*self._chipseq_coverage[0]/sums[0]
+            self._chipseq_coverage[1] = 1e6*self._chipseq_coverage[1]/sums[1]
         return self._chipseq_coverage
+
+    @property
+    def dnase_coverage(self):
+        if self._dnase_coverage is None:
+            self._dnase_coverage = np.concatenate([
+                load_DNASE_coverage(self.sample_id, self.pks)
+            ], axis=1)
+            print self._dnase_coverage.shape
+            # normalize the coverage
+            sums = self._dnase_coverage.sum(axis=2).sum(axis=1)
+            self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
+        return self._dnase_coverage
     
     def __init__(self, 
                  sample_id, tf_ids, 
-                 pks, seqs, accessibility_data,
+                 pks, seqs, 
                  idr_optimal_labels, relaxed_labels):
         self.sample_id = sample_id
         self.tf_ids = tf_ids
@@ -837,7 +896,7 @@ class SamplePeaksAndLabels():
         self.seq_length = self.fwd_seqs.shape[3]
 
         self._chipseq_coverage = None
-        self.accessibility_data = accessibility_data
+        self._dnase_coverage = None
         
         self.idr_optimal_labels = idr_optimal_labels
         self.relaxed_labels = relaxed_labels
@@ -862,12 +921,18 @@ class SamplePeaksAndLabels():
     def build_shuffled_indices(self):
         return np.random.permutation(self.labels.shape[0])
 
-    def iter_batches_from_indices(
-            self, batch_size, repeat_forever, indices_generator, 
-            include_chipseq_signal):
+    def build_ordered_indices(self):
+        return np.arange(self.labels.shape[0])
+
+    def iter_batches_from_indices(self, 
+                                  batch_size, 
+                                  repeat_forever, 
+                                  indices_generator, 
+                                  include_chipseq_signal=False, 
+                                  include_dnase_signal=False):
         i = 0
         n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
-        permutation =- None
+        permutation = None
         while repeat_forever is True or i<n:
             if i%n == 0:
                 permutation = indices_generator()
@@ -875,20 +940,30 @@ class SamplePeaksAndLabels():
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
             rv =  {'fwd_seqs': self.fwd_seqs[indices], 
-                   'accessibility_data': self.accessibility_data[indices], 
                    'output': self.labels[indices]
             }
+            if include_dnase_signal:
+                print self.dnase_coverage.shape
+                rv['dnase_cov'] = self.dnase_coverage[0,indices]
             if include_chipseq_signal:
-                rv['chipseq_cov'] = self.chipseq_coverage[indices]
+                rv['chipseq_cov'] = self.chipseq_coverage[:,indices]
             yield rv
             i += 1
         return
     
-    def iter_batches(self, batch_size, repeat_forever, balanced=False, **kwargs):
+    def iter_batches(self, 
+                     batch_size, 
+                     repeat_forever, 
+                     balanced=False, 
+                     shuffled=False, 
+                     **kwargs):
         if balanced:
             indices_generator = self.build_balanced_indices
-        else:
+        elif shuffled:
             indices_generator = self.build_shuffled_indices
+        else:
+            indices_generator = self.build_ordered_indices
+        
         return self.iter_batches_from_indices(
             batch_size, 
             repeat_forever, 
@@ -939,14 +1014,10 @@ class PartitionedSamplePeaksAndLabels():
         fwd_seqs = SamplePeaksAndLabels.one_hot_code_peaks_sequence(
             pks, genome_fasta)
         
-        print "Loading Accessibility Data"
-        accessibility_data = np.zeros(
-            (len(pks), 1, 977, 1)) # load_accessibility_data()[:,:,:977,:]
-
         print "Filtering Peaks"
         data = SamplePeaksAndLabels(
             roadmap_sample_id, tf_ids, 
-            pks, fwd_seqs, accessibility_data,
+            pks, fwd_seqs, 
             idr_optimal_labels, relaxed_labels
         ).subset_pks_by_rank(
             max_num_peaks=n_samples, use_top_accessible=False
@@ -990,25 +1061,22 @@ class PartitionedSamplePeaksAndLabels():
         print self.train.fwd_seqs.shape
         print self.validation.fwd_seqs.shape
 
-    def iter_batches(
-            self, batch_size, data_subset, repeat_forever, balanced=False, include_chipseq_signal=False):
+    def iter_batches(self, batch_size, data_subset, repeat_forever, **kwargs):
         if data_subset == 'train':
-            return self.train.iter_batches(
-                batch_size, repeat_forever, balanced, include_chipseq_signal=include_chipseq_signal)
+            return self.train.iter_batches(batch_size, repeat_forever, **kwargs)
         elif data_subset == 'validation':
-            return self.validation.iter_batches(
-                batch_size, repeat_forever, balanced, include_chipseq_signal=include_chipseq_signal)
+            return self.validation.iter_batches(batch_size, repeat_forever, **kwargs)
         else:
             raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
 
     def iter_train_data(
-            self, batch_size, repeat_forever=False, balanced=False, **kwargs):
-        return self.iter_batches(batch_size, 'train', repeat_forever, balanced, **kwargs)
+            self, batch_size, repeat_forever=False, **kwargs):
+        return self.iter_batches(batch_size, 'train', repeat_forever, **kwargs)
 
     def iter_validation_data(
-            self, batch_size, repeat_forever=False, balanced=False, **kwargs):
+            self, batch_size, repeat_forever=False, **kwargs):
         return self.iter_batches(
-            batch_size, 'validation', repeat_forever, balanced, **kwargs)
+            batch_size, 'validation', repeat_forever, **kwargs)
 
 class SelexDBConn(object):
     def __init__(self, host, dbname, user, exp_id):

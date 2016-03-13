@@ -517,28 +517,32 @@ def load_ENCODE_target_id(tf_ids):
         encode_target_ids.append(res[0][0])
     return encode_target_ids
 
-def load_dnase_fnames(roadmap_sample_ids):
+def load_dnase_fnames(roadmap_sample_id):
     cur = conn.cursor()
-    query = "select local_filename from roadmap_dnase_foldchange_files where roadmap_sample_id=%s"
+    query = """
+        SELECT dnase_bam_fname
+          FROM roadmap_matched_dnase_bams
+         WHERE roadmap_sample_id=%s;
+    """
     fnames = []
-    for sample_id in roadmap_sample_ids:
-        cur.execute(query, [sample_id,])
-        fnames.append(cur.fetchall()[0][0])
+    cur.execute(query, [roadmap_sample_id,])
+    fnames.append(cur.fetchall()[0][0])
     return fnames
 
 def load_chipseq_fnames(roadmap_sample_id, tf_id):
     conn = psycopg2.connect("host=mitra dbname=cisbp")
     cur = conn.cursor()
     query = """
-        SELECT chipseq_bam_fname
+        SELECT chipseq_bam_fname, control_bam_fname
           FROM roadmap_matched_chipseq_bams
          WHERE roadmap_sample_id=%s
            AND tf_id=%s
     """
     fnames = []
+    control_fnames = []
     cur.execute(query, [roadmap_sample_id, tf_id])
-    fnames.extend(x[0] for x in cur.fetchall())
-    return fnames
+    fnames, control_fnames = zip(*cur.fetchall())
+    return fnames, control_fnames
 
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")
