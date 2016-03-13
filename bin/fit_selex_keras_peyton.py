@@ -447,8 +447,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
+        self.num_tf_specific_invitro_affinity_convs = 8
+        self.num_tf_specific_invivo_affinity_convs = 8 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -529,8 +529,8 @@ class JointBindingModel():
         loss = TT.mean(lasagne.objectives.squared_error(prediction, target_var))
         self._losses[name] = self._selex_penalty*loss
 
-    def add_selex_experiments(self):
-        for exp in self.selex_experiments:
+    def add_selex_experiments(self, selex_experiments):
+        for exp in selex_experiments:
             self.add_selex_experiment(exp)
     
     def add_chipseq_trace_model(self, pks_and_labels):
@@ -609,7 +609,7 @@ class JointBindingModel():
         return
 
     def _add_chipseq_regularization(self, affinities, target_var):
-        network = OccupancyLayer(affinities, -6.0)
+        network = OccupancyLayer(affinities, -8.0)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
@@ -642,16 +642,16 @@ class JointBindingModel():
         network = StackStrands(network)
         self._add_chipseq_regularization(network, target_var)
         
-        #network = OccMaxPool(network, 1, 32, 8)
-        #network = Conv2DLayer(
-        #    network, 
-        #    self.num_affinity_convs, 
-        #    (2*self.num_affinity_convs,16),
-        #    nonlinearity=softplus
-        #)
-        #network = DimshuffleLayer(network, (0,2,1,3))
+        network = OccMaxPool(network, 1, 32, 4)
+        network = Conv2DLayer(
+            network, 
+            2*self.num_affinity_convs, 
+            (2*self.num_affinity_convs,16),
+            nonlinearity=softplus
+        )
+        network = DimshuffleLayer(network, (0,2,1,3))
 
-        network = OccupancyLayer(network, -6.0)
+        network = OccupancyLayer(network, -8.0)
 
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 8)
         network = AnyBoundOcc(network)
@@ -785,23 +785,20 @@ class JointBindingModel():
         init_sp = 2.0*len(invivo_factor_names)/(len(invitro_factor_names)+1e-6)
         self._selex_penalty = create_param(
             lambda x: init_sp, (), 'selex_penalty')
-        self.selex_experiments = SelexData(n_samples)
+        selex_experiments = SelexData(n_samples)
         for factor_name in invitro_factor_names:
-            self.selex_experiments.add_all_selex_experiments_for_factor(
+            selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        #self.add_selex_experiments()
+        self.add_selex_experiments(selex_experiments)
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
         for sample_id in sample_ids:
             pks = PartitionedSamplePeaksAndLabels(
                 sample_id, factor_names=invivo_factor_names, n_samples=n_samples)
-            #pks.train = pks.train.balance_data()
-            #pks.validation = pks.validation.balance_data()
-
             #self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
-            self.add_simple_chipseq_model(pks)
+            self.add_chipseq_samples(pks)
+            #self.add_simple_chipseq_model(pks)
 
         self._build()
 
@@ -968,6 +965,16 @@ class JointBindingModel():
                  'chipseq_signal': obs_chipseq_signal[0], 
                  'dnase_signal': dnase_signal[0] }
 
+    def save(self):
+        print self._data_iterators
+        assert False
+        model._data_iterators = None
+        import cPickle as pickle
+        sys.setrecursionlimit(50000)
+        rv = pickle.dumps(model)
+        print rv[:10]
+        assert False
+
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
         print("\n\n\n\n\nStarting training...")
@@ -1080,9 +1087,11 @@ def single_sample_main():
         [tf_name,],
         use_three_base_encoding=False)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 1, balanced=True)
-    #model.train(
-    #    n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+        n_samples if n_samples is not None else 100000, 100, 10, balanced=True)
+    model.train(
+        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+    return
+
     res = model.predict_occupancies(900)
     import h5py
     with h5py.File("predicted_occupancies.{}.{}.hdf5".format(tf_name, sample_id), "w") as f:

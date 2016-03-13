@@ -1332,7 +1332,7 @@ class SelexExperiment():
         return
 
     def iter_batches(
-            self, batch_size, data_subset, repeat_forever, balanced=False):
+            self, batch_size, data_subset, repeat_forever, **kwargs):
         if data_subset == 'train': 
             fwd_seqs = self.train_fwd_seqs
             labels = self.train_labels
@@ -1354,10 +1354,10 @@ class SelexExperiment():
         
         return
     
-    def iter_train_data(self, batch_size, repeat_forever=False):
+    def iter_train_data(self, batch_size, repeat_forever=False, **kwargs):
         return self.iter_batches(batch_size, 'train', repeat_forever)
 
-    def iter_validation_data(self, batch_size, repeat_forever=False):
+    def iter_validation_data(self, batch_size, repeat_forever=False, **kwargs):
         return self.iter_batches(batch_size, 'validation', repeat_forever)
 
 class SelexData():
