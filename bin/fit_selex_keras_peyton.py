@@ -657,23 +657,23 @@ class JointBindingModel():
         #print network.get_output_shape_for(network.input_shape)
         network = Conv2DLayer(
             network, 
-            1, # num TFS
+            self.num_affinity_convs, # num TFS
             (2,1),
             nonlinearity=lasagne.nonlinearities.identity
         )
         #network = DimshuffleLayer(network, (0,2,1,3))
         
         
-        #network = OccMaxPool(network, 1, 32, 4)
-        #network = Conv2DLayer(
-        #    network, 
-        #    self.num_affinity_convs, 
-        #    (self.num_affinity_convs,16),
-        #    nonlinearity=softplus
-        #)
-        #network = DimshuffleLayer(network, (0,2,1,3))
+        network = OccMaxPool(network, 1, 32, 4)
+        network = Conv2DLayer(
+            network, 
+            self.num_affinity_convs, 
+            (self.num_affinity_convs,16),
+            nonlinearity=softplus
+        )
+        network = DimshuffleLayer(network, (0,2,1,3))
         
-        network = OccMaxPool(network, 1, 32)
+        network = OccMaxPool(network, 1, 8)
 
         network = OccupancyLayer(network, -8.0)
 
@@ -1057,7 +1057,7 @@ class JointBindingModel():
             validation_batches = 0
             for data in self.iter_data(
                     batch_size, 
-                    'train', # XXX 
+                    'validation', # XXX 
                     repeat_forever=False, 
                     balanced=False, 
                     shuffled=False,
