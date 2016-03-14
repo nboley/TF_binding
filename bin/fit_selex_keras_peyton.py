@@ -39,7 +39,7 @@ from pyTFbindtools.peaks import SelexData, PartitionedSamplePeaksAndLabels
 from lasagne.layers import (
     Layer, InputLayer, Conv2DLayer, MaxPool2DLayer, 
     DenseLayer, FlattenLayer, ExpressionLayer, GlobalPoolLayer,
-    DimshuffleLayer, DropoutLayer)
+    DimshuffleLayer, DropoutLayer, ConcatLayer)
 from lasagne.regularization import l1, apply_penalty
 
 from lasagne import init
@@ -411,7 +411,7 @@ class OccMaxPool(Layer):
         super(OccMaxPool, self).__init__(input, **kwargs)
 
     def get_output_shape_for(self, input_shape):
-        assert input_shape[1] == 1
+        assert input_shape[1] == 1, input_shape
         num_tracks = input_shape[2] if self.num_tracks == 'full' else self.num_tracks
         num_bases = input_shape[3] if self.num_bases == 'full' else self.num_bases
         base_stride = input_shape[3] if self.base_stride == 'full' else self.base_stride
@@ -447,8 +447,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 8
-        self.num_tf_specific_invivo_affinity_convs = 8 # HERE 
+        self.num_tf_specific_invitro_affinity_convs = 1
+        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -641,27 +641,67 @@ class JointBindingModel():
             b=self.affinity_conv_bias)
         network = StackStrands(network)
         self._add_chipseq_regularization(network, target_var)
-        
-        network = OccMaxPool(network, 1, 32, 4)
+
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
+
+        access_input_var = TT.tensor4(name + '.dnase_cov')
+        self._input_vars[name + '.dnase_cov'] = access_input_var
+        access = InputLayer(
+            shape=(None, 1, 1, 969), #pks_and_labels.seq_length), 
+            input_var=access_input_var
+        )
+        access = ExpressionLayer(access, lambda x: TT.log(
+            1e-12+x/TT.max(x, keepdims=True)))
+
+        network = ConcatLayer([access, network], axis=2)
+        #print network.get_output_shape_for(network.input_shape)
         network = Conv2DLayer(
             network, 
-            2*self.num_affinity_convs, 
-            (2*self.num_affinity_convs,16),
-            nonlinearity=softplus
+            1, # num TFS
+            (2,1),
+            nonlinearity=lasagne.nonlinearities.identity
         )
-        network = DimshuffleLayer(network, (0,2,1,3))
+        #network = DimshuffleLayer(network, (0,2,1,3))
+        
+        
+        #network = OccMaxPool(network, 1, 32, 4)
+        #network = Conv2DLayer(
+        #    network, 
+        #    self.num_affinity_convs, 
+        #    (self.num_affinity_convs,16),
+        #    nonlinearity=softplus
+        #)
+        #network = DimshuffleLayer(network, (0,2,1,3))
+        
+        network = OccMaxPool(network, 1, 32)
 
         network = OccupancyLayer(network, -8.0)
 
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 8)
+        """
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
+
+        access_input_var = TT.tensor4(name + '.dnase_cov')
+        self._input_vars[name + '.dnase_cov'] = access_input_var
+        access = InputLayer(
+            shape=(None, 1, 1, 969), #pks_and_labels.seq_length), 
+            input_var=access_input_var
+        )
+        print "INPUT TO DNASE", network.input_shape
+        network = ConcatLayer([access, network], axis=2)
+        #print "INPUT TO DNASE 2", network.input_shape
+        network = Conv2DLayer(
+            network, 
+            1, 
+            (2+1, 1),
+            nonlinearity=softplus
+        )
+        #network = DimshuffleLayer(network, (0,2,1,3))
+        print network.input_shape
+        network = OccMaxPool(network, 1, 32)
+        """
+
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 'full', 'full')
-
-        #network = DenseLayer(
-        #    network, 
-        #    len(pks_and_labels.factor_names), #labels.shape[1],
-        #    nonlinearity=lasagne.nonlinearities.sigmoid
-        #)
         
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
@@ -882,7 +922,8 @@ class JointBindingModel():
             'validation', 
             repeat_forever=False,
             balanced=False,
-            shuffled=False
+            shuffled=False,
+            include_dnase_signal=True
         )
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
@@ -993,7 +1034,8 @@ class JointBindingModel():
                     'train', 
                     repeat_forever=True, 
                     shuffled=True,
-                    balanced=balanced
+                    balanced=balanced,
+                    include_dnase_signal=True
             )):
                 if nb_train_batches_observed*batch_size > samples_per_epoch: 
                     break
@@ -1015,10 +1057,11 @@ class JointBindingModel():
             validation_batches = 0
             for data in self.iter_data(
                     batch_size, 
-                    'validation', 
+                    'train', # XXX 
                     repeat_forever=False, 
                     balanced=False, 
-                    shuffled=False):
+                    shuffled=False,
+                    include_dnase_signal=True):
                 # we can use the values attriburte because iter_data  
                 # returns an ordered dict
                 filtered_data = [
@@ -1074,11 +1117,12 @@ def single_sample_main():
     except IndexError: 
         n_samples = None
 
-    #pks = PartitionedSamplePeaksAndLabels(
-    #    sample_id, factor_names=[tf_name,], n_samples=n_samples)
-    #print next(pks.iter_batches(
-    #    100, 'train', False, include_chipseq_signal=True, include_dnase_signal=True))
-
+    pks = PartitionedSamplePeaksAndLabels(
+        sample_id, factor_names=[tf_name,], n_samples=n_samples)
+    rv = next(pks.iter_batches(
+        100, 'train', False, include_chipseq_signal=True, include_dnase_signal=True))
+    print "here", rv['dnase_cov'].shape
+    #return
     model = JointBindingModel(
         n_samples, 
         [tf_name,], 
@@ -1089,7 +1133,7 @@ def single_sample_main():
     model.train(
         n_samples if n_samples is not None else 100000, 100, 10, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+        n_samples if n_samples is not None else 100000, 100, 40, balanced=False)
     return
 
     res = model.predict_occupancies(900)

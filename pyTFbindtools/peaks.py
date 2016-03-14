@@ -867,8 +867,8 @@ class SamplePeaksAndLabels():
             print self._chipseq_coverage.shape
             # normalize the coverage
             sums = self._chipseq_coverage.sum(axis=2).sum(axis=1)
-            self._chipseq_coverage[0] = 1e6*self._chipseq_coverage[0]/sums[0]
-            self._chipseq_coverage[1] = 1e6*self._chipseq_coverage[1]/sums[1]
+            self._chipseq_coverage[0] = self._chipseq_coverage[0]/sums[0]
+            self._chipseq_coverage[1] = self._chipseq_coverage[1]/sums[1]
         return self._chipseq_coverage
 
     @property
@@ -879,8 +879,8 @@ class SamplePeaksAndLabels():
             ], axis=1)
             print self._dnase_coverage.shape
             # normalize the coverage
-            sums = self._dnase_coverage.sum(axis=2).sum(axis=1)
-            self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
+            sums = self._dnase_coverage.max(axis=1) #.sum(axis=1)
+            self._dnase_coverage[0] = self._dnase_coverage[0] #/sums
         return self._dnase_coverage
     
     def __init__(self, 
@@ -943,8 +943,7 @@ class SamplePeaksAndLabels():
                    'output': self.labels[indices]
             }
             if include_dnase_signal:
-                print self.dnase_coverage.shape
-                rv['dnase_cov'] = self.dnase_coverage[0,indices]
+                rv['dnase_cov'] = self.dnase_coverage[0,indices][:,None,None,:969]
             if include_chipseq_signal:
                 rv['chipseq_cov'] = self.chipseq_coverage[:,indices]
             yield rv
