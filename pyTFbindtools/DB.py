@@ -541,7 +541,7 @@ def load_chipseq_fnames(roadmap_sample_id, tf_id):
     fnames = []
     control_fnames = []
     cur.execute(query, [roadmap_sample_id, tf_id])
-    print cur.mogrify(query, [roadmap_sample_id, tf_id])
+    #print cur.mogrify(query, [roadmap_sample_id, tf_id])
     fnames, control_fnames = zip(*cur.fetchall())
     return fnames, control_fnames
 

@@ -246,7 +246,6 @@ class ConvolutionDNASequenceBinding(Layer):
             self.b = None
     
     def get_output_shape_for(self, input_shape):
-        print "ConvolutionDNASequenceBinding", self.input_shape
         return (# number of obseravations
                 self.input_shape[0],
                 2,
@@ -256,7 +255,6 @@ class ConvolutionDNASequenceBinding(Layer):
                 )
 
     def get_output_for(self, input, **kwargs):
-        print "ConvolutionDNASequenceBinding", self.input_shape
         if self.use_three_base_encoding:
             X_fwd = input[:,:,1:,:]
             X_rc = input[:,:,:3,:]
@@ -395,13 +393,13 @@ class OccupancyLayer(Layer):
         if dnase_signal is not None:
             self.dnase_weight = self.add_param(
                 init.Constant(1e-1),
-                (), 
+                (self.input_shape[2],), 
                 name='dnase_weight'
             )
         
         self.chem_affinity = self.add_param(
             init.Constant(init_chem_affinity),
-            (), 
+            (self.input_shape[2],), 
             name='chem_affinity'
         )
 
@@ -419,11 +417,9 @@ class OccupancyLayer(Layer):
         upper = TT.switch(inner>35, inner, 0)
         return -(lower + mid + upper)
         """
-        print "INput Shape:", self.input_shape
-        print self.chem_affinity.shape
-        rv = self.chem_affinity + input
+        rv = self.chem_affinity[None, None, :, None] + input
         if self.dnase_signal is not None:
-            rv += self.dnase_weight*self.dnase_signal[:,None,None,None]
+            rv += self.dnase_weight[None, None, :, None]*self.dnase_signal[:,None,None,None]
         return sigmoid(rv)
 
 class OccMaxPool(Layer):
@@ -475,7 +471,7 @@ class JointBindingModel():
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 7 # HERE 
+        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -622,6 +618,7 @@ class JointBindingModel():
             b=self.affinity_conv_bias)
         network = StackStrands(network)
         network = OccupancyLayer(network, -6.0)
+        self._occupancy_layers[name + ".occupancy"] = network
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
@@ -629,7 +626,6 @@ class JointBindingModel():
 
         prediction = lasagne.layers.get_output(network) 
         loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
-        self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
         self._losses[name] = loss
 
@@ -641,6 +637,7 @@ class JointBindingModel():
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
         network = FlattenLayer(network)
+        self._occupancy_layers[str(target_var) + ".chipseqreg.occupancy"] = network
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
         self._losses[str(target_var) + ".chipseqreg"] = (
@@ -688,8 +685,7 @@ class JointBindingModel():
             )
             network = DimshuffleLayer(network, (0,2,1,3))
         
-        
-        network = OccMaxPool(network, 1, 32, 4)
+        #network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
             len(self.invivo_factor_names),
@@ -697,15 +693,15 @@ class JointBindingModel():
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
                           else lasagne.nonlinearities.identity)
         )
-        network = DimshuffleLayer(network, (0,2,1,3))
-        
-        network = OccMaxPool(network, 1, 8)
+        network = DimshuffleLayer(network, (0,2,1,3))        
         network = OccupancyLayer(
             network, 
             init_chem_affinity=-8.0, 
             dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
-
+        self._occupancy_layers[name + ".occupancy"] = network
+        network = OccMaxPool(network, 1, 32)
+        
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
         
@@ -840,6 +836,7 @@ class JointBindingModel():
         self._networks = OrderedDict()
         self._data_iterators = OrderedDict()
         self._occupancies_fns = None
+        self._occupancy_layers = OrderedDict()
         
         self._init_shared_affinity_params(self._use_three_base_encoding)
 
@@ -896,7 +893,7 @@ class JointBindingModel():
 
     def _build_predict_occupancies_fns(self):
         self._occupancies_fns = OrderedDict()
-        for network_id, network in self._networks.iteritems():
+        for network_id, network in self._occupancy_layers.iteritems():
             inputs = []
             occupancy_layers = []
             for res in lasagne.layers.get_all_layers(network):
@@ -994,7 +991,6 @@ class JointBindingModel():
             shuffled=False, 
             include_chipseq_signal=True, 
             include_dnase_signal=True))
-        print input_data.keys()
         res = self.predict_occupancies_on_batch(input_data)
         pred_occs = [
             data for key, data in res.iteritems() 
@@ -1027,9 +1023,70 @@ class JointBindingModel():
                  'chipseq_signal': obs_chipseq_signal[0], 
                  'dnase_signal': dnase_signal[0] }
 
-    def save(self):
-        print self._data_iterators
-        assert False
+    def save(self, fname, save_train_data=False):
+        """Save all of the model data.
+
+        """
+        print "Saving model and all data"
+        import h5py
+        with h5py.File(fname, "w") as f:
+            print "Saving affinities"
+            # add the affinities
+            affinities_grp = f.create_group("affinities")
+            affinity_conv_filters = self.affinity_conv_filter.get_value()[:,0,:,:]
+            dset = affinities_grp.create_dataset(
+                'conv_filters', data=affinity_conv_filters)
+            affinity_ref_energies = self.affinity_conv_bias.get_value()
+            dset = affinities_grp.create_dataset(
+                'ref_energies', data=affinity_ref_energies)
+
+            print "Saving parameters"
+            # add all of the layer values
+            parameters_grp = f.create_group("parameters")
+            for i, param in enumerate(self.get_all_params()):
+                values = param.get_value()
+                dset = parameters_grp.create_dataset(str(i), data=values)
+                dset.attrs['name'] = str(param)
+            
+            # add all of the data
+            data_grp = f.create_group("data")
+            pred_labels_grp = f.create_group("pred_labels")
+            pred_occs_grp = f.create_group("pred_occs")
+            for data_subset_name in ['train', 'validation']:
+                if data_subset_name == 'train' and not save_train_data: 
+                    continue
+                print "Saving %s data" % data_subset_name
+                all_data = defaultdict(list)
+                all_pred_labels = defaultdict(list)
+                all_pred_occs = defaultdict(list)
+                for data in self.iter_data(
+                        100, data_subset_name, 
+                        repeat_forever=False, 
+                        include_dnase_signal=True, 
+                        include_chipseq_signal=True):
+                    for key, values in data.iteritems():
+                        all_data[key].append(values)
+                    for key, values in self.predict_on_batch(data).iteritems():
+                        all_pred_labels[key].append(values)
+                    for key, values in self.predict_occupancies_on_batch(
+                            data).iteritems():
+                        all_pred_occs[key].append(values)
+
+                data_subgrp = data_grp.create_group(data_subset_name)
+                for key, values in all_data.iteritems():
+                    values = np.concatenate(values, axis=0)
+                    dset = data_subgrp.create_dataset(str(key), data=values)
+                data_subgrp = pred_labels_grp.create_group(data_subset_name)
+                for key, values in all_pred_labels.iteritems():
+                    values = np.concatenate(values, axis=0)
+                    dset = data_subgrp.create_dataset(str(key), data=values)
+                data_subgrp = pred_occs_grp.create_group(data_subset_name)
+                for key, values in all_pred_occs.iteritems():
+                    values = np.concatenate(values, axis=0)
+                    dset = data_subgrp.create_dataset(str(key), data=values)
+        
+        return 
+        # code to pickle the actual model
         model._data_iterators = None
         import cPickle as pickle
         sys.setrecursionlimit(50000)
@@ -1145,7 +1202,6 @@ def single_sample_main():
         sample_id, factor_names=[tf_name,], n_samples=n_samples)
     rv = next(pks.iter_batches(
         100, 'train', False, include_chipseq_signal=True, include_dnase_signal=True))
-    print "here", rv['dnase_cov'].shape
     #return
     model = JointBindingModel(
         n_samples, 
@@ -1159,22 +1215,16 @@ def single_sample_main():
     model.train(
         n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
 
-    res = model.predict_occupancies(900)
-    import h5py
-    with h5py.File("predicted_occupancies.{}.{}.hdf5".format(tf_name, sample_id), "w") as f:
-        for key, data in res.iteritems():
-            dset = f.create_dataset(key, data.shape, dtype=data.dtype)
-            dset[:,:] = data
-    #model.train(
-    #    n_samples if n_samples is not None else 100000, 500, 100, balanced=False)
-    #model.plot_binding_models("TF{}.SAMPLE{}".format(tf_name, sample_id))
+    model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
+    return
     
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
     tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
     sample_ids = ['E123',]
     model = JointBindingModel(50000, tf_names, sample_ids)
-    model.train(50000, 100, 10)
+    model.train(10000, 100, 10)
+    model.save('Multitest.h5')
     return
 
 def test_chipseq():

@@ -452,9 +452,6 @@ def build_peaks_label_mat(
                     fname for pk_type, fname in chipseq_peaks_fnames
                     if pk_type == desired_peak_type
                 ]
-                print desired_peak_type
-                print chipseq_peaks_fnames
-                print optimal_chipseq_peaks_fnames
                 for i, pk in enumerate(pks):
                     pk_labels, pk_scores = label_and_score_peak_with_chipseq_peaks(
                         optimal_chipseq_peaks_fnames, pk)
@@ -945,7 +942,8 @@ class SamplePeaksAndLabels():
             if include_dnase_signal:
                 rv['dnase_cov'] = self.dnase_coverage[0,indices][:,None,None,:]
             if include_chipseq_signal:
-                rv['chipseq_cov'] = self.chipseq_coverage[:,indices]
+                rv['chipseq_cov'] = (
+                    np.swapaxes(self.chipseq_coverage[:,indices], 0, 1))[:,:,None,:]
             yield rv
             i += 1
         return
