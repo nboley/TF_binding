@@ -1,5 +1,6 @@
 import os, sys
 import time
+import math
 
 from collections import OrderedDict, defaultdict
 from itertools import chain
@@ -19,6 +20,7 @@ from pyDNAbinding.plot import plot_bases, pyplot
 from pyDNAbinding.misc import R, T
 
 VERBOSE = True
+USE_SOFTPLUS_ACTIVATION = False
 
 import lasagne.layers
 import lasagne.nonlinearities
@@ -43,7 +45,7 @@ from lasagne.layers import (
 from lasagne.regularization import l1, apply_penalty
 
 from lasagne import init
-from lasagne.utils import create_param
+from lasagne.utils import create_param, as_theano_expression
 
 def zero_rows_penalty(x):
     row_sums = TT.sum(abs(x), axis=0)
@@ -250,7 +252,7 @@ class ConvolutionDNASequenceBinding(Layer):
                 2,
                 self.nb_motifs,
                 # sequence length minus the motif length
-                self.input_shape[3]-self.motif_len+1,
+                self.input_shape[3],
                 )
 
     def get_output_for(self, input, **kwargs):
@@ -261,7 +263,15 @@ class ConvolutionDNASequenceBinding(Layer):
         else:
             X_fwd = input
             X_rc = input
+        # pad so that the output is the correct dimension
+        base_pad_shape = list(X_fwd.shape[:-1])
+        left_pad_shape = tuple(base_pad_shape+[int(math.ceil(self.motif_len/2))-1,])
+        right_pad_shape = tuple(base_pad_shape+[int(math.floor(self.motif_len/2)),])
 
+        X_fwd = TT.concatenate([
+            TT.zeros(left_pad_shape), X_fwd, TT.zeros(right_pad_shape)], axis=3)
+        X_rc = TT.concatenate([
+            TT.zeros(left_pad_shape), X_rc, TT.zeros(right_pad_shape)], axis=3)
         fwd_rv = conv2d(X_fwd, self.W, border_mode='valid') 
         rc_rv = conv2d(X_rc, self.W[:,:,::-1,::-1], border_mode='valid')
         if self.b is not None:
@@ -270,7 +280,9 @@ class ConvolutionDNASequenceBinding(Layer):
         rv = TT.concatenate((fwd_rv, rc_rv), axis=2)
         rv = rv.dimshuffle((0,2,1,3))
         # no binding site should have a negative affinity to any strand of DNA
-        return softplus(rv) 
+        if USE_SOFTPLUS_ACTIVATION:
+            rv = softplus(rv)
+        return rv
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
@@ -375,13 +387,23 @@ class OccupancyLayer(Layer):
     def __init__(
             self, 
             input,
-            init_chem_affinity=0.0, 
+            init_chem_affinity=0.0,
+            dnase_signal=None,
             **kwargs):
         super(OccupancyLayer, self).__init__(input, **kwargs)
+        self.dnase_signal = dnase_signal
+        if dnase_signal is not None:
+            self.dnase_weight = self.add_param(
+                init.Constant(1e-1),
+                (), 
+                name='dnase_weight'
+            )
+        
         self.chem_affinity = self.add_param(
             init.Constant(init_chem_affinity),
             (), 
-            name='chem_affinity')
+            name='chem_affinity'
+        )
 
     def get_output_shape_for(self, input_shape):
         return self.input_shape
@@ -397,7 +419,12 @@ class OccupancyLayer(Layer):
         upper = TT.switch(inner>35, inner, 0)
         return -(lower + mid + upper)
         """
-        return sigmoid(self.chem_affinity+input)
+        print "INput Shape:", self.input_shape
+        print self.chem_affinity.shape
+        rv = self.chem_affinity + input
+        if self.dnase_signal is not None:
+            rv += self.dnase_weight*self.dnase_signal[:,None,None,None]
+        return sigmoid(rv)
 
 class OccMaxPool(Layer):
     def __init__(
@@ -448,7 +475,7 @@ class JointBindingModel():
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
+        self.num_tf_specific_invivo_affinity_convs = 7 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -619,7 +646,7 @@ class JointBindingModel():
         self._losses[str(target_var) + ".chipseqreg"] = (
             self._chipseq_regularization_penalty*loss)
 
-    def add_chipseq_samples(self, pks_and_labels): 
+    def add_chipseq_samples(self, pks_and_labels, include_dnase=True): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
         name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
         
@@ -642,66 +669,45 @@ class JointBindingModel():
         network = StackStrands(network)
         self._add_chipseq_regularization(network, target_var)
 
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
-
-        access_input_var = TT.tensor4(name + '.dnase_cov')
-        self._input_vars[name + '.dnase_cov'] = access_input_var
-        access = InputLayer(
-            shape=(None, 1, 1, 969), #pks_and_labels.seq_length), 
-            input_var=access_input_var
-        )
-        access = ExpressionLayer(access, lambda x: TT.log(
-            1e-12+x/TT.max(x, keepdims=True)))
-
-        network = ConcatLayer([access, network], axis=2)
-        #print network.get_output_shape_for(network.input_shape)
-        network = Conv2DLayer(
-            network, 
-            self.num_affinity_convs, # num TFS
-            (2,1),
-            nonlinearity=lasagne.nonlinearities.identity
-        )
-        #network = DimshuffleLayer(network, (0,2,1,3))
+        if include_dnase is True:
+            access_input_var = TT.tensor4(name + '.dnase_cov')
+            self._input_vars[name + '.dnase_cov'] = access_input_var
+            access = InputLayer(
+                shape=(None, 1, 1, pks_and_labels.seq_length), 
+                input_var=access_input_var
+            )
+            access = ExpressionLayer(access, lambda x: TT.log(
+                1e-12+x/TT.max(x, keepdims=True)))
+            
+            network = ConcatLayer([access, network], axis=2)
+            network = Conv2DLayer(
+                network, 
+                2*self.num_affinity_convs,
+                (2*self.num_affinity_convs+1,1),
+                nonlinearity=lasagne.nonlinearities.identity
+            )
+            network = DimshuffleLayer(network, (0,2,1,3))
         
         
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
-            self.num_affinity_convs, 
-            (self.num_affinity_convs,16),
-            nonlinearity=softplus
+            len(self.invivo_factor_names),
+            (2*self.num_affinity_convs,16),
+            nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
+                          else lasagne.nonlinearities.identity)
         )
         network = DimshuffleLayer(network, (0,2,1,3))
         
         network = OccMaxPool(network, 1, 8)
-
-        network = OccupancyLayer(network, -8.0)
-
-        """
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
-
-        access_input_var = TT.tensor4(name + '.dnase_cov')
-        self._input_vars[name + '.dnase_cov'] = access_input_var
-        access = InputLayer(
-            shape=(None, 1, 1, 969), #pks_and_labels.seq_length), 
-            input_var=access_input_var
-        )
-        print "INPUT TO DNASE", network.input_shape
-        network = ConcatLayer([access, network], axis=2)
-        #print "INPUT TO DNASE 2", network.input_shape
-        network = Conv2DLayer(
+        network = OccupancyLayer(
             network, 
-            1, 
-            (2+1, 1),
-            nonlinearity=softplus
+            init_chem_affinity=-8.0, 
+            dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
-        #network = DimshuffleLayer(network, (0,2,1,3))
-        print network.input_shape
-        network = OccMaxPool(network, 1, 32)
-        """
 
         network = AnyBoundOcc(network)
-        network = OccMaxPool(network, 'full', 'full')
+        network = OccMaxPool(network, 1, 'full')
         
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
@@ -713,7 +719,7 @@ class JointBindingModel():
         return
 
 
-    def add_DIGN_chipseq_samples(self, pks_and_labels): 
+    def add_DIGN_chipseq_samples(self, pks_and_labels, include_DNASE=True): 
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
         name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
         
@@ -726,9 +732,24 @@ class JointBindingModel():
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
 
-        network = Conv2DLayer(
-            network, 25, (4,15),
-            nonlinearity=lasagne.nonlinearities.rectify)
+        if include_DNASE:
+            access_input_var = TT.tensor4(name + '.dnase_cov')
+            self._input_vars[name + '.dnase_cov'] = access_input_var
+            access = InputLayer(
+                shape=(None, 1, 1, pks_and_labels.seq_length),
+                input_var=access_input_var
+            )
+            access = ExpressionLayer(access, lambda x: TT.log(
+                1e-12+x/TT.max(x, keepdims=True)))
+            network = ConcatLayer([access, network], axis=2)
+            network = Conv2DLayer(
+                network, 25, (5,15),
+                nonlinearity=lasagne.nonlinearities.rectify)
+        else:
+            network = Conv2DLayer(
+                network, 25, (4,15),
+                nonlinearity=lasagne.nonlinearities.rectify)
+
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
             network, 25, (1,15),
@@ -829,7 +850,7 @@ class JointBindingModel():
         for factor_name in invitro_factor_names:
             selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        self.add_selex_experiments(selex_experiments)
+        #self.add_selex_experiments(selex_experiments)
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
@@ -1022,9 +1043,9 @@ class JointBindingModel():
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
-                round(self._selex_penalty.get_value()/1.05, 6) )
-            #self._chipseq_regularization_penalty.set_value( 
-            #    round(self._chipseq_regularization_penalty.get_value()/1.05, 6))
+                round(self._selex_penalty.get_value()/1.10, 6) )
+            self._chipseq_regularization_penalty.set_value( 
+                round(self._chipseq_regularization_penalty.get_value()/1.10, 6))
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
@@ -1089,6 +1110,9 @@ class JointBindingModel():
             for param in self.get_all_params():
                 if str(param) == 'chem_affinity':
                     print param, param.get_value()
+                if str(param) == 'dnase_weight':
+                    print param, param.get_value()
+
             #print "Affinity Conv Bias: %.2f-%.2f" % (
             #    self.affinity_conv_bias.get_value() 
             #    + self.affinity_conv_filter.get_value().min(axis=2).sum(axis=-1),
@@ -1131,10 +1155,9 @@ def single_sample_main():
         [tf_name,],
         use_three_base_encoding=False)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 10, balanced=True)
+        n_samples if n_samples is not None else 100000, 100, 5, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 40, balanced=False)
-    return
+        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
 
     res = model.predict_occupancies(900)
     import h5py
@@ -1150,8 +1173,8 @@ def main():
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
     tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
     sample_ids = ['E123',]
-    model = JointBindingModel(100000, tf_names, sample_ids)
-    model.train(100000, 1000, 100)
+    model = JointBindingModel(50000, tf_names, sample_ids)
+    model.train(50000, 100, 10)
     return
 
 def test_chipseq():
@@ -1174,5 +1197,5 @@ def test_chipseq():
 
 #test_chipseq()
 
-#main()
-single_sample_main()
+main()
+#single_sample_main()

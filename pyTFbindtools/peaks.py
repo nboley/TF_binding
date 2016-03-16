@@ -867,8 +867,8 @@ class SamplePeaksAndLabels():
             print self._chipseq_coverage.shape
             # normalize the coverage
             sums = self._chipseq_coverage.sum(axis=2).sum(axis=1)
-            self._chipseq_coverage[0] = self._chipseq_coverage[0]/sums[0]
-            self._chipseq_coverage[1] = self._chipseq_coverage[1]/sums[1]
+            self._chipseq_coverage[0] = 1e6*self._chipseq_coverage[0]/sums[0]
+            self._chipseq_coverage[1] = 1e6*self._chipseq_coverage[1]/sums[1]
         return self._chipseq_coverage
 
     @property
@@ -877,10 +877,10 @@ class SamplePeaksAndLabels():
             self._dnase_coverage = np.concatenate([
                 load_DNASE_coverage(self.sample_id, self.pks)
             ], axis=1)
-            print self._dnase_coverage.shape
+            print "DNASE SHAPE:", self._dnase_coverage.shape
             # normalize the coverage
-            sums = self._dnase_coverage.max(axis=1) #.sum(axis=1)
-            self._dnase_coverage[0] = self._dnase_coverage[0] #/sums
+            sums = self._dnase_coverage.sum(axis=1).sum(axis=1)
+            self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
         return self._dnase_coverage
     
     def __init__(self, 
@@ -943,7 +943,7 @@ class SamplePeaksAndLabels():
                    'output': self.labels[indices]
             }
             if include_dnase_signal:
-                rv['dnase_cov'] = self.dnase_coverage[0,indices][:,None,None,:969]
+                rv['dnase_cov'] = self.dnase_coverage[0,indices][:,None,None,:]
             if include_chipseq_signal:
                 rv['chipseq_cov'] = self.chipseq_coverage[:,indices]
             yield rv
@@ -1281,7 +1281,8 @@ class SelexExperiment():
         
         return fwd_one_hot_seqs, shape_seqs, labels # rc_one_hot_seqs, 
 
-    def __init__(self, selex_exp_id, n_samples, validation_split=0.1, seq_pad=40):
+    def __init__(
+            self, selex_exp_id, n_samples, validation_split=0.1, seq_pad=40):
         self.selex_exp_id = selex_exp_id
         self.n_samples = n_samples
         self.seq_pad = seq_pad
