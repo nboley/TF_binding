@@ -471,7 +471,7 @@ class JointBindingModel():
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
         self.num_tf_specific_invitro_affinity_convs = 1
-        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
+        self.num_tf_specific_invivo_affinity_convs = 7 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -837,6 +837,10 @@ class JointBindingModel():
         self._data_iterators = OrderedDict()
         self._occupancies_fns = None
         self._occupancy_layers = OrderedDict()
+
+        self.validation_losses = []
+        self.validation_results = []
+        self.model_params = []
         
         self._init_shared_affinity_params(self._use_three_base_encoding)
 
@@ -1030,6 +1034,27 @@ class JointBindingModel():
         print "Saving model and all data"
         import h5py
         with h5py.File(fname, "w") as f:
+            print "Saving validation results"
+            f.create_dataset('validation_losses', data=np.array(self.validation_losses))
+
+            grp = f.create_group("validation_results")
+            result_keys = None
+            for epoch, results in enumerate(self.validation_results):
+                epoch_grp = grp.create_group(str(epoch))
+                task_grpd_results = defaultdict(dict)
+                for (task, factor), result in results.iteritems():
+                    task_grpd_results[task][factor] = result
+                for task, task_results in task_grpd_results.iteritems():
+                    task_grp = epoch_grp.create_group(str(task))
+                    for factor, result in task_results.iteritems():
+                        keys, vals = zip(*list(result.iter_numerical_results()))
+                        if result_keys is None:
+                            result_keys = keys
+                        else:
+                            assert result_keys == keys
+                        task_grp.create_dataset(str(factor), data=np.array(vals))
+            grp.attrs['result_types'] = result_keys
+            
             print "Saving affinities"
             # add the affinities
             affinities_grp = f.create_group("affinities")
@@ -1041,12 +1066,13 @@ class JointBindingModel():
                 'ref_energies', data=affinity_ref_energies)
 
             print "Saving parameters"
-            # add all of the layer values
+            # add all of the layer parameter values
             parameters_grp = f.create_group("parameters")
-            for i, param in enumerate(self.get_all_params()):
-                values = param.get_value()
-                dset = parameters_grp.create_dataset(str(i), data=values)
-                dset.attrs['name'] = str(param)
+            for epoch, params in enumerate(self.model_params):
+                epoch_parameters_grp = parameters_grp.create_group(str(epoch))
+                for (i, name), param in params.iteritems():
+                    dset = epoch_parameters_grp.create_dataset(str(i), data=param)
+                    dset.attrs['name'] = name
             
             # add all of the data
             data_grp = f.create_group("data")
@@ -1151,8 +1177,19 @@ class JointBindingModel():
                 validation_batches += 1
             print( 'val_err: %s' % zip(
                 self._losses.keys(), (validation_err/validation_batches) ))
-            
+            real_task_key = [
+                key for key in self._losses.keys() 
+                if key.startswith('invivo') and key.endswith('sequence')
+            ]
+            assert len(real_task_key) == 1
+            self.validation_losses.append(
+                dict(zip(
+                    self._losses.keys(), (validation_err/validation_batches))
+                 )[real_task_key[0]]
+            )
+
             # Print the validation results for this epoch:
+            classification_results  = {}
             pred_prbs, labels = self.predict(batch_size)
             for key in pred_prbs.keys():
                 for index in xrange(labels[key].shape[1]):
@@ -1160,16 +1197,23 @@ class JointBindingModel():
                         index_name = self._multitask_labels[key][index]
                     else:
                         index_name = str(index)
-                    print ("%s-%s" % (key, index_name)).ljust(40), ClassificationResult(
+                    res = ClassificationResult(
                         labels[key][:,index], 
                         pred_prbs[key][:,index] > 0.5, 
-                        pred_prbs[key][:,index])
-            for param in self.get_all_params():
+                        pred_prbs[key][:,index]
+                    )
+                    print ("%s-%s" % (key, index_name)).ljust(40), res
+                    classification_results[(key, index_name)] = res
+            self.validation_results.append(classification_results)
+            
+            params = OrderedDict()
+            for i, param in enumerate(self.get_all_params()):
+                params[(i, str(param))] = param.get_value().copy()
                 if str(param) == 'chem_affinity':
                     print param, param.get_value()
                 if str(param) == 'dnase_weight':
                     print param, param.get_value()
-
+            self.model_params.append(params)
             #print "Affinity Conv Bias: %.2f-%.2f" % (
             #    self.affinity_conv_bias.get_value() 
             #    + self.affinity_conv_filter.get_value().min(axis=2).sum(axis=-1),
@@ -1214,7 +1258,6 @@ def single_sample_main():
         n_samples if n_samples is not None else 100000, 100, 5, balanced=True)
     model.train(
         n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
-
     model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
     return
     
@@ -1247,5 +1290,5 @@ def test_chipseq():
 
 #test_chipseq()
 
-main()
-#single_sample_main()
+#main()
+single_sample_main()

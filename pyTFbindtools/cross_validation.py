@@ -35,12 +35,14 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
 
-
 class ClassificationResult(object):
     _fields = ClassificationResultData._fields
 
     def __iter__(self):
         return iter(getattr(self, field) for field in self._fields)
+
+    def iter_items(self):
+        return zip(self._fields, iter(getattr(self, field) for field in self._fields))
     
     def __init__(self, labels, predicted_labels, predicted_prbs,
                  is_cross_celltype=None, sample_type=None,
@@ -96,7 +98,14 @@ class ClassificationResult(object):
     @property
     def balanced_accuracy(self):
         return (self.positive_accuracy + self.negative_accuracy)/2    
-    
+
+    def iter_numerical_results(self):
+        for key, val in self.iter_items():
+            try: _ = float(val) 
+            except TypeError: continue
+            yield key, val
+        return
+
     def __str__(self):
         rv = []
         if self.train_samples is not None:
