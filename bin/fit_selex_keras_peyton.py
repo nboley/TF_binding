@@ -685,7 +685,7 @@ class JointBindingModel():
             )
             network = DimshuffleLayer(network, (0,2,1,3))
         
-        #network = OccMaxPool(network, 1, 32, 4)
+        network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
             len(self.invivo_factor_names),
@@ -693,14 +693,15 @@ class JointBindingModel():
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
                           else lasagne.nonlinearities.identity)
         )
-        network = DimshuffleLayer(network, (0,2,1,3))        
+        network = DimshuffleLayer(network, (0,2,1,3))
+        
         network = OccupancyLayer(
             network, 
             init_chem_affinity=-8.0, 
             dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
-        network = OccMaxPool(network, 1, 32)
+        network = OccMaxPool(network, 1, 8)
         
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
@@ -780,7 +781,6 @@ class JointBindingModel():
         )
         ## Don't use regularization
         #regularization_loss = 0        
-        
         params = lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
         updates = lasagne.updates.adam(
@@ -837,7 +837,8 @@ class JointBindingModel():
         self._data_iterators = OrderedDict()
         self._occupancies_fns = None
         self._occupancy_layers = OrderedDict()
-
+        self._deep_lifft_fns = None
+        
         self.validation_losses = []
         self.validation_results = []
         self.model_params = []
@@ -863,7 +864,7 @@ class JointBindingModel():
             #self.add_simple_chipseq_model(pks)
 
         self._build()
-
+    
     def iter_data(self, *args, **kwargs_args):
         iterators = OrderedDict()
         for key, iter_inst in self._data_iterators.iteritems():
@@ -895,6 +896,42 @@ class JointBindingModel():
         return lasagne.layers.get_all_params(
             self._networks.values(), trainable=True)
 
+    def _build_deeplifft_fns(self):
+        real_loss_key = [
+            key for key in self._losses.keys()
+            if key.startswith('invivo') and key.endswith('sequence')
+        ]
+        assert len(real_loss_key) == 1
+        real_loss_key = real_loss_key[0]
+        real_loss = self._losses[real_loss_key]
+
+        deep_lifft_fns = OrderedDict()
+        for key, val in self._input_vars.iteritems():
+            gradient = theano.gradient.grad(
+                real_loss, val, disconnected_inputs='ignore')
+            deep_lifft_fn = theano.function(
+                self._input_vars.values() + self._target_vars.values(), 
+                gradient,
+                on_unused_input='ignore'
+            )
+            deep_lifft_fns[key] = deep_lifft_fn
+            print key, deep_lifft_fn
+        self._deep_lifft_fns = deep_lifft_fns
+
+    def predict_deeplifft_scores_on_batch(self, data):
+        if self._deep_lifft_fns is None:
+            self._build_deeplifft_fns()
+        predictions = {}
+        for output_key, fn in self._deep_lifft_fns.iteritems():
+            # run the occupancies prediction function, and fitler out
+            # the worthless second diumnensions
+            res = fn(
+                *([data[key] for key in self._input_vars.keys()]
+                  + [data[key] for key in self._target_vars.keys()])
+            )
+            predictions[output_key] = res
+        return predictions
+    
     def _build_predict_occupancies_fns(self):
         self._occupancies_fns = OrderedDict()
         for network_id, network in self._occupancy_layers.iteritems():
@@ -1078,6 +1115,7 @@ class JointBindingModel():
             data_grp = f.create_group("data")
             pred_labels_grp = f.create_group("pred_labels")
             pred_occs_grp = f.create_group("pred_occs")
+            pred_deep_lifft_scores_grp = f.create_group("deep_lifft_scores")
             for data_subset_name in ['train', 'validation']:
                 if data_subset_name == 'train' and not save_train_data: 
                     continue
@@ -1085,6 +1123,7 @@ class JointBindingModel():
                 all_data = defaultdict(list)
                 all_pred_labels = defaultdict(list)
                 all_pred_occs = defaultdict(list)
+                all_deep_lifft_scores = defaultdict(list)
                 for data in self.iter_data(
                         100, data_subset_name, 
                         repeat_forever=False, 
@@ -1097,6 +1136,9 @@ class JointBindingModel():
                     for key, values in self.predict_occupancies_on_batch(
                             data).iteritems():
                         all_pred_occs[key].append(values)
+                    for key, values in self.predict_deeplifft_scores_on_batch(
+                            data).iteritems():
+                        all_deep_lifft_scores[key].append(values)
 
                 data_subgrp = data_grp.create_group(data_subset_name)
                 for key, values in all_data.iteritems():
@@ -1108,6 +1150,10 @@ class JointBindingModel():
                     dset = data_subgrp.create_dataset(str(key), data=values)
                 data_subgrp = pred_occs_grp.create_group(data_subset_name)
                 for key, values in all_pred_occs.iteritems():
+                    values = np.concatenate(values, axis=0)
+                    dset = data_subgrp.create_dataset(str(key), data=values)
+                data_subgrp = pred_deep_lifft_scores_grp.create_group(data_subset_name)
+                for key, values in all_deep_lifft_scores.iteritems():
                     values = np.concatenate(values, axis=0)
                     dset = data_subgrp.create_dataset(str(key), data=values)
         
@@ -1254,10 +1300,14 @@ def single_sample_main():
     #    ['YY1', 'CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
         [tf_name,],
         use_three_base_encoding=False)
+    #model.predict_deeplifft_scores_on_batch(
+    #    next(model.iter_data(100, 'train', False, include_dnase_signal=True)))
+    #assert False
+
     model.train(
         n_samples if n_samples is not None else 100000, 100, 5, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+        n_samples if n_samples is not None else 100000, 100, 25, balanced=False)
     model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
     return
     
