@@ -1310,7 +1310,26 @@ def single_sample_main():
         n_samples if n_samples is not None else 100000, 100, 25, balanced=False)
     model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
     return
-    
+
+def all_tfs_main():
+    sample_id = sys.argv[1]
+    try: 
+        n_samples = int(sys.argv[2])
+    except IndexError: 
+        n_samples = None
+    sample_ids = [sample_id,]
+    pks = PartitionedSamplePeaksAndLabels(
+        sample_id, factor_names=None, n_samples=5000)
+    print len(pks.factor_names)
+    print pks.factor_names
+    print pks.train.labels.shape
+    #return
+    model = JointBindingModel(300000, pks.factor_names, sample_ids)
+    model.train(300000, 100, 30)
+    model.save('Multitask.%s.h5' % sample_id)
+    return
+
+
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
     tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
@@ -1341,4 +1360,5 @@ def test_chipseq():
 #test_chipseq()
 
 #main()
-single_sample_main()
+#single_sample_main()
+all_tfs_main()

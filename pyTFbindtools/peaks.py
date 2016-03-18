@@ -25,7 +25,7 @@ from cross_validation import iter_train_validation_splits
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 
-from pyTFbindtools.DB import load_tf_ids
+from pyTFbindtools.DB import load_tf_ids, load_tf_names_for_sample
 
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
@@ -432,12 +432,13 @@ def build_peaks_label_mat(
     for desired_peak_type in (
             'optimal idr thresholded peaks', 'anshul relaxed peaks'):
         # load the labels - using a cached version when available
-        pickle_fname = "PICKLEDLABELSMAT_%i_%s_%s_%s.obj" % (
+        pickle_fname = "PICKLEDLABELSMAT_%i_%s_%s_%s.%s.obj" % (
             annotation_id, 
             roadmap_sample_id,
             ('IDROPTIMAL' if desired_peak_type=='optimal idr thresholded peaks'
              else 'RELAXEDPEAKS'),
-            half_peak_width
+            half_peak_width,
+            hashlib.sha1(str(sorted(list(peak_fnames.keys())))).hexdigest(),
         )
         try:
             with open(pickle_fname) as fp:
@@ -461,6 +462,9 @@ def build_peaks_label_mat(
                     if i>0 and i%100000 == 0:
                         print "%i/%i peaks, %i/%i samples" % (
                             i, len(pks), tf_index, len(peak_fnames))
+            with open(pickle_fname + ".tfnames", "w") as ofp:
+                for tf_name in sorted(list(peak_fnames.keys())):
+                    ofp.write("%s\n" % tf_name)
             with open(pickle_fname, "w") as ofp:
                 np.save(ofp, labels)
         all_labels.append(labels)
@@ -735,7 +739,9 @@ class SamplePeaksAndLabels():
     def factor_names(self):
         from pyTFbindtools.DB import load_tf_names
         if self._factor_names is None:
-            self._factor_names = load_tf_names(self.tf_ids)
+            self._factor_names = [
+                x.replace("eGFP-", "") for x in load_tf_names(self.tf_ids)]
+            assert len(self.tf_ids) == len(self._factor_names)
         return self._factor_names
 
     def subset_pks(self, pk_indices=slice(None), factor_indices=slice(None)):
@@ -772,13 +778,13 @@ class SamplePeaksAndLabels():
         # all tfs if none is passed
         if desired_factor_names is None:
             return self
-            
+
         # keep the top n_samples peaks and max_num_tfs tfs
         all_factor_names = self.factor_names
         # make sure all of the tfnames actually exist
-        #assert ( self.desired_factor_names is None 
-        #         or all(factor_name in all_factor_names 
-        #                for factor_name in self.desired_factor_names) 
+        #assert ( desired_factor_names is None 
+        #         or all(factor_name in self.factor_names 
+        #                for factor_name in desired_factor_names) 
         #)
         # filter the tf set 
         filtered_tfs = sorted([
@@ -861,7 +867,6 @@ class SamplePeaksAndLabels():
                 load_chipseq_coverage(self.sample_id, tf_id, self.pks)
                 for tf_id in self.tf_ids
             ], axis=1)
-            print self._chipseq_coverage.shape
             # normalize the coverage
             sums = self._chipseq_coverage.sum(axis=2).sum(axis=1)
             self._chipseq_coverage[0] = 1e6*self._chipseq_coverage[0]/sums[0]
@@ -905,6 +910,10 @@ class SamplePeaksAndLabels():
         self.clean_labels[self.ambiguous_pks_mask] = -1
 
         self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
+        print idr_optimal_labels.shape
+        print relaxed_labels.shape
+        print len(self.tf_ids)
+        assert self.labels.shape[1] == len(self.tf_ids)
 
     def build_balanced_indices(self):
         one_indices = np.random.choice(
@@ -994,7 +1003,14 @@ class PartitionedSamplePeaksAndLabels():
             self.cache_key + ".train.obj", sample_id, self.tf_ids)
         self.validation = SamplePeaksAndLabels.load(
             self.cache_key + ".validation.obj", sample_id, self.tf_ids)
-    
+        assert self.train.factor_names == self.validation.factor_names
+        assert self.train.tf_ids == self.validation.tf_ids
+        print len(self.train.tf_ids)
+        print set(self.tf_ids) - set(self.train.tf_ids)
+        print set(self.factor_names) - set(self.train.factor_names)
+        print len(self.train.factor_names)
+        print self.train.labels.shape
+
     @staticmethod
     def _load_data(roadmap_sample_id, 
                    factor_names, 
@@ -1016,10 +1032,11 @@ class PartitionedSamplePeaksAndLabels():
             roadmap_sample_id, tf_ids, 
             pks, fwd_seqs, 
             idr_optimal_labels, relaxed_labels
-        ).subset_pks_by_rank(
+        )
+        data = data.subset_pks_by_rank(
             max_num_peaks=n_samples, use_top_accessible=False
-        ).subset_tfs(factor_names)
-        
+        )
+        data = data.subset_tfs(factor_names)
         return data
 
     def __init__(self, 
@@ -1029,6 +1046,8 @@ class PartitionedSamplePeaksAndLabels():
                  annotation_id=1, 
                  half_peak_width=500):
         self.sample_id = roadmap_sample_id
+        if factor_names is None:
+            factor_names = load_tf_names_for_sample(self.sample_id)
         self.factor_names = factor_names
         self.n_samples = n_samples
         self.annotation_id = annotation_id
@@ -1046,7 +1065,6 @@ class PartitionedSamplePeaksAndLabels():
                 self.annotation_id, 
                 self.half_peak_width)
             self.seq_length = self.data.seq_length
-
             print "Splitting out train data"        
             self.train = self.data.subset_pks_by_contig(
                 contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9'))
@@ -1054,9 +1072,10 @@ class PartitionedSamplePeaksAndLabels():
             self.validation = self.data.subset_pks_by_contig(
                 contigs_to_include=('chr8', 'chr9'))
             self._save_cached()
-        
-        print self.train.fwd_seqs.shape
-        print self.validation.fwd_seqs.shape
+
+        assert self.train.factor_names == self.validation.factor_names
+        self.factor_names = self.train.factor_names
+        #assert False
 
     def iter_batches(self, batch_size, data_subset, repeat_forever, **kwargs):
         if data_subset == 'train':

@@ -505,6 +505,14 @@ def load_tf_ids(tf_names):
         tf_ids.append(cur.fetchall()[0][0])
     return tf_ids
 
+def load_tf_names_for_sample(sample_id):
+    cur = conn.cursor()
+    query = "select distinct tf_name from roadmap_matched_chipseq_peaks where roadmap_sample_id = %s"
+    cur.execute(query, [sample_id,])
+    print cur.mogrify(query, [sample_id,])
+    tf_ids = [x[0] for x in cur.fetchall()]
+    return tf_ids
+
 def load_ENCODE_target_id(tf_ids):
     cur = conn.cursor()
     query = "select ENCODE_target_id from chipseq_targets where tf_id = %s"
