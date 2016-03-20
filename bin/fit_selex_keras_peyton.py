@@ -152,7 +152,7 @@ def cross_entropy_skip_ambig(y_true, y_pred):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = mse_skip_ambig #cross_entropy_skip_ambig
+global_loss_fn = cross_entropy_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -664,7 +664,7 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = StackStrands(network)
-        #self._add_chipseq_regularization(network, target_var)
+        self._add_chipseq_regularization(network, target_var)
 
         if include_dnase is True:
             access_input_var = TT.tensor4(name + '.dnase_cov')
@@ -1349,8 +1349,8 @@ def many_tfs_main():
     sample_ids = [sample_id,]
     pks = PartitionedSamplePeaksAndLabels(
         sample_id, factor_names=tf_names, n_samples=5000)
-    model = JointBindingModel(300000, pks.factor_names, sample_ids)
-    model.train(300000, 500, 30)
+    model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
+    model.train(n_samples, 500, 30)
     model.save('Multitask.%s.%s.h5' % (sample_id, "_".join(tf_names)))
     
 
