@@ -152,7 +152,7 @@ def cross_entropy_skip_ambig(y_true, y_pred):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = cross_entropy_skip_ambig
+global_loss_fn = mse_skip_ambig #cross_entropy_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -639,7 +639,7 @@ class JointBindingModel():
         network = FlattenLayer(network)
         self._occupancy_layers[str(target_var) + ".chipseqreg.occupancy"] = network
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
+        loss = TT.mean(global_loss_fn(target_var, prediction))
         self._losses[str(target_var) + ".chipseqreg"] = (
             self._chipseq_regularization_penalty*loss)
 
@@ -664,7 +664,7 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = StackStrands(network)
-        self._add_chipseq_regularization(network, target_var)
+        #self._add_chipseq_regularization(network, target_var)
 
         if include_dnase is True:
             access_input_var = TT.tensor4(name + '.dnase_cov')
@@ -698,7 +698,7 @@ class JointBindingModel():
         network = OccupancyLayer(
             network, 
             init_chem_affinity=-8.0, 
-            dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
+            dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
         network = OccMaxPool(network, 1, 8)
@@ -770,6 +770,9 @@ class JointBindingModel():
         loss = TT.mean(global_loss_fn(target_var, prediction))
         self._losses[name] = loss
         return
+
+    def set_all_params(self, values):
+        lasagne.layers.set_all_param_values(self._networks.values(), values)
 
     def _build(self):
         # build the predictions dictionary
@@ -1166,9 +1169,27 @@ class JointBindingModel():
         print rv[:10]
         assert False
 
+    def evaluate(self, batch_size):
+        # Print the validation results for this epoch:
+        classification_results  = {}
+        pred_prbs, labels = self.predict(batch_size)
+        for key in pred_prbs.keys():
+            for index in xrange(labels[key].shape[1]):
+                if key in self._multitask_labels:
+                    index_name = self._multitask_labels[key][index]
+                else:
+                    index_name = str(index)
+                res = ClassificationResult(
+                    labels[key][:,index], 
+                    pred_prbs[key][:,index] > 0.5, 
+                    pred_prbs[key][:,index]
+                )
+                classification_results[(key, index_name)] = res
+        return classification_results
+
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
-        print("\n\n\n\n\nStarting training...")
+        if VERBOSE: print("\n\n\n\n\nStarting training...")
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
             self._selex_penalty.set_value( 
@@ -1196,10 +1217,11 @@ class JointBindingModel():
                     self._input_vars.keys() + self._target_vars.keys()
                 ]
                 err = self.train_fn(*filtered_data)
-                progbar.update(
-                    nb_train_batches_observed*batch_size, 
-                    [('train_err', err.sum()),]
-                )
+                if VERBOSE:
+                    progbar.update(
+                        nb_train_batches_observed*batch_size, 
+                        [('train_err', err.sum()),]
+                    )
                 train_err += err
                         
             # calculate the test error
@@ -1235,21 +1257,9 @@ class JointBindingModel():
             )
 
             # Print the validation results for this epoch:
-            classification_results  = {}
-            pred_prbs, labels = self.predict(batch_size)
-            for key in pred_prbs.keys():
-                for index in xrange(labels[key].shape[1]):
-                    if key in self._multitask_labels:
-                        index_name = self._multitask_labels[key][index]
-                    else:
-                        index_name = str(index)
-                    res = ClassificationResult(
-                        labels[key][:,index], 
-                        pred_prbs[key][:,index] > 0.5, 
-                        pred_prbs[key][:,index]
-                    )
-                    print ("%s-%s" % (key, index_name)).ljust(40), res
-                    classification_results[(key, index_name)] = res
+            classification_results  = self.evaluate(batch_size)
+            for key, vals in classification_results.iteritems():
+                print "-".join(key).ljust(40), vals
             self.validation_results.append(classification_results)
             
             params = OrderedDict()
@@ -1291,7 +1301,7 @@ def single_sample_main():
     pks = PartitionedSamplePeaksAndLabels(
         sample_id, factor_names=[tf_name,], n_samples=n_samples)
     rv = next(pks.iter_batches(
-        100, 'train', False, include_chipseq_signal=True, include_dnase_signal=True))
+        100, 'train', False, include_chipseq_signal=False, include_dnase_signal=True))
     #return
     model = JointBindingModel(
         n_samples, 
@@ -1307,7 +1317,7 @@ def single_sample_main():
     model.train(
         n_samples if n_samples is not None else 100000, 100, 5, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 25, balanced=False)
+        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
     model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
     return
 
@@ -1329,6 +1339,20 @@ def all_tfs_main():
     model.save('Multitask.%s.h5' % sample_id)
     return
 
+def many_tfs_main():
+    tf_names = sys.argv[1].split(",")
+    sample_id = sys.argv[2]
+    try: 
+        n_samples = int(sys.argv[3])
+    except IndexError: 
+        n_samples = None
+    sample_ids = [sample_id,]
+    pks = PartitionedSamplePeaksAndLabels(
+        sample_id, factor_names=tf_names, n_samples=5000)
+    model = JointBindingModel(300000, pks.factor_names, sample_ids)
+    model.train(300000, 500, 30)
+    model.save('Multitask.%s.%s.h5' % (sample_id, "_".join(tf_names)))
+    
 
 def main():        
     #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
@@ -1359,6 +1383,8 @@ def test_chipseq():
 
 #test_chipseq()
 
-#main()
-#single_sample_main()
-all_tfs_main()
+if __name__ == '__main__':
+    #main()
+    #single_sample_main()
+    #all_tfs_main()
+    many_tfs_main()

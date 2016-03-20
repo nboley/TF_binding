@@ -643,6 +643,7 @@ def load_chipseq_coverage(sample_id, tf_id, peaks):
         rv = np.zeros(
             (2, len(peaks), peaks[0][2] - peaks[0][1]), 
             dtype='float32')
+        return rv
         fnames, control_fnames = load_chipseq_fnames(sample_id, tf_id)
         fnames = [x.replace("/mnt/lab_data/kundaje/users/nboley/TF_binding/", 
                             "/srv/scratch/nboley/cached_data/")
@@ -712,7 +713,7 @@ class SamplePeaksAndLabels():
             pks.view(np.uint8)).hexdigest()
         try:
             with open(cached_fname) as fp:
-                print "Loading cached seqs"
+                print "Loading cached seqs", cached_fname
                 return np.load(fp)
         except IOError:
             pass
@@ -910,9 +911,6 @@ class SamplePeaksAndLabels():
         self.clean_labels[self.ambiguous_pks_mask] = -1
 
         self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
-        print idr_optimal_labels.shape
-        print relaxed_labels.shape
-        print len(self.tf_ids)
         assert self.labels.shape[1] == len(self.tf_ids)
 
     def build_balanced_indices(self):
@@ -1005,11 +1003,6 @@ class PartitionedSamplePeaksAndLabels():
             self.cache_key + ".validation.obj", sample_id, self.tf_ids)
         assert self.train.factor_names == self.validation.factor_names
         assert self.train.tf_ids == self.validation.tf_ids
-        print len(self.train.tf_ids)
-        print set(self.tf_ids) - set(self.train.tf_ids)
-        print set(self.factor_names) - set(self.train.factor_names)
-        print len(self.train.factor_names)
-        print self.train.labels.shape
 
     @staticmethod
     def _load_data(roadmap_sample_id, 
@@ -1055,7 +1048,7 @@ class PartitionedSamplePeaksAndLabels():
         self.seq_length = 2*half_peak_width
         
         try: 
-            #raise IOError, "TEST"
+            raise IOError, "TEST"
             self._load_cached(roadmap_sample_id, factor_names)
         except IOError:        
             self.data = self._load_data(
