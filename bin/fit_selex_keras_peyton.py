@@ -58,7 +58,6 @@ def subsample_batch(model, batch, subsample_sizes):
     output = OrderedDict()
     pred_vals = model.predict_on_batch(batch)
     for key in pred_vals:
-        print key
         batch_size = subsample_sizes[key]
 
         losses = (pred_vals[key] - batch[key])**2
@@ -557,7 +556,7 @@ class JointBindingModel():
             self.add_selex_experiment(exp)
     
     def add_chipseq_trace_model(self, pks_and_labels):
-        name = 'invivo_%s_sequence.simple' % pks_and_labels.sample_id 
+        name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
 
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
@@ -617,15 +616,17 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = StackStrands(network)
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = OccupancyLayer(network, -6.0)
         self._occupancy_layers[name + ".occupancy"] = network
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
         network = FlattenLayer(network)
 
+        self._networks[name + ".output"] = network
+
         prediction = lasagne.layers.get_output(network) 
-        loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
+        loss = TT.mean(global_loss_fn(target_var, prediction))
         self._data_iterators[name] = pks_and_labels.iter_batches
         self._losses[name] = loss
 
@@ -664,6 +665,8 @@ class JointBindingModel():
             W=self.affinity_conv_filter, 
             b=self.affinity_conv_bias)
         network = StackStrands(network)
+        network = DropoutLayer(network, 0.2)
+
         self._add_chipseq_regularization(network, target_var)
 
         if include_dnase is True:
@@ -684,6 +687,7 @@ class JointBindingModel():
                 nonlinearity=lasagne.nonlinearities.identity
             )
             network = DimshuffleLayer(network, (0,2,1,3))
+            network = DropoutLayer(network, 0.2)
         
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
@@ -694,7 +698,8 @@ class JointBindingModel():
                           else lasagne.nonlinearities.identity)
         )
         network = DimshuffleLayer(network, (0,2,1,3))
-        
+        network = DropoutLayer(network, 0.2)
+
         network = OccupancyLayer(
             network, 
             init_chem_affinity=-8.0, 
@@ -726,6 +731,8 @@ class JointBindingModel():
         self._target_vars[name + '.output'] = target_var
         self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
 
+        n_convs = 8*len(self.factor_names)
+        
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
 
@@ -740,20 +747,20 @@ class JointBindingModel():
                 1e-12+x/TT.max(x, keepdims=True)))
             network = ConcatLayer([access, network], axis=2)
             network = Conv2DLayer(
-                network, 25, (5,15),
+                network, n_convs, (5,15),
                 nonlinearity=lasagne.nonlinearities.rectify)
         else:
             network = Conv2DLayer(
-                network, 25, (4,15),
+                network, n_convs, (4,15),
                 nonlinearity=lasagne.nonlinearities.rectify)
 
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
-            network, 25, (1,15),
+            network, n_convs, (1,15),
             nonlinearity=lasagne.nonlinearities.rectify)
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
-            network, 25, (1,15),
+            network, n_convs, (1,15),
             nonlinearity=lasagne.nonlinearities.rectify)
         network = DropoutLayer(network, 0.2)
         network = DimshuffleLayer(network, (0,2,1,3))
@@ -862,8 +869,8 @@ class JointBindingModel():
         for sample_id in sample_ids:
             pks = PartitionedSamplePeaksAndLabels(
                 sample_id, factor_names=invivo_factor_names, n_samples=n_samples)
-            #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
+            self.add_DIGN_chipseq_samples(pks)
+            #self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
 
         self._build()
@@ -918,7 +925,6 @@ class JointBindingModel():
                 on_unused_input='ignore'
             )
             deep_lifft_fns[key] = deep_lifft_fn
-            print key, deep_lifft_fn
         self._deep_lifft_fns = deep_lifft_fns
 
     def predict_deeplifft_scores_on_batch(self, data):
