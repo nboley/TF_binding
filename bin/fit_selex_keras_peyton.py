@@ -1430,7 +1430,7 @@ def many_tfs_main():
     #assert False
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
     model.train(n_samples, 500, 60)
-    model.save('Multitask.%s.%s.h5' % (sample_id, "_".join(tf_names)))
+    model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))
     
 
 def main():        
