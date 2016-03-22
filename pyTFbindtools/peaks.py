@@ -1060,7 +1060,7 @@ class PartitionedSamplePeaksAndLabels():
         self.validation = {}
         for sample_id in self.sample_ids:
             try: 
-                raise IOError, "TEST"
+                #raise IOError, "TEST"
                 self._load_cached(sample_id)
             except IOError:
                 self.data[sample_id] = self._load_data(

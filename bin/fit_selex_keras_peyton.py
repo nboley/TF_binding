@@ -775,7 +775,7 @@ class JointBindingModel():
             dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 8)
+        network = OccMaxPool(network, 1, 8)
         
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
