@@ -1048,7 +1048,7 @@ class PartitionedSamplePeaksAndLabels():
         self.seq_length = 2*half_peak_width
         
         try: 
-            raise IOError, "TEST"
+            #raise IOError, "TEST"
             self._load_cached(roadmap_sample_id, factor_names)
         except IOError:        
             self.data = self._load_data(
