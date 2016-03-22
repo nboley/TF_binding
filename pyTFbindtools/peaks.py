@@ -1113,7 +1113,6 @@ class PartitionedSamplePeaksAndLabels():
                     for key, vals in data.iteritems():
                         grpd_res[key].append(vals)
                 for key, vals in grpd_res.iteritems():
-                    print [x.shape for x in grpd_res[key]]
                     grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
                 yield grpd_res
             return

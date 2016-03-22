@@ -254,7 +254,7 @@ class ConvolutionDNASequenceBinding(Layer):
                  input,
                  nb_motifs, motif_len, 
                  use_three_base_encoding=False,
-                 W=init.HeNormal(), b=init.Constant(-3.0),
+                 W=init.HeNormal(), b=init.Constant(-5.0),
                  **kwargs):
         super(ConvolutionDNASequenceBinding, self).__init__(input, **kwargs)
         self.use_three_base_encoding = use_three_base_encoding
@@ -497,15 +497,10 @@ class ConvolveDNASELayer(MergeLayer):
         super(ConvolveDNASELayer, self).__init__([incoming, dnase], **kwargs)
         self.n_tracks = self.input_shapes[0][2]
         self.dnase_weights = self.add_param(
-            init.Constant(0.0),
+            init.Constant(1.0),
             (self.n_tracks,), 
             name='dnase_weights'
         )
-        #self.affinity_weights = self.add_param(
-        #    init.Constant(0.5),
-        #    (self.n_tracks,), 
-        #    name='affinity_weights'
-        #)
         self.incoming = incoming
         self.dnase = dnase
 
@@ -521,10 +516,7 @@ class ConvolveDNASELayer(MergeLayer):
         )
         log_norm_access = TT.log(norm_access)
         track_access = log_norm_access.repeat(self.n_tracks, axis=2)
-        return (
-            affinities #*self.affinity_weights[None,:,None]  
-            + track_access*self.dnase_weights[None,None,:,None]
-        )
+        return affinities + self.dnase_weights[None,:,None]*track_access
 
 class JointBindingModel():    
     def _init_shared_affinity_params(self, use_three_base_encoding):
@@ -694,7 +686,7 @@ class JointBindingModel():
         return
 
     def _add_chipseq_regularization(self, affinities, target_var):
-        network = OccupancyLayer(affinities, -8.0)
+        network = OccupancyLayer(affinities, -5.0)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
@@ -764,6 +756,7 @@ class JointBindingModel():
             network, 
             2*self.num_affinity_convs,
             (2*self.num_affinity_convs,16),
+            b=None,
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
                           else lasagne.nonlinearities.identity),
         )
@@ -775,7 +768,7 @@ class JointBindingModel():
 
         network = OccupancyLayer(
             network, 
-            init_chem_affinity=-8.0, 
+            init_chem_affinity=-5.0, 
             dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
@@ -783,10 +776,7 @@ class JointBindingModel():
         
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
-        
-        #network = DenseLayer(
-        #    network, len(self.invivo_factor_names), nonlinearity=sigmoid)
-        
+                
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
