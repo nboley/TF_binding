@@ -1,7 +1,7 @@
 import os
 import math
 import gzip
-from collections import namedtuple, defaultdict
+from collections import namedtuple, defaultdict, OrderedDict
 from itertools import izip
 import random
 import cPickle as pickle
@@ -886,7 +886,11 @@ class SamplePeaksAndLabels():
             sums = self._dnase_coverage.sum(axis=1).sum(axis=1)
             self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
         return self._dnase_coverage
-    
+
+    @property
+    def n_samples(self):
+        return int(self.clean_labels.shape[0])
+
     def __init__(self, 
                  sample_id, tf_ids, 
                  pks, seqs, 
@@ -1041,7 +1045,6 @@ class PartitionedSamplePeaksAndLabels():
                  annotation_id=1, 
                  half_peak_width=500):
         self.sample_ids = roadmap_sample_ids
-        #assert False
         if factor_names is None:
             factor_names = set()
             for x in map(load_tf_names_for_sample, roadmap_sample_ids):
@@ -1084,36 +1087,47 @@ class PartitionedSamplePeaksAndLabels():
             #self.factor_names = self.train.factor_names
 
     def iter_batches(self, batch_size, data_subset, repeat_forever, **kwargs):
-        # split the batch size into as equal proportions as possible 
-        inner_batch_sizes = [
-            batch_size/len(self.sample_ids)]*len(self.sample_ids)
-        for i in xrange(batch_size - sum(inner_batch_sizes)):
-            inner_batch_sizes[i] += 1
-        
+        ## determine the batch sizes
         if data_subset == 'train':
-            iterators = [
-                train.iter_batches(i_batch_size, repeat_forever, **kwargs) 
-                for i_batch_size, train in zip(
-                        inner_batch_sizes, self.train.values())
-            ]
+            data_subset = self.train
         elif data_subset == 'validation':
-            iterators = [
-                validation.iter_batches(i_batch_size, repeat_forever, **kwargs) 
-                for i_batch_size, validation in zip(
-                        inner_batch_sizes, self.validation.values())
-            ]
+            data_subset = self.validation
         else:
             raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
-        
+
+        ## find the number of observations to sample from each batch
+        # To make this work, I would need to randomly choose the extra observations
+        assert batch_size >= len(data_subset), "Cant have a batch size smaller than the number of samples"
+        fractions = np.array([x.n_samples for x in data_subset.values()], dtype=float)
+        fractions = fractions/fractions.sum()
+        inner_batch_sizes = np.array(batch_size*fractions, dtype=int)
+        # accounting for any rounding from the previous step 
+        for i in xrange(batch_size - inner_batch_sizes.sum()):
+            inner_batch_sizes[i] += 1
+            
+        ## build the sample labels array
+        sample_labels = np.zeros(batch_size)
+        for i, start_index in enumerate(np.cumsum(inner_batch_sizes)):
+            sample_labels[start_index:] = i+1
+
+        iterators = OrderedDict(
+            (sample_id, 
+             data.iter_batches(i_batch_size, repeat_forever, **kwargs) )
+            for i_batch_size, (sample_id, data) in zip(
+                    inner_batch_sizes, data_subset.iteritems())
+        )
+
         def f():
             while True:
                 grpd_res = defaultdict(list)
-                for iterator in iterators:
+                for sample_id, iterator in iterators.iteritems():
                     data = next(iterator)
                     for key, vals in data.iteritems():
                         grpd_res[key].append(vals)
                 for key, vals in grpd_res.iteritems():
                     grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
+                assert 'sample' not in grpd_res
+                grpd_res['sample'] = sample_labels
                 yield grpd_res
             return
         

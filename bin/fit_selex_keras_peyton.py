@@ -497,7 +497,7 @@ class ConvolveDNASELayer(MergeLayer):
         super(ConvolveDNASELayer, self).__init__([incoming, dnase], **kwargs)
         self.n_tracks = self.input_shapes[0][2]
         self.dnase_weights = self.add_param(
-            init.Constant(1.0),
+            init.Constant(0.0),
             (self.n_tracks,), 
             name='dnase_weights'
         )
@@ -757,7 +757,7 @@ class JointBindingModel():
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
-            2*self.num_affinity_convs,
+            len(self.invivo_factor_names),
             (2*self.num_affinity_convs,16),
             b=None,
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
@@ -1425,10 +1425,11 @@ def many_tfs_main():
     print tf_names, sample_ids, n_samples
     pks = PartitionedSamplePeaksAndLabels(
         sample_ids, factor_names=tf_names, n_samples=5000)
-    for batch in pks.iter_train_data(100):
+    for batch in pks.iter_train_data(10):
         break
+    #assert False
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
-    model.train(n_samples, 100, 60)
+    model.train(n_samples, 500, 60)
     model.save('Multitask.%s.%s.h5' % (sample_id, "_".join(tf_names)))
     
 
