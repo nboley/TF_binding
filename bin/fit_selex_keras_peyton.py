@@ -497,7 +497,7 @@ class ConvolveDNASELayer(MergeLayer):
         super(ConvolveDNASELayer, self).__init__([incoming, dnase], **kwargs)
         self.n_tracks = self.input_shapes[0][2]
         self.dnase_weights = self.add_param(
-            init.Constant(1.0),
+            init.Constant(0.0),
             (self.n_tracks,), 
             name='dnase_weights'
         )
@@ -706,8 +706,8 @@ class JointBindingModel():
             self._chipseq_regularization_penalty*loss)
 
     def add_chipseq_samples(self, pks_and_labels, include_dnase=True): 
-        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
-        name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
+        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
+        name = 'invivo_%s_sequence' % "-".join(pks_and_labels.sample_ids) 
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
@@ -942,12 +942,11 @@ class JointBindingModel():
 
         self._chipseq_regularization_penalty = create_param(
             lambda x: 2.0, (), 'chipseq_penalty')
-        for sample_id in sample_ids:
-            pks = PartitionedSamplePeaksAndLabels(
-                sample_id, factor_names=invivo_factor_names, n_samples=n_samples)
-            #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
-            #self.add_simple_chipseq_model(pks)
+        pks = PartitionedSamplePeaksAndLabels(
+            sample_ids, factor_names=invivo_factor_names, n_samples=n_samples)
+        #self.add_DIGN_chipseq_samples(pks)
+        self.add_chipseq_samples(pks)
+        #self.add_simple_chipseq_model(pks)
 
         self._build()
     
@@ -1425,16 +1424,18 @@ def all_tfs_main():
 
 def many_tfs_main():
     tf_names = sys.argv[1].split(",")
-    sample_id = sys.argv[2]
+    sample_ids = sys.argv[2].split(",")
     try: 
         n_samples = int(sys.argv[3])
     except IndexError: 
         n_samples = None
-    sample_ids = [sample_id,]
+    print tf_names, sample_ids, n_samples
     pks = PartitionedSamplePeaksAndLabels(
-        sample_id, factor_names=tf_names, n_samples=5000)
+        sample_ids, factor_names=tf_names, n_samples=5000)
+    for batch in pks.iter_train_data(100):
+        break
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
-    model.train(n_samples, 500, 60)
+    model.train(n_samples, 100, 60)
     model.save('Multitask.%s.%s.h5' % (sample_id, "_".join(tf_names)))
     
 

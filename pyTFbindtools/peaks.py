@@ -1,7 +1,7 @@
 import os
 import math
 import gzip
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from itertools import izip
 import random
 import cPickle as pickle
@@ -416,6 +416,7 @@ def build_peaks_label_mat(
     assert not any(x is None for x in peak_fnames.keys())
     # extract the accessibility peaks
     dnase_peaks_fnames = peak_fnames['dnase']
+    print annotation_id, roadmap_sample_id
     assert len(dnase_peaks_fnames) == 1
     dnase_peaks_fname = next(iter(dnase_peaks_fnames))
     del peak_fnames['dnase']
@@ -976,33 +977,34 @@ class SamplePeaksAndLabels():
         )
 
 class PartitionedSamplePeaksAndLabels():
-    @property
-    def cache_key(self):
+    def cache_key(self, sample_id):
         return hashlib.sha1(str((
-            self.sample_id, 
+            sample_id, 
             tuple(sorted(self.factor_names)), 
             self.n_samples, 
             self.annotation_id, 
             self.half_peak_width
         ))).hexdigest()
 
-    def _save_cached(self):
-        self.data.save(self.cache_key + ".data.obj")
-        self.train.save(self.cache_key + ".train.obj")
-        self.validation.save(self.cache_key + ".validation.obj")
+    def _save_cached(self, sample_id):
+        self.data[sample_id].save(self.cache_key(sample_id) + ".data.obj")
+        self.train[sample_id].save(self.cache_key(sample_id) + ".train.obj")
+        self.validation[sample_id].save(self.cache_key(sample_id) + ".validation.obj")
         return
     
-    def _load_cached(self, sample_id, factor_names):
-        self.tf_ids = load_tf_ids(factor_names)
-        self.data = None
+    def _load_cached(self, sample_id):
+        self.tf_ids = load_tf_ids(self.factor_names)
+        self.data[sample_id] = None
         #SamplePeaksAndLabels.load(
         #    self.cache_key + ".data.obj", sample_id, tf_ids)
-        self.train = SamplePeaksAndLabels.load(
-            self.cache_key + ".train.obj", sample_id, self.tf_ids)
-        self.validation = SamplePeaksAndLabels.load(
-            self.cache_key + ".validation.obj", sample_id, self.tf_ids)
-        assert self.train.factor_names == self.validation.factor_names
-        assert self.train.tf_ids == self.validation.tf_ids
+        self.train[sample_id] = SamplePeaksAndLabels.load(
+            self.cache_key(sample_id)+".train.obj", sample_id, self.tf_ids)
+        self.validation[sample_id] = SamplePeaksAndLabels.load(
+            self.cache_key(sample_id)+".validation.obj", sample_id, self.tf_ids)
+        assert (self.train[sample_id].factor_names 
+                == self.validation[sample_id].factor_names)
+        assert (self.train[sample_id].tf_ids 
+                == self.validation[sample_id].tf_ids)
 
     @staticmethod
     def _load_data(roadmap_sample_id, 
@@ -1033,50 +1035,90 @@ class PartitionedSamplePeaksAndLabels():
         return data
 
     def __init__(self, 
-                 roadmap_sample_id, 
+                 roadmap_sample_ids, 
                  factor_names, 
                  n_samples=None, 
                  annotation_id=1, 
                  half_peak_width=500):
-        self.sample_id = roadmap_sample_id
+        self.sample_ids = roadmap_sample_ids
+        #assert False
         if factor_names is None:
-            factor_names = load_tf_names_for_sample(self.sample_id)
-        self.factor_names = factor_names
+            factor_names = set()
+            for x in map(load_tf_names_for_sample, roadmap_sample_ids):
+                factor_names.update(x)
+        self.factor_names = sorted(factor_names)
         self.n_samples = n_samples
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
         self.seq_length = 2*half_peak_width
-        
-        try: 
-            #raise IOError, "TEST"
-            self._load_cached(roadmap_sample_id, factor_names)
-        except IOError:        
-            self.data = self._load_data(
-                self.sample_id, 
-                self.factor_names, 
-                self.n_samples, 
-                self.annotation_id, 
-                self.half_peak_width)
-            self.seq_length = self.data.seq_length
-            print "Splitting out train data"        
-            self.train = self.data.subset_pks_by_contig(
-                contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9'))
-            print "Splitting out validation data"        
-            self.validation = self.data.subset_pks_by_contig(
-                contigs_to_include=('chr8', 'chr9'))
-            self._save_cached()
 
-        assert self.train.factor_names == self.validation.factor_names
-        self.factor_names = self.train.factor_names
-        #assert False
+        self.data = {}
+        self.train = {}
+        self.validation = {}
+        for sample_id in self.sample_ids:
+            try: 
+                raise IOError, "TEST"
+                self._load_cached(sample_id)
+            except IOError:
+                self.data[sample_id] = self._load_data(
+                    sample_id, 
+                    self.factor_names, 
+                    self.n_samples, 
+                    self.annotation_id, 
+                    self.half_peak_width)
+                assert self.data[sample_id].seq_length == self.seq_length
+                print "Splitting out train data"        
+                self.train[sample_id] = self.data[
+                    sample_id].subset_pks_by_contig(
+                        contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
+                    )
+                print "Splitting out validation data"        
+                self.validation[sample_id] = self.data[
+                    sample_id].subset_pks_by_contig(
+                        contigs_to_include=('chr8', 'chr9')
+                    )
+                self._save_cached(sample_id)
+
+            assert (self.train[sample_id].factor_names 
+                    == self.validation[sample_id].factor_names)
+            #self.factor_names = self.train.factor_names
 
     def iter_batches(self, batch_size, data_subset, repeat_forever, **kwargs):
+        # split the batch size into as equal proportions as possible 
+        inner_batch_sizes = [
+            batch_size/len(self.sample_ids)]*len(self.sample_ids)
+        for i in xrange(batch_size - sum(inner_batch_sizes)):
+            inner_batch_sizes[i] += 1
+        
         if data_subset == 'train':
-            return self.train.iter_batches(batch_size, repeat_forever, **kwargs)
+            iterators = [
+                train.iter_batches(i_batch_size, repeat_forever, **kwargs) 
+                for i_batch_size, train in zip(
+                        inner_batch_sizes, self.train.values())
+            ]
         elif data_subset == 'validation':
-            return self.validation.iter_batches(batch_size, repeat_forever, **kwargs)
+            iterators = [
+                validation.iter_batches(i_batch_size, repeat_forever, **kwargs) 
+                for i_batch_size, validation in zip(
+                        inner_batch_sizes, self.validation.values())
+            ]
         else:
             raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
+        
+        def f():
+            while True:
+                grpd_res = defaultdict(list)
+                for iterator in iterators:
+                    data = next(iterator)
+                    for key, vals in data.iteritems():
+                        grpd_res[key].append(vals)
+                for key, vals in grpd_res.iteritems():
+                    print [x.shape for x in grpd_res[key]]
+                    grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
+                yield grpd_res
+            return
+        
+        return f()
 
     def iter_train_data(
             self, batch_size, repeat_forever=False, **kwargs):
