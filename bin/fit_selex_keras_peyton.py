@@ -254,7 +254,7 @@ class ConvolutionDNASequenceBinding(Layer):
                  input,
                  nb_motifs, motif_len, 
                  use_three_base_encoding=False,
-                 W=init.HeNormal(), b=init.Constant(-5.0),
+                 W=init.HeNormal(), b=init.Constant(-3.0),
                  **kwargs):
         super(ConvolutionDNASequenceBinding, self).__init__(input, **kwargs)
         self.use_three_base_encoding = use_three_base_encoding
@@ -686,7 +686,7 @@ class JointBindingModel():
         return
 
     def _add_chipseq_regularization(self, affinities, target_var):
-        network = OccupancyLayer(affinities, -5.0)
+        network = OccupancyLayer(affinities, -8.0)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
@@ -731,6 +731,9 @@ class JointBindingModel():
                 input_var=access_input_var
             )
             network = ConvolveDNASELayer(single_tf_affinities, dnase)
+            #access = TT.log(
+            #    TT.clip(dnase/TT.max(dnase, keepdims=True), 1e-8, 1.0)
+            #)[None,None,:,:]
             #network = ConcatLayer([access, network], axis=2)
             #network = Conv2DLayer(
             #    network, 
@@ -768,7 +771,7 @@ class JointBindingModel():
 
         network = OccupancyLayer(
             network, 
-            init_chem_affinity=-5.0, 
+            init_chem_affinity=-8.0, 
             dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
@@ -1434,7 +1437,7 @@ def main():
     tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
     sample_ids = ['E123',]
     model = JointBindingModel(50000, tf_names, sample_ids)
-    model.train(10000, 100, 10)
+    model.train(10000, 500, 10)
     model.save('Multitest.h5')
     return
 
