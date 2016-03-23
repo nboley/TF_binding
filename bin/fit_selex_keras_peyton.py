@@ -412,6 +412,7 @@ class OccupancyLayer(Layer):
             input,
             init_chem_affinity=0.0,
             dnase_signal=None,
+            nsamples_and_sample_ids=None,
             **kwargs):
         super(OccupancyLayer, self).__init__(input, **kwargs)
         self.dnase_signal = dnase_signal
@@ -421,10 +422,16 @@ class OccupancyLayer(Layer):
                 (self.input_shape[2],), 
                 name='dnase_weight'
             )
+
+        if nsamples_and_sample_ids is None:
+            n_samples = 1
+            self.sample_ids = TT.ones((1,1), dtype='float32')
+        else:
+            n_samples, self.sample_ids = nsamples_and_sample_ids
         
         self.chem_affinity = self.add_param(
             init.Constant(init_chem_affinity),
-            (self.input_shape[2],), 
+            (n_samples,self.input_shape[2]), 
             name='chem_affinity'
         )
 
@@ -442,8 +449,10 @@ class OccupancyLayer(Layer):
         upper = TT.switch(inner>35, inner, 0)
         return -(lower + mid + upper)
         """
-        rv = self.chem_affinity[None, None, :, None] + input
+        sample_chem_affinities = TT.dot(self.sample_ids, self.chem_affinity)
+        rv = input + sample_chem_affinities[:,None,:,None]
         if self.dnase_signal is not None:
+            assert False
             rv += self.dnase_weight[None, None, :, None]*self.dnase_signal[:,None,None,None]
         return sigmoid(rv)
 
@@ -766,12 +775,16 @@ class JointBindingModel():
         cobinding_penalty = 0 #regularize_layer_params(network,l1)
         network = DimshuffleLayer(network, (0,2,1,3))
         if include_dnase is True:
-            grpd_dnase = OccMaxPool(dnase, 1, 92, 4)
+            grpd_dnase = OccMaxPool(dnase, 1, 92, 4) # try average pool XXX
             network = ConvolveDNASELayer(network, grpd_dnase)
+
+        sample_ids_var = TT.matrix(name + '.sample_ids')
+        self._input_vars[name + '.sample_ids'] = sample_ids_var
 
         network = OccupancyLayer(
             network, 
-            init_chem_affinity=-8.0, 
+            init_chem_affinity=-8.0,
+            nsamples_and_sample_ids=(len(self.sample_ids), sample_ids_var),
             dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
@@ -1063,17 +1076,26 @@ class JointBindingModel():
         )
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
+        sample_ids = defaultdict(list)
         for i, data in enumerate(data_iterator):
             for key, prbs in self.predict_on_batch(data).iteritems():
                 pred_prbs[key].append(prbs)
                 labels[key].append(data[key])
-                
+            try: 
+                sample_ids[key].append(data[key.split(".")[0] + '.sample_ids'])
+            except KeyError:
+                raise
+                sample_ids.append(
+                    np.zeros((data.values()[0].shape[0], 1), dtype='float32')
+                )
+        
         # stack everything back together
         for key in pred_prbs.iterkeys():
             pred_prbs[key] = np.vstack(pred_prbs[key])
             labels[key] = np.vstack(labels[key])
-
-        return pred_prbs, labels
+            sample_ids[key] = np.concatenate(sample_ids[key], axis=0)
+        
+        return pred_prbs, labels, sample_ids
 
     def plot_binding_models(self, prefix):
         # build the pwm
@@ -1246,19 +1268,26 @@ class JointBindingModel():
     def evaluate(self, batch_size):
         # Print the validation results for this epoch:
         classification_results  = {}
-        pred_prbs, labels = self.predict(batch_size)
+        pred_prbs, labels, sample_ids = self.predict(batch_size)
         for key in pred_prbs.keys():
-            for index in xrange(labels[key].shape[1]):
-                if key in self._multitask_labels:
-                    index_name = self._multitask_labels[key][index]
-                else:
-                    index_name = str(index)
-                res = ClassificationResult(
-                    labels[key][:,index], 
-                    pred_prbs[key][:,index] > 0.5, 
-                    pred_prbs[key][:,index]
-                )
-                classification_results[(key, index_name)] = res
+            for sample_index in xrange(sample_ids[key].shape[1]):
+                sample_indices = np.array(
+                    sample_ids[key][:,sample_index], dtype=bool)
+                for index in xrange(labels[key].shape[1]):
+                    if key in self._multitask_labels:
+                        index_name = self._multitask_labels[key][index]
+                    else:
+                        index_name = str(index)
+                    res = ClassificationResult(
+                        labels[key][sample_indices,index], 
+                        pred_prbs[key][sample_indices,index] > 0.5, 
+                        pred_prbs[key][sample_indices,index]
+                    )
+                    classification_results[
+                        ("sample%s-%s" % (
+                            self.sample_ids[sample_index], key.split("-")[-1]), 
+                         index_name)
+                    ] = res
         return classification_results
 
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):

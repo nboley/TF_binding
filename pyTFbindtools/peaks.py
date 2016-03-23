@@ -1104,12 +1104,15 @@ class PartitionedSamplePeaksAndLabels():
         # accounting for any rounding from the previous step 
         for i in xrange(batch_size - inner_batch_sizes.sum()):
             inner_batch_sizes[i] += 1
-            
-        ## build the sample labels array
-        sample_labels = np.zeros(batch_size)
-        for i, start_index in enumerate(np.cumsum(inner_batch_sizes)):
-            sample_labels[start_index:] = i+1
 
+        ### XXXXX - PUT THIS IN THE ACTUAL GENERATOR
+        ## build the sample labels array
+        sample_labels = np.zeros(
+            (batch_size, len(data_subset)), dtype='float32')
+        for i in xrange(len(data_subset)):
+            start_index = (0 if i == 0 else np.cumsum(inner_batch_sizes)[i-1])
+            stop_index = np.cumsum(inner_batch_sizes)[i]
+            sample_labels[start_index:stop_index,i] = 1
         iterators = OrderedDict(
             (sample_id, 
              data.iter_batches(i_batch_size, repeat_forever, **kwargs) )
@@ -1120,15 +1123,31 @@ class PartitionedSamplePeaksAndLabels():
         def f():
             while True:
                 grpd_res = defaultdict(list)
+                cnts = []
                 for sample_id, iterator in iterators.iteritems():
                     data = next(iterator)
+                    cnt = None
                     for key, vals in data.iteritems():
                         grpd_res[key].append(vals)
+                        if cnt == None: cnt = vals.shape[0]
+                        assert cnt == vals.shape[0]
+                    cnts.append(cnt)
                 for key, vals in grpd_res.iteritems():
                     grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
-                assert 'sample' not in grpd_res
-                grpd_res['sample'] = sample_labels
-                yield grpd_res
+                    
+                # build the sample labels
+                cnts = np.array(cnts)
+                sample_labels = np.zeros(
+                    (cnts.sum(), len(iterators)), dtype='float32')
+                for i in xrange(len(data_subset)):
+                    start_index = (0 if i == 0 else np.cumsum(cnts)[i-1])
+                    stop_index = np.cumsum(inner_batch_sizes)[i]
+                    sample_labels[start_index:stop_index,i] = 1                
+                assert 'sample_ids' not in grpd_res
+                grpd_res['sample_ids'] = sample_labels
+                
+                # cast thios to a normal dict (rather than a default dict)
+                yield dict(grpd_res)
             return
         
         return f()
