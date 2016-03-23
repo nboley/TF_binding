@@ -25,18 +25,55 @@ from rSeqDNN import init_prediction_script_argument_parser
 from pyTFbindtools.cross_validation import (
     ClassificationResults, ClassificationResult)
 
+model_id_dict = {}
+model_id_dict['T011266_1.02'] = 'D00504.005' # MAX
+model_id_dict['T044268_1.02'] = 'D00328.018' # CTCF
+model_id_dict['T007405_1.02'] = 'D00736.002' # ARID3A
+model_id_dict['T025301_1.02'] = 'D00739.001' # ATF3
+model_id_dict['T044305_1.02'] = 'D00742.002' # BCL11A
+model_id_dict['T153674_1.02'] = 'D00743.001' # BCL3
+model_id_dict['T153671_1.02'] = 'D00744.001' # BCLAF1
+model_id_dict['T014206_1.02'] = 'D00746.004' # BHLHE40
+model_id_dict['T077335_1.02'] = 'D00747.001' # BRCA1
+model_id_dict['T025313_1.02'] = 'D00317.009' # CEBPB
+model_id_dict['T076679_1.02'] = 'D00754.003' # E2F6
+model_id_dict['T044306_1.02'] = 'D00351.009' # EGR1
+model_id_dict['T077988_1.02'] = 'D00356.010' # ELF1
+model_id_dict['T077991_1.02'] = 'D00378.009' # ETS1
+model_id_dict['T081595_1.02'] = 'D00761.001' # FOXA1
+model_id_dict['T077997_1.02'] = 'D00409.004' # GABPA
+model_id_dict['T084684_1.02'] = 'D00766.002' # GATA2
+model_id_dict['T132746_1.02'] = 'D00446.009' # HNF4A
+model_id_dict['T025316_1.02'] = 'D00777.002' # JUN
+model_id_dict['T025286_1.02'] = 'D00776.005' # JUND
+model_id_dict['T025320_1.02'] = 'D00501.004' # MAFF
+model_id_dict['T025323_1.02'] = 'D00503.014' # MAFK
+model_id_dict['T014210_1.02'] = 'D00785.001' # MYC
+model_id_dict['T014191_1.02'] = 'D00784.004' # MXI1
+model_id_dict['T093268_1.02'] = 'D00786.001' # NANOG
+model_id_dict['T153691_1.02'] = 'D00789.003' # NFYB
+model_id_dict['T153683_1.02'] = 'D00559.006' # NRF1
+model_id_dict['T044249_1.02'] = 'D00799.001' # REST
+model_id_dict['T138768_1.02'] = 'D00619.007' # RFX5
+model_id_dict['T153703_1.02'] = 'D00804.002' # SIN3A
+model_id_dict['T093385_1.02'] = 'D00806.003' # SIX5
+model_id_dict['T044652_1.02'] = 'D00650.007' # SP1
+model_id_dict['T044474_1.02'] = 'D00809.002' # SP2
+model_id_dict['T077981_1.02'] = 'D00655.006' # SPI1
+model_id_dict['T150542_1.02'] = 'D00817.001' # TBP
+model_id_dict['T014212_1.02'] = 'D00818.003' # TCF12
+model_id_dict['T144100_1.02'] = 'D00819.002' # TCF7L2
+model_id_dict['T151689_1.02'] = 'D00679.004' # TEAD4
+model_id_dict['T014218_1.02'] = 'D00700.006' # USF1
+model_id_dict['T014176_1.02'] = 'D00823.002' # USF2
+model_id_dict['T044261_1.02'] = 'D00710.007' # YY1
+model_id_dict['T044578_1.02'] = 'D00825.001' # ZBTB33
+model_id_dict['T044594_1.02'] = 'D00714.004' # ZBTB7A
+model_id_dict['T044468_1.02'] = 'D00723.006' # ZNF143
+
 def get_deepbind_model_id(tf_id):
-    if tf_id=='T014210_1.02': # MYC
-        return 'D00785.001'
-    elif tf_id=='T011266_1.02': # MAX
-        return 'D00504.005'
-    elif tf_id=='T044261_1.02': # YY1
-        return 'D00710.007'
-    elif tf_id=='T044268_1.02': # CTCF
-        return 'D00328.018'
-    else:
-        raise ValueError('this TF is not supported for DeepBind predictions!')
-    
+    return model_id_dict[tf_id]
+
 def get_probability_from_score(score):
     '''pass scores through sigmoid
     '''    
@@ -135,7 +172,8 @@ def parse_args():
             args.tf_id,
             args.annotation_id,
             args.half_peak_width, 
-            args.max_num_peaks_per_sample )
+            args.max_num_peaks_per_sample,
+            include_ambiguous_peaks=True)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
@@ -150,6 +188,9 @@ def main():
     for fold_i, (train, valid) in enumerate(
             peaks_and_labels.iter_train_validation_subsets(
                 validation_contigs=validation_contigs)):
+        valid = valid.remove_ambiguous_labeled_entries()
+        print "sample: ", valid.sample_ids
+        print "contigs: ", valid.contigs
         peaks_and_labels_iterator = valid.thread_safe_iter()
         ofname = "scores.%s.fold%i.txt" % (tf_id, fold_i)
         ofp = ThreadSafeFile(ofname, "w")
