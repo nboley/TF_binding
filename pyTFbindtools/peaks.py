@@ -498,3 +498,12 @@ def load_matching_dnase_foldchange_fnames_from_DB(tf_id, annotation_id):
     samples = load_samples_from_db_by_tfid(tf_id, annotation_id)
 
     return load_DNASE_foldchange_files_from_db_by_sample(samples)
+
+def load_conservation_fnames_from_DB():
+    """
+    Returns sequence conservation filenames.
+    """
+    from DB import load_conservation_files_from_db
+
+    return load_conservation_files_from_db()
+

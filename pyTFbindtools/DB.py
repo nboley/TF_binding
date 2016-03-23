@@ -331,5 +331,15 @@ def load_DNASE_foldchange_files_from_db_by_sample(samples):
             rv[sample_id] = dnase_foldchange_fname
     return rv
 
+def load_conservation_files_from_db():
+    cur = conn.cursor()
+    query = """
+    SELECT local_filename
+      FROM sequence_conservation;
+    """
+    cur.execute(query)
+    rv = [fname for (fname,) in cur.fetchall()]
+    return rv
+
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")
