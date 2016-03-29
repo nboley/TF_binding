@@ -1129,12 +1129,12 @@ class PartitionedSamplePeaksAndLabels():
 
         ### XXXXX - PUT THIS IN THE ACTUAL GENERATOR
         ## build the sample labels array
-        sample_labels = np.zeros(
-            (batch_size, len(data_subset)), dtype='float32')
-        for i in xrange(len(data_subset)):
-            start_index = (0 if i == 0 else np.cumsum(inner_batch_sizes)[i-1])
-            stop_index = np.cumsum(inner_batch_sizes)[i]
-            sample_labels[start_index:stop_index,i] = 1
+        #sample_labels = np.zeros(
+        #    (batch_size, len(data_subset)), dtype='float32')
+        #for i in xrange(len(data_subset)):
+        #    start_index = (0 if i == 0 else np.cumsum(inner_batch_sizes)[i-1])
+        #    stop_index = np.cumsum(inner_batch_sizes)[i]
+        #    sample_labels[start_index:stop_index,i] = 1
         iterators = OrderedDict(
             (sample_id, 
              data.iter_batches(i_batch_size, repeat_forever, **kwargs) )
@@ -1163,7 +1163,7 @@ class PartitionedSamplePeaksAndLabels():
                     (cnts.sum(), len(iterators)), dtype='float32')
                 for i in xrange(len(data_subset)):
                     start_index = (0 if i == 0 else np.cumsum(cnts)[i-1])
-                    stop_index = np.cumsum(inner_batch_sizes)[i]
+                    stop_index = np.cumsum(cnts)[i]
                     sample_labels[start_index:stop_index,i] = 1                
                 assert 'sample_ids' not in grpd_res
                 grpd_res['sample_ids'] = sample_labels
