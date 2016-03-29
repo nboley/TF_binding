@@ -19,7 +19,6 @@ from ScoreModel import (
     plot_convolutions )
 from get_signal import encode_peaks_sequence_into_array, encode_peaks_bigwig_into_array
 
-from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
 from keras.models import Sequential
 from keras.layers.core import (
@@ -80,10 +79,14 @@ def balance_matrices(X, labels, balance_option='downsample'):
         neg_full = X[(labels == 0)]
     if balance_option=='downsample':
         sample_size = min(pos_full.shape[0], neg_full.shape[0])
-        pos = pos_full[
-            np.random.choice(pos_full.shape[0], sample_size, replace=False)]
-        neg = neg_full[
-            np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+        if neg_full.shape[0] > pos_full.shape[0]:
+            pos = pos_full
+            neg = neg_full[
+                np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+        else:
+            neg = neg_full
+            pos = pos_full[
+                np.random.choice(pos_full.shape[0], sample_size, replace=False)]
     elif balance_option=='upsample':
         sample_size = max(pos_full.shape[0], neg_full.shape[0])
         pos = pos_full[
