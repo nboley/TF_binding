@@ -77,7 +77,7 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache='./',
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    assert local_norm_halfwidth>pk_width
+    assert local_norm_halfwidth>1.*pk_width/2
     print('num of peaks: %i' % len(peaks))
     intervals=get_intervals_from_peaks(peaks)
     print('num of intervals: %i' % len(intervals))
@@ -88,14 +88,13 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache='./',
                                           interval.start + offset,
                                           interval.stop - offset)
                                  for interval in intervals]
-            print('num of slopped intervals: %i' % len(slopped_intervals))
             if isinstance(cache, basestring):
                 data = bigWigFeaturize.new(bigwig_fnames, 2*local_norm_halfwidth,
                                            intervals=slopped_intervals, cache=cache)
             else:
                 data = bigWigFeaturize.new(bigwig_fnames, 2*local_norm_halfwidth,
                                            intervals=slopped_intervals)
-            print('finished loadin bigwig')
+            assert len(data)==len(peaks), "Num of signal regions: %i!" % len(data)
             mean = data.mean(axis=3, keepdims=True)
             std = data.std(axis=3, keepdims=True)
             data_norm = (data[:, :, :, -offset:(-offset+width)] - mean) / std
@@ -108,10 +107,17 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache='./',
             return bigWigFeaturize.new(bigwig_fnames, pk_width,
                                        intervals=intervals)
 
-def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
+def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fnames,
                             reverse_complement=False):
     """
     Get sequence of signal arrays.
+
+    Parameters
+    ----------
+    peaks: sequence of NarrowPeak
+    genome_fasta: FastaFile
+    bigwig_fnames: sequence
+    reverse_complement: boolean
     """
     signal_arrays = []
     if genome_fasta is not None:
@@ -121,8 +127,8 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
             sequence_array = np.concatenate((sequence_array,
                                              sequence_array[:, :, ::-1, ::-1]))
         signal_arrays.append(sequence_array)
-    if bigwig_fname is not None:
-        print('loading features from bigwig...')
+    for bigwig_fname in bigwig_fnames:
+        print('loading features from bigwig %s' % bigwig_fname)
         bigwig_array = encode_peaks_bigwig_into_array(peaks, [bigwig_fname])
         if reverse_complement:
             bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
@@ -131,6 +137,7 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fname,
     return signal_arrays
 
 def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fname_dict,
+                                       sample_independent_bigwigs=None,
                                        reverse_complement=False,
                                        return_labels=False, return_scores=False):
     """
@@ -142,6 +149,8 @@ def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fn
     genome_fasta : FastaFile
     bigwig_fname_dict : dict
         dictionary with sample names as keys and filenames as values.
+    sample_independent_bigwigs: sequence, optional
+        sample independent bigwig signals (e.g. conservation).
     reverse_complement : boolean, default: false
     return_labels : boolean, default: false
     return_scores : boolean, default: false
@@ -159,12 +168,14 @@ def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fn
     samples = peaks_and_labels.sample_ids
     contigs = peaks_and_labels.contigs
     for sample in samples:
-        if sample=='E118': ## E118 DNase file is broken, needs to be fixed
-            continue
         peaks_and_labels_sample = peaks_and_labels.subset_data([sample], contigs)
         print 'loading sample %s' % sample
+        bigwig_fnames = [bigwig_fname_dict[sample]]
+        if sample_independent_bigwigs is not None:
+            for bigwig_fname in sample_independent_bigwigs:
+                bigwig_fnames.append(bigwig_fname)
         per_sample_signal_arrays.append(get_peaks_signal_arrays(peaks_and_labels_sample.peaks,
-                                                                genome_fasta, bigwig_fname_dict[sample],
+                                                                genome_fasta, bigwig_fnames,
                                                                 reverse_complement=reverse_complement))
         if return_labels:
             if reverse_complement:
