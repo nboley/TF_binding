@@ -1278,6 +1278,9 @@ class JointBindingModel():
                         index_name = self._multitask_labels[key][index]
                     else:
                         index_name = str(index)
+                    # skip purely ambiguous labels
+                    if (labels[key][sample_indices,index] < -0.5).all():
+                        continue
                     res = ClassificationResult(
                         labels[key][sample_indices,index], 
                         pred_prbs[key][sample_indices,index] > 0.5, 
@@ -1285,7 +1288,7 @@ class JointBindingModel():
                     )
                     classification_results[
                         ("sample%s-%s" % (
-                            self.sample_ids[sample_index], key.split("-")[-1]), 
+                            self.sample_ids[sample_index], key.split("_")[-1]), 
                          index_name)
                     ] = res
         return classification_results
@@ -1456,7 +1459,6 @@ def many_tfs_main():
         sample_ids, factor_names=tf_names, n_samples=5000)
     for batch in pks.iter_train_data(10):
         break
-    #assert False
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
     model.train(n_samples, 500, 60)
     model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))

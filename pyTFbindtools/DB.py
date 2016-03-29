@@ -502,7 +502,6 @@ def load_tf_ids(tf_names):
     tf_ids = []
     for tf_name in tf_names:
         cur.execute(query, [tf_name,])
-        print tf_name
         tf_ids.append(cur.fetchall()[0][0])
     return tf_ids
 

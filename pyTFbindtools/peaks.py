@@ -746,21 +746,32 @@ class SamplePeaksAndLabels():
             assert len(self.tf_ids) == len(self._factor_names)
         return self._factor_names
 
-    def subset_pks(self, pk_indices=slice(None), factor_indices=slice(None)):
+    def subset_pks(self, pk_indices=slice(None)) :#, factor_indices=slice(None), tfids=None):
         """Return a copy of self only containing the peaks sepcified by indices
 
         indices: numpy array of indices to include
         """
-        
-        #assert False
+        #if tfids==None:
+        #    if not isinstance(factor_indices, slice) and (factor_indices < -0.5).any() and tfids is None:
+        #        raise ValueError, "Inserting a factor requires specifying the tfids. "
+
         return SamplePeaksAndLabels(
             self.sample_id,
-            np.array(self.tf_ids)[factor_indices],
+            self.tf_ids,
             self.pks[pk_indices], 
             self.fwd_seqs[pk_indices],
-            self.idr_optimal_labels[pk_indices, factor_indices], 
-            self.relaxed_labels[pk_indices, factor_indices]
+            self.idr_optimal_labels[pk_indices, :], 
+            self.relaxed_labels[pk_indices, :]
         )
+        
+        #return SamplePeaksAndLabels(
+        #    self.sample_id,
+        #    np.array(self.tf_ids)[factor_indices],
+        #    self.pks[pk_indices], 
+        #    self.fwd_seqs[pk_indices],
+        #    self.idr_optimal_labels[pk_indices, factor_indices], 
+        #    self.relaxed_labels[pk_indices, factor_indices]
+        #)
 
     def balance_data(self):
         labels = self.labels
@@ -781,22 +792,30 @@ class SamplePeaksAndLabels():
         if desired_factor_names is None:
             return self
 
-        # keep the top n_samples peaks and max_num_tfs tfs
-        all_factor_names = self.factor_names
-        # make sure all of the tfnames actually exist
-        #assert ( desired_factor_names is None 
-        #         or all(factor_name in self.factor_names 
-        #                for factor_name in desired_factor_names) 
-        #)
-        # filter the tf set 
-        filtered_tfs = sorted([
-            (factor_name, tf_id, i) for i, (factor_name, tf_id) 
-            in enumerate(zip(all_factor_names, self.tf_ids)) 
-            if factor_name in desired_factor_names
-        ])
-        factor_names, tf_ids, tf_indices = zip(*filtered_tfs)
+        # find the tfids associated with these factor names
+        from pyTFbindtools.DB import load_tf_ids
+        desired_tf_ids = load_tf_ids(desired_factor_names)
+        
+        tf_indices = []
+        for tf_id in desired_tf_ids:
+            try: tf_indices.append(self.tf_ids.index(tf_id))
+            except ValueError: tf_indices.append(-1)
+        tf_indices = np.array(tf_indices)
 
-        return self.subset_pks(factor_indices=np.array(tf_indices))
+        new_idr_optimal_labels = np.insert(
+            self.idr_optimal_labels, 0, -1, axis=1)
+        new_relaxed_labels = np.insert(
+            self.relaxed_labels, 0, -1, axis=1)
+        print new_idr_optimal_labels.shape
+        
+        return SamplePeaksAndLabels(
+            self.sample_id,
+            desired_tf_ids,
+            self.pks, 
+            self.fwd_seqs,
+            new_idr_optimal_labels[:, tf_indices+1], 
+            new_relaxed_labels[:, tf_indices+1]
+        )
 
     def subset_pks_by_rank(self, max_num_peaks, use_top_accessible, seed=0):
         """Return a copy of self containing at most max_num_peaks peaks.
@@ -911,7 +930,10 @@ class SamplePeaksAndLabels():
         
         # set the ambiguous labels to -1
         self.ambiguous_pks_mask = (
-            self.idr_optimal_labels != self.relaxed_labels)
+            (self.idr_optimal_labels < -0.5)
+            | (self.relaxed_labels < -0.5)
+            | (self.idr_optimal_labels != self.relaxed_labels)
+        )
         self.clean_labels = self.idr_optimal_labels.copy()
         self.clean_labels[self.ambiguous_pks_mask] = -1
 
