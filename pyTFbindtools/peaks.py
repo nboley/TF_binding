@@ -36,6 +36,19 @@ class NarrowPeak(NarrowPeakData):
     def pk_width(self):
         return self.stop - self.start
 
+    def outside_contig_edge(self, contig_edge, genome_fasta):
+        """
+        Checks if peak is within specified distance of contig edge.
+        Note: norm window starts from peak center, not summit.
+        """
+        contig_start_edge = 0 + contig_edge
+        contig_stop = genome_fasta.lengths[genome_fasta.references.index(self.contig)]
+        contig_end_edge = contig_stop - contig_edge
+        if self.start>contig_start_edge and self.stop<=contig_end_edge:
+            return True
+        else:
+            return False
+
 class Peaks(list):
     pass
 
@@ -160,6 +173,15 @@ class PeaksAndLabels():
         return PeaksAndLabels(
             pk_and_label for pk_and_label in self
             if pk_and_label.label == label
+        )
+
+    def filter_by_contig_edge(self, contig_edge, genome_fasta):
+        """
+        Removes peaks where norm window runs over chr edge.
+        """
+        return PeaksAndLabels(
+            pk_and_label for pk_and_label in self
+            if pk_and_label.peak.outside_contig_edge(contig_edge, genome_fasta)
         )
 
     def iter_train_validation_subsets(
