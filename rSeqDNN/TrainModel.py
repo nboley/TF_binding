@@ -250,10 +250,11 @@ def main_train(main_args, train_args):
                 model.model.load_weights(weights_fname)
             else:
                 model = KerasModel(signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
+            model_ofname_infix = valid.samples[0] if len(peaks_and_labels.samples[0])>0 else str(fold_index+1)
             fit_model = model.train(
                 fitting_signal_arrays, fitting_labels, fitting_scores,
                 stopping_signal_arrays, stopping_labels, stopping_scores,
-                '%s.%i' % (model_ofname_prefix, fold_index+1))
+                '%s.%s' % (model_ofname_prefix, model_ofname_infix))
         if isinstance(bigwig_features, dict):
             (valid_signal_arrays,
              valid_labels,
