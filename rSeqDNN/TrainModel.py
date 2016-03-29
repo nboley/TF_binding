@@ -14,6 +14,7 @@ from pyTFbindtools.peaks import (
     load_labeled_peaks_from_beds,
     load_labeled_peaks_from_fastas,
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    load_conservation_fnames_from_DB,
     load_matching_dnase_foldchange_fnames_from_DB
 )
 from pyTFbindtools.cross_validation import (
@@ -44,6 +45,10 @@ def parse_args():
                         help='ignore sequence features')
     parser.add_argument('--include-dnase-foldchange',  action='store_true',
                         help='integrate dnase features when loading from db')
+    parser.add_argument('--conservation-features',  default=None, type=str,
+                        help='bigwig file to get conservation features')
+    parser.add_argument('--include-conservation',  action='store_true',
+                        help='integrate conservation features when loading from db')
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
     train_parser = subparsers.add_parser('train', help='training help')
     test_parser = subparsers.add_parser('test', help='testing help')
@@ -109,6 +114,8 @@ def parse_args():
             include_ambiguous_peaks=True)
         if args.include_dnase_foldchange:
             args.bigwig_features = load_matching_dnase_foldchange_fnames_from_DB(args.tf_id, args.annotation_id)
+        if args.include_conservation:
+            args.conservation_features = load_conservation_fnames_from_DB()
     else:
         if args.pos_regions != None:
             assert args.neg_regions != None, \
@@ -132,6 +139,7 @@ def parse_args():
                   args.single_celltype,
                   args.validation_contigs,
                   args.include_model_report,
+                  args.conservation_features,
                   args.bigwig_features)
     if args.command=='train':
         command_args = ( args.model_prefix,
@@ -154,6 +162,7 @@ def main_train(main_args, train_args):
       single_celltype,
       validation_contigs,
       include_model_report,
+      conservation_features,
       bigwig_features ) = main_args
     ( model_ofname_prefix,
       model_fname,
@@ -162,7 +171,9 @@ def main_train(main_args, train_args):
       jitter_peaks_by,
       target_metric,
       run_grid_search ) = train_args
+    # general preprocessing
     peaks_and_labels = peaks_and_labels.remove_ambiguous_labeled_entries()
+    peaks_and_labels = peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -171,7 +182,6 @@ def main_train(main_args, train_args):
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
-        print 'single celltype: ', single_celltype
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
             validation_contigs=validation_contigs, single_celltype=single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
@@ -192,11 +202,13 @@ def main_train(main_args, train_args):
             (fitting_signal_arrays,
              fitting_labels,
              fitting_scores ) = get_peaks_signal_arrays_by_samples(fitting_data, genome_fasta, bigwig_features,
+                                                                   sample_independent_bigwigs=conservation_features,
                                                                    reverse_complement=True,
                                                                    return_labels=True, return_scores=True)
             (stopping_signal_arrays,
              stopping_labels,
              stopping_scores ) = get_peaks_signal_arrays_by_samples(stopping_data, genome_fasta, bigwig_features,
+                                                                    sample_independent_bigwigs=conservation_features,
                                                                     reverse_complement=False,
                                                                     return_labels=True, return_scores=True)
         else:
@@ -246,6 +258,7 @@ def main_train(main_args, train_args):
             (valid_signal_arrays,
              valid_labels,
              valid_scores ) = get_peaks_signal_arrays_by_samples(valid, genome_fasta, bigwig_features,
+                                                                 sample_independent_bigwigs=conservation_features,
                                                                  reverse_complement=False,
                                                                  return_labels=True, return_scores=True)
         else:
@@ -301,6 +314,7 @@ def main_test(main_args, test_args):
       single_celltype,
       validation_contigs,
       include_model_report,
+      conservation_features,
       bigwig_features ) = main_args
     model_fname, weights_fname = test_args
     np.random.seed(random_seed) # fix random seed
@@ -318,6 +332,7 @@ def main_test(main_args, test_args):
             (valid_signal_arrays,
              valid_labels,
              valid_scores ) = get_peaks_signal_arrays_by_samples(valid, genome_fasta, bigwig_features,
+                                                                 sample_independent_bigwigs=conservation_features,
                                                                  reverse_complement=False,
                                                                  return_labels=True, return_scores=True)
         else:
