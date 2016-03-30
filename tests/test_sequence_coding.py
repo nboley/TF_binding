@@ -22,6 +22,7 @@ def johnies_code_many_seqs(sequences):
         letter = letters[i]
         one_hot_encoding[:, i, :] = seq_Array == letter
 
+# test this
 def johnies_code_seq(seq):
     k = len(seq)
     seq_Array = np.asarray(list(seq.upper()))

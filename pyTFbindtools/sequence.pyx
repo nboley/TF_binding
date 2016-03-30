@@ -51,53 +51,6 @@ for character_code in range(256):
 # END build lookup table
 ################################################################################
 
-cdef int code_base(unsigned char base):
-    if base == 'A':
-        return 0
-    if base == 'a':
-        return 0
-    if base == 'C':
-        return 1
-    if base == 'c':
-        return 1
-    if base == 'G':
-        return 2
-    if base == 'g':
-        return 2
-    if base == 'T':
-        return 3
-    if base == 't':
-        return 3
-    return 4
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def code_seq(char* seq):
-    cdef int i
-    cdef int length = len(seq)
-    cdef char coded_base
-    cdef np.ndarray[np.int32_t, ndim=2] coded_seq = np.zeros((5, length), dtype=np.int32)
-    #coded_seq = np.zeros((5,len(seq)))
-    for i in range(length):
-        coded_seq[code_base(seq[i]), i] = 1
-    return coded_seq
-
-@cython.boundscheck(False)
-def one_hot_encode_sequences_FORLOOP(sequences):
-    cdef int position, sequence_index, encoding_index
-    cdef int num_sequences = len(sequences)
-    cdef int sequence_length = len(sequences[0])
-    cdef char *sequence
-    cdef np.ndarray[DTYPE_t, ndim=3] encoded_sequences = \
-        np.empty((num_sequences, sequence_length, NUM_BASES), DTYPE)
-    for sequence_index in range(num_sequences):
-        sequence = PyString_AsString(sequences[sequence_index])
-        for position in range(sequence_length):
-            for encoding_index in range(NUM_BASES):
-                encoded_sequences[sequence_index, position, encoding_index] = \
-                base_prbs[sequence[position] * NUM_BASES + encoding_index]
-    return encoded_sequences
-
 @cython.boundscheck(False)
 cdef int one_hot_encode_c_sequences_MEMCPY(char** sequences, 
                                            int num_sequences,
@@ -169,8 +122,11 @@ def one_hot_encode_sequences(sequences):
     finally:
         free(c_sequences)
 
+def one_hot_encode_sequence(sequence):
+    return one_hot_encode_sequences((sequence,))
+
 def profile( seq_len, n_seq, n_test_iterations ):
-    """Compare the speed of the two one-hot-encoding implementations.
+    """Test the speed of the one-hot-encoding implementation.
 
     To use this from the command line run:
     python -c "import pyximport; pyximport.install(); import test; test.profile(200000, 1000, 1)"
@@ -179,25 +135,7 @@ def profile( seq_len, n_seq, n_test_iterations ):
     sequence = 'A'*seq_len
     sequences = [sequence for x in xrange(n_seq)]
 
-    t_FORLOOP = timeit.Timer(
-        lambda: one_hot_encode_sequences_FORLOOP(sequences) )
     t_MEMCPY = timeit.Timer(
         lambda: one_hot_encode_sequences(sequences) )
-    print "ForLoop:", t_FORLOOP.timeit(number=n_test_iterations)
-    print "MemCpy :", t_MEMCPY.timeit(number=n_test_iterations)
+    print "Time :", t_MEMCPY.timeit(number=n_test_iterations)
     return 
-
-def test_implementations(n_tests=1000):
-    import random
-    def sample_random_seqs(n_sims, seq_len):
-        return ["".join(random.choice('ACGT') for j in xrange(seq_len))
-                for i in xrange(n_sims)]
-
-    for i in xrange(n_tests):
-        for seq_len in (10, 100, 1000, 10000):
-            seqs = sample_random_seqs(10, seq_len)
-            code_1 = one_hot_encode_sequences(seqs)
-            code_2 = one_hot_encode_sequences_FORLOOP(seqs)
-            assert (np.abs(code_1 - code_2)).sum() < 1e-6
-    print "PASS"
-    return

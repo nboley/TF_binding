@@ -11,8 +11,7 @@ class ChIPSeqReads(Reads):
         return "<ChIPSeqReads.%s.%i instance>" % (paired, self.frag_len)
 
     def build_unpaired_reads_fragment_coverage_array( 
-            self, chrm, strand, start, stop, binding_site_size, 
-            window_size=None ):
+            self, chrm, start, stop, window_size=None ):
         if window_size == None:
             window_size = self.frag_len
         assert stop >= start
@@ -20,8 +19,8 @@ class ChIPSeqReads(Reads):
         cvg = numpy.zeros(full_region_len)
         for rd, strand in self.iter_reads_and_strand(chrm, start, stop):
             if strand == '+': 
-                rd_start = rd.pos # + binding_site_size
-                rd_stop = rd.pos + window_size # + binding_site_size
+                rd_start = rd.pos
+                rd_stop = rd.pos + window_size
             elif strand == '-': 
                 rd_start = rd.aend - window_size
                 rd_stop = rd.aend
@@ -39,15 +38,15 @@ class ChIPSeqReads(Reads):
              frag_len_dist=None):        
         assert self.is_indexed()
 
-        "ChIPSeq.GM12878.CTCF.BSID-ENCBS195XMM.REPID-1_1.EXPID-ENCSR000DRZ.bam"
-        data = os.path.basename(self.filename).split('.')
-        self.biosample = data[1] 
-        self.factor = data[2]
-        self.bsid = data[3].split("-")[1]
-        self.experiment_id = data[5].split("-")[1]
-        self.repid = data[4].split("-")[1]
+        #"ChIPSeq.GM12878.CTCF.BSID-ENCBS195XMM.REPID-1_1.EXPID-ENCSR000DRZ.bam"
+        #data = os.path.basename(self.filename).split('.')
+        #self.biosample = data[1] 
+        #self.factor = data[2]
+        #self.bsid = data[3].split("-")[1]
+        #self.experiment_id = data[5].split("-")[1]
+        #self.repid = data[4].split("-")[1]
 
-        self.id = "%s.%s.%s" % (self.factor, self.bsid, self.repid)
+        #self.id = "%s.%s.%s" % (self.factor, self.bsid, self.repid)
         
         reads_are_stranded = True
         

@@ -1,5 +1,7 @@
 rSeqDNN
 
+Make sure the sample weighting is working correctly
+
 1) model development
    a. single TF sequence models compared with deepsea and deppbind
    b. put simulations into testing framework 

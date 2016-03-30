@@ -16,6 +16,9 @@ import gzip, io
 
 from multiprocessing import Value
 
+import psycopg2
+
+from DB import conn, find_cisbp_tfids, insert_ENCODE_bam_into_db, find_or_insert_ENCODE_experiment
 ExperimentFile = namedtuple('ExperimentFile', [
     'exp_id', 'assay',
     'target_id', 
@@ -23,9 +26,69 @@ ExperimentFile = namedtuple('ExperimentFile', [
     'assembly',
     'file_format', 'file_format_type', 'output_type', 'file_loc'])
 
-BASE_URL = "https://www.encodeproject.org/"
+BASE_URL = "http://encodeproject.org/"
 
 chipseq_peaks_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_ChIPseq_peaks/"
+chipseq_bams_base_dir = "/mnt/lab_data/kundaje/users/nboley/TF_binding/ENCODE_ChIPseq_bams/"
+
+def find_or_insert_experiment_from_called_peaks(called_peaks):
+    cur = conn.cursor()
+
+    # first check to see if the experiment is already in the DB. If
+    # so, we are done
+    encode_exp_ids = set(
+        called_peak.exp_id for called_peak in called_peaks)
+    assert len(encode_exp_ids) == 1, str(encode_exp_ids)
+    encode_exp_id = encode_exp_ids.pop()
+    query = """
+    SELECT encode_experiment_id 
+      FROM encode_chipseq_experiments 
+     WHERE encode_experiment_id = %s;
+    """
+    cur.execute(query, [encode_exp_id,])
+    # if the experiment is already there, we are done
+    if len(cur.fetchall()) == 1:
+        return
+    # otherwise, insert everything
+    encode_target_ids = set(
+        called_peak.target_id for called_peak in called_peaks)
+    assert len(encode_target_ids) == 1
+    encode_target_id = encode_target_ids.pop()
+    
+    # find our associated target id 
+    query = """
+    SELECT chipseq_target_id 
+      FROM chipseq_targets 
+     WHERE encode_target_id = %s
+    """
+    cur.execute(query, [encode_target_id,])
+    res = cur.fetchall()
+    
+    # if we can't find a matching tf id, insert it
+    if len(res) == 0:
+        target_info = find_target_info(encode_target_id)
+        query = "INSERT INTO chipseq_targets (encode_target_id, tf_id, organism, tf_name, uniprot_ids, ensemble_gene_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING chipseq_target_id"
+        cur.execute(query, [encode_target_id, 
+                            target_info.cisbp_id, 
+                            target_info.organism,
+                            target_info.tf_name,
+                            target_info.uniprot_ids, 
+                            target_info.ensemble_ids])
+        res = cur.fetchall()
+    assert len(res) == 1
+    target_id = res[0][0]
+
+    sample_types = set(
+        called_peak.sample_type for called_peak in called_peaks)
+    assert len(sample_types) == 1
+    sample_type = sample_types.pop()
+    # add the experiment data
+    query = "INSERT INTO encode_chipseq_experiments " \
+          + "(encode_experiment_id, target, sample_type) " \
+          + "VALUES (%s, %s, %s)"
+    cur.execute(query, [
+        encode_exp_id, target_id, sample_type])
+    return
 
 ################################################################################
 #
@@ -56,11 +119,24 @@ def find_ENCODE_DCC_experiment_metadata(experiment_id):
               else None)
             )
 
+def find_ENCODE_DCC_experiment_controls(experiment_id):
+    """Find metadata associated with an ENCODE experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to find files for. 
+    Returns: labmetadata, description, num_treatments
+    """
+    URL = "https://www.encodeproject.org/experiments/{}/".format(experiment_id)
+    response = requests.get(URL, headers={'accept': 'application/json'})
+    response_json_dict = response.json()
+    return [x['accession'] for x in response_json_dict['possible_controls']]
+
 ################################################################################
 #
 # Find files associated with a particular ENCODE experiment ID
 #
 ################################################################################
+
 
 def find_ENCODE_DCC_experiment_files(experiment_id):
     """Iterate over files associated with an ENCODE experiment.
@@ -86,7 +162,6 @@ def find_ENCODE_DCC_experiment_files(experiment_id):
         key = (rep_rec['biological_replicate_number'], 
                rep_rec['technical_replicate_number'])
         replicates[key] = rep_rec
-
 
     for file_rec in response_json_dict['files']:
         file_format = file_rec['file_format']
@@ -218,7 +293,7 @@ def find_ENCODE_DNASE_experiment_ids(assemblies):
     # rather than the string iterator
     if isinstance(assemblies, str): assemblies = [assemblies,]
     
-    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=DNase-seq&{}&limit=all&format=json".format(
+    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=DNase-seq&award.project=ENCODE&{}&limit=all&format=json&files.file_type=bam".format(
         "&".join("assembly=%s"%x for x in assemblies) )
     response = requests.get(URL, headers={'accept': 'application/json'})
     response_json_dict = response.json()
@@ -289,6 +364,17 @@ def download_and_index_peak_file(location, output_fname):
     
     cmd = " && ".join(
         (download_cmd, sort_and_compress_cmd, mv_cmd, index_cmd)
+    ).format(URL=location, 
+             FNAME=location.split("/")[-1], 
+             HR_FNAME=output_fname )
+    return os.system(cmd)
+
+def download_and_index_bam(location, output_fname):
+    download_cmd = "wget --quiet {URL} -O {HR_FNAME}"
+    index_cmd = "samtools index {HR_FNAME}"
+    
+    cmd = " && ".join(
+        (download_cmd, index_cmd)
     ).format(URL=location, 
              FNAME=location.split("/")[-1], 
              HR_FNAME=output_fname )
@@ -387,21 +473,97 @@ def download_and_index_bams():
                      BASE_URL[:-1]+file_data.file_loc, 
                      human_readable_ofname))
 
+def add_chipseq_controls():
+    from DB import conn
+    cur = conn.cursor()
+    query = "select distinct encode_experiment_id from encode_chipseq_bam_files NATURAL JOIN encode_chipseq_experiments where control is NULL and target not IN (select chipseq_target_id from chipseq_targets where tf_name = 'Control');"
+    cur.execute(query, [])
+    experiment_ids = [ x[0] for x in cur.fetchall()]
+    for exp_index, experiment_id in enumerate(experiment_ids): #find_ENCODE_chipseq_experiment_ids('hg19'):
+        print exp_index, len(experiment_ids), experiment_id
+        for control in find_ENCODE_DCC_experiment_controls(experiment_id):
+            try: files_data = list(find_ENCODE_DCC_bams(control))
+            except: continue
+            for file_data in files_data:
+                if file_data.assembly != 'hg19': continue
+                control_exp_id = find_or_insert_chipseq_experiment(
+                    control, file_data.target_id, file_data.sample_type)
+                print "Control Exp ID:", control_exp_id
+                # insert the control file into the DB
+                try: 
+                    control_key = insert_chipseq_bam_into_db(file_data)
+                except Exception, inst:
+                    query = """
+                    SELECT encode_chipseq_bam_key 
+                      FROM encode_chipseq_bam_files
+                     WHERE remote_filename = %s;
+                    """
+                    cur.execute(query, [BASE_URL[:-1]+file_data.file_loc,])
+                    res = cur.fetchall()
+                    print "Matching bams", res
+                    assert len(res) == 1
+                    assert len(res[0]) == 1
+                    control_key = res[0][0]
+                # find the matching experiment file
+                query = """
+                SELECT encode_chipseq_bam_key, control
+                  FROM encode_chipseq_bam_files, genomes
+                 WHERE encode_chipseq_bam_files.annotation = genomes.annotation_id
+                   AND encode_experiment_id = %s
+                   AND bsid = %s
+                   AND rep_key = %s
+                   AND genomes.name = %s;
+                """
+                cur.execute(query, [
+                    experiment_id, 
+                    file_data.bsid, 
+                    str(file_data.rep_key).replace(" ",""), 
+                    file_data.assembly
+                ])
+                #print cur.mogrify(query, [
+                #    experiment_id, 
+                #    file_data.bsid, 
+                #    str(file_data.rep_key).replace(" ",""), 
+                #    file_data.assembly
+                #])
 
-def iterate_hg19_chipseq_experiments():
-    """This is just an example of iterating through the chipseq experiments.
+                res = cur.fetchall()
+                print "Bams to update", res, control_key
+                if len(res) == 0: continue
+                #assert len(res) == 1
+                #assert len(res[0]) == 2
+                for experiment_file_key, curr_control in res:
+                    if curr_control is None:
+                        with conn:
+                            query = "UPDATE encode_chipseq_bam_files SET control=%s WHERE encode_chipseq_bam_key = %s;"
+                            print query
+                            cur.execute(query, [control_key, experiment_file_key])
+                    else:
+                        print "Curr vs New:", curr_control, control_key
+                print
+        #print list(find_ENCODE_DCC_bams(experiment_id))
 
-    """
-    for experiment_id in find_ENCODE_DNASE_experiment_ids('hg19'):
-        print experiment_id
-        print find_best_ENCODE_DCC_replicate_merged_peak(
-                experiment_id, 'hg19')
-        print
-    return
 
+def sync_dnase_assays(annotation):
+    exp_ids = list(find_ENCODE_DNASE_experiment_ids(annotation))
+    for i, exp_id in enumerate(exp_ids):
+        files_data = list(find_ENCODE_DCC_bams(exp_id))
+        print i, len(exp_ids), exp_id
+        for file_data in files_data:
+            if file_data.assembly != annotation: continue
+            if file_data.file_format != 'bam': continue
+            assert file_data.exp_id == exp_id
+            exp_id = find_or_insert_ENCODE_experiment(
+                exp_id, file_data.sample_type, file_data.assay, file_data.target_id)
+            try: insert_ENCODE_bam_into_db(file_data)
+            except psycopg2.IntegrityError: pass
+
+        controls = find_ENCODE_DCC_experiment_controls(exp_id)
+
+from DB import sync_ENCODE_bam_files
 def main():
-    iterate_hg19_chipseq_experiments()
-    
+    #sync_dnase_assays('hg19')
+    sync_ENCODE_bam_files()
 
 if __name__ == '__main__':
     main()

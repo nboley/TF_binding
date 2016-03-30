@@ -1,21 +1,20 @@
 import sys
-
 import math
-
-import numpy as np
-
-from scipy.optimize import brute, bisect
-from scipy.signal import fftconvolve, convolve
-
 from collections import defaultdict, namedtuple
 
-from sequence import code_seq, one_hot_encode_sequences
+import numpy as np
+from scipy.optimize import brute, bisect
+from scipy.signal import fftconvolve, convolve
+from scipy.stats.mstats import mquantiles
+
+import h5py
+
+from pysam import FastaFile
+
+from sequence import one_hot_encode_sequences
 
 T = 300
 R = 1.987e-3 # in kCal/mol*K
-#R = 8.314e-3 # in kJ
-
-REG_LEN = 100000
 
 base_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 RC_base_map = {'A': 3, 'C': 2, 'G': 1, 'T': 0}
@@ -27,17 +26,15 @@ def logistic(x):
     try: e_x = math.exp(-x)
     except: e_x = np.exp(-x)
     return 1/(1+e_x)
-    #return e_x/(1+e_x)
 
 PwmModel = namedtuple('PwmModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 'pwm']) 
-SelexModel = namedtuple('SelexModel', [
+SelexModelData = namedtuple('SelexModel', [
     'tf_id', 'motif_id', 'tf_name', 'tf_species', 
     'consensus_energy', 'ddg_array']) 
-
-#pickled_motifs_fname = os.path.join(
-#    os.path.dirname(__file__), 
-#    "../data/motifs/human_and_mouse_motifs.pickle.obj")
+class SelexModel(SelexModelData):
+    def __len__(self):
+        return self.ddg_array.shape[0]
 
 def load_pwms_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     import psycopg2
@@ -91,7 +88,7 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
     #  FROM best_selex_models
     #"""
     if tf_names == None and tf_ids == None and motif_ids == None:
-        cur.execute(query)
+        cur.execute(query, [])
     elif tf_names != None and tf_ids == None and motif_ids == None:
         query += " WHERE tf_name in %s"
         cur.execute(query, [tuple(tf_names),])
@@ -115,36 +112,35 @@ def load_selex_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
             tf_ids, tf_names, motif_ids)
     return motifs
 
-def score_region(region, genome, motifs):
-    seq = genome.fetch(region[0], region[1], region[2])
-    motifs_scores = []
-    for motif in motifs:
-        if isinstance(motif, PwmModel):
-            N_row = np.zeros((len(motif.pwm), 1)) + np.log2(0.25)
-            extended_mat = np.hstack((motif.pwm, N_row))
-        elif isinstance(motif, SelexModel):
-            N_row = np.zeros((len(motif.ddg_array), 1))
-            extended_mat = np.hstack((motif.ddg_array, N_row))
-        coded_seq = code_seq(bytes(seq))
-        FWD_scores = -fftconvolve(coded_seq, extended_mat.T, mode='valid')
-        RC_scores = -fftconvolve(
-            coded_seq, np.flipud(np.fliplr(extended_mat.T)), mode='valid')
-        scores = np.vstack((FWD_scores, RC_scores)).max(0)
-        motifs_scores.append(scores)
-    return motifs_scores
+def load_binding_models_from_db(tf_names=None, tf_ids=None, motif_ids=None):
+    selex_motifs = load_selex_models_from_db(tf_names, tf_ids, motif_ids)
+    cisb_motifs = load_pwms_from_db(tf_names, tf_ids, motif_ids)
+    # Get one motif for each and prefer SELEX
+    selex_tf_ids = set(m.tf_id for m in selex_motifs)
+    return selex_motifs+[
+        el for el in cisb_motifs if el.tf_id not in selex_tf_ids]
+
 
 def calc_occ(chem_pot, energies):
     return 1. / (1. + np.exp((-chem_pot+energies)/(R*T)))
 
-def calc_binding_site_energies(coded_seqs, ddg_array):
+def _score_coded_seqs_binding_sites(coded_seqs, score_array):
     n_seqs = coded_seqs.shape[0]
     seq_len = coded_seqs.shape[1]
-    n_bind_sites = seq_len-ddg_array.shape[0]+1
+    n_bind_sites = seq_len-score_array.shape[0]+1
+
+    # fft convolve is faster, but uses a lot more memory, so we 
+    # dont use it for large regions
+    convolve_fn = fftconvolve if seq_len < 1000000 else convolve
+    
     rv = np.zeros((n_seqs, n_bind_sites), dtype='float32')
     for i, coded_seq in enumerate(coded_seqs):
-        rv[i,:] = fftconvolve(
-            coded_seq, np.fliplr(np.flipud(ddg_array)),
-            mode='valid')[0]
+        fwd_scores = convolve_fn(
+            coded_seq, np.fliplr(np.flipud(score_array)),
+            mode='valid')
+        rc_scores = convolve_fn(coded_seq, score_array, mode='valid')
+        rv[i,:] = np.hstack((fwd_scores, rc_scores)).max(1)
+    
     return rv
 
 def score_regions(regions, genome, motifs):
@@ -155,8 +151,60 @@ def score_regions(regions, genome, motifs):
             score_array = motif.pwm
         elif isinstance(motif, SelexModel):
             score_array = motif.ddg_array
-        yield calc_binding_site_energies(coded_seqs, score_array)
+        yield _score_coded_seqs_binding_sites(coded_seqs, score_array)
     return
+
+def build_model_scores_hdf5_file(annotation_id, tf_id):
+    from DB import load_genome_metadata
+    genome_fname = load_genome_metadata(annotation_id).filename
+    genome = FastaFile(genome_fname)
+    models = load_binding_models_from_db(tf_ids=[tf_id,])
+    assert len(models) == 1
+    model = models[0]
+    
+    # open a file to write the scores to
+    fname = "/srv/scratch/nboley/projects/hd5_scoring/binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (
+        annotation_id, model.motif_id)
+    
+    # check to see if the file exists and, if it does, raise an error
+    try: 
+        with open(fname): pass
+    except IOError: 
+        pass
+    else: 
+        raise IOError, "File '%s' already exists" % fname
+    
+    with h5py.File(fname, "w") as ofp:
+        for i, (contig, contig_len) in enumerate(
+                zip(genome.references, genome.lengths)):
+            print >> sys.stderr, "Processing %i/%i" % (
+                i+1, len(genome.references))
+            scores = next(score_regions(
+                [(contig, 0, contig_len),], genome, [model,]))
+            dset = ofp.create_dataset(contig, scores.shape, dtype='f')
+            dset[:] = scores
+
+def score_regions_from_hdf5(regions, annotation_id, model):
+    fname = "/srv/scratch/nboley/projects/hd5_scoring/binding_site_scores.ANNOTATIONID%i.MOTIFID%s.hdf5" % (annotation_id, model.motif_id)
+
+    # if there are a lot of regins, it will be faster to cache the hdf5 file in memory
+    if len(regions) > 20000:
+        print "Pre-cacheing hdf5 file '%s'" % fname
+        driver = 'core'
+    else:
+        driver = None
+
+    with h5py.File(fname, 'r', driver=driver) as fp:
+        for contig, start, stop in regions:
+            yield ( (contig, start, stop), 
+                    fp[contig][0, start:stop-len(model)+1] )
+    return
+
+def aggregate_region_scores(
+        scores, quantile_probs = [0.99, 0.95, 0.90, 0.75, 0.50]):
+    rv = [scores.mean()/len(scores), scores.max()]
+    rv.extend(mquantiles(scores, prob=quantile_probs))
+    return rv
 
 def load_energy_data(fname):
     def load_energy(mo_text):
@@ -221,15 +269,10 @@ def estimate_unbnd_conc_in_region(
                       
     return -log_tf_conc
 
-class DeltaDeltaGArray(np.ndarray):
-    def calc_ddg(self, coded_subseq):
-        """Calculate delta delta G for coded_subseq.
-        """
-        return self[coded_subseq].sum()
-
+class ReducedDeltaDeltaGArray(np.ndarray):
     def calc_base_contributions(self):
-        base_contribs = np.zeros((len(self)/3, 4))
-        base_contribs[:,1:4] = self.reshape((len(self)/3,3))
+        base_contribs = np.zeros((self.motif_len, 4))
+        base_contribs[:,1:4] = self.base_portion.T
         return base_contribs
 
     def calc_normalized_base_conts(self, ref_energy):
@@ -246,18 +289,52 @@ class DeltaDeltaGArray(np.ndarray):
     def calc_max_energy(self, ref_energy):
         base_contribs = self.calc_base_contributions()
         return ref_energy + base_contribs.max(1).sum()
+
+    def reverse_complement(self):
+        rc_array = np.zeros(self.shape, dtype=self.dtype)
+        ts_cont = float(self[2,:].sum())
+        rc_array[(0,1),:] = self[(1,0),:]
+        rc_array[:,:3] -= self[2,:3]
+        return ts_cont, rc_array.view(DeltaDeltaGArray)[:,::-1]
+
+    @property
+    def base_portion(self):
+        return self[:3,:]
     
     @property
+    def shape_portion(self):
+        assert self.shape[0] == 9
+        return self[3:,:]
+
+    @property
     def mean_energy(self):
-        return self.sum()/(len(self)/self.motif_len)
+        return self.sum()/self.shape[0]
     
     @property
     def motif_len(self):
-        return len(self)/3
+        return self.shape[1]
 
     def consensus_seq(self):
         base_contribs = self.calc_base_contributions()
         return "".join( 'ACGT'[x] for x in np.argmin(base_contribs, axis=1) )
+
+    def summary_str(self, ref_energy):
+        rv = []
+        rv.append(str(self.consensus_seq()))
+        rv.append("Ref: %s" % ref_energy)
+        rv.append(
+            "Mean: %s" % (ref_energy + self.mean_energy))
+        rv.append(
+            "Min: %s" % self.calc_min_energy(ref_energy))
+        rv.append("".join("{:>10}".format(x) for x in [
+            'A', 'C', 'G', 'T', 'ProT', 'MGW', 'LHelT', 'RHelT', 'LRoll', 'RRoll']))
+        for base_contribs in self.T.tolist():
+            rv.append( 
+                "".join(["      0.00",] + [
+                    "{:10.2f}".format(x) for x in base_contribs]) 
+            )
+        return "\n".join(rv)
+        pass
 
 class Motif():
     def __len__(self):
@@ -348,12 +425,14 @@ class Motif():
     def max_energy(self):
         return self.consensus_energy + self.motif_data.max(1).sum()
 
-    def build_ddg_array(self):
+    def build_ddg_array(self, include_shape=False):
         ref_energy = self.consensus_energy
-        energies = np.zeros(3*len(self), dtype='float32')
+        energies = np.zeros(
+            (3 + (6 if include_shape else 0), len(self)),
+            dtype='float32')
         for i, base_energies in enumerate(self.motif_data):
             for j, base_energy in enumerate(base_energies[1:]):
-                energies[3*i+j] = base_energy - base_energies[0]
+                energies[j, i] = base_energy - base_energies[0]
             ref_energy += base_energies[0]
         return ref_energy, energies.view(DeltaDeltaGArray)
 
@@ -377,6 +456,7 @@ class Motif():
         self.lines = None
         self.meta_data_line = None
 
+        print "hjere", pwm
         self.length = len(pwm)
 
         self.consensus_energy = 0.0
@@ -386,6 +466,7 @@ class Motif():
         
         self.build_occupancy_weights()
         return
+
 
 def load_motif_from_text(text):
     # load the motif data

@@ -6,6 +6,7 @@ import tempfile
 import time  
 import multiprocessing
 from math import log
+from joblib import Parallel, delayed  
 
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_recall_curve, auc)
@@ -14,32 +15,32 @@ from pysam import FastaFile
 from pyTFbindtools.peaks import (
     load_labeled_peaks_from_beds, 
     getFileHandle, 
-    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
+    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    PeaksAndLabelsThreadSafeIterator
 )
+from pyTFbindtools.cross_validation import ClassificationResult
+from rSeqDNN import init_prediction_script_argument_parser
 
-from rSeqDNN import evaluate_predictions, init_prediction_script_argument_parser
-
-from grit.lib.multiprocessing_utils import fork_and_wait
+from grit.lib.multiprocessing_utils import ThreadSafeFile, fork_and_wait
 
 def encode_peaks_sequence_into_fasta_file(
-        validation_data, fasta, fasta_ofname, labels_ofname):
-    '''writes data peaks sequence into file and saves labels
+        validation_data_iterator, fasta, fasta_tsf):
+    '''writes data peaks sequence into file
     '''
-    np.savetxt(labels_ofname, validation_data.labels)
-    peaks = validation_data.peaks
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    with open(fasta_ofname, 'w') as wf:
-        for i, pk in enumerate(peaks):
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-            # if the sequence is not hte same size as the peak,
-            # it must run off the chromosome so skip it
-            if len(seq) != pk.pk_width: 
-                continue
-            wf.write('>'+str(i)+'\n')
-            wf.write(seq+'\n')
+    labels = []
+    for i, (pk, _, label, _) in enumerate(validation_data_iterator):
+        seq = fasta.fetch(pk.contig, pk.start, pk.stop)
+        # if the sequence is not the same size as the peak,
+        # it must run off the chromosome so skip it
+        if len(seq) != pk.pk_width: 
+            continue
+        if label == 0: # skip ambiguous peaks if included
+            continue
+        fasta_tsf.write('>'+str(i)+'\n')
+        fasta_tsf.write(seq+'\n')
+        labels.append(label)
+    
+    return np.array(labels) 
 
 def get_deepsea_sample_name(sample):
     if sample=='E003':
@@ -82,7 +83,7 @@ def get_deepsea_tf_name(tf_id):
     if tf_id=='T014210_1.02': # MYC
         return 'c-Myc'
     elif tf_id=='T011266_1.02': # MAX
-        return 'MAX'
+        return 'Max'
     elif tf_id=='T044261_1.02': # YY1
         return 'YY1'
     elif tf_id=='T044268_1.02': # CTCF
@@ -123,12 +124,9 @@ def score_seq_with_deepsea_model(tf_id, sample, input_fasta, output_dir):
     command = ' '.join(['python ./rundeepsea_fixed.py',
                         input_fasta,
                         output_dir])
-    # open tempfile, store command results there
-    with tempfile.NamedTemporaryFile() as tf:
-        process = subprocess.Popen(command,stdout=tf, shell=True)
-        process.wait() # wait for it to finish
-        tf.flush()
-        tf.seek(0)
+    # run command
+    process = subprocess.Popen(command,stdout=subprocess.PIPE, shell=True)
+    process.wait() # wait for it to finish
     wd = os.getcwd()
     output_filename = '/'.join([wd, output_dir, 'infile.fasta.out'])
     scores = get_scores_from_deepsea_output(open(output_filename).readlines(),
@@ -209,6 +207,21 @@ def download_and_fix_deepsea():
     
     return
 
+def load_results(fname):
+    '''load results from deepsea run
+OB    '''
+    labels = []
+    pred_labels = []
+    scores = []
+    with open(fname) as fp:
+        for line in fp:
+            label, pred_label, score = line.split()
+            labels.append(float(label))
+            pred_labels.append(float(pred_label))
+            scores.append(float(score))
+            
+    return np.array(labels), np.array(pred_labels), np.array(scores)
+
 def parse_args():
     parser = init_prediction_script_argument_parser(
         'main script for testing rSeqDNN')
@@ -217,8 +230,8 @@ def parse_args():
                         help='prefix for fasta files with test sequences')
     parser.add_argument('--output-directory', required=True,
                         help='output directory for deepsea results')
-    parser.add_argument('--dont-normalize', default=True, action='store_false',
-                        help='do not normalize deepsea scores')
+    parser.add_argument('--normalize', default=True,
+                        help='normalize deepsea scores')
 
     args = parser.parse_args()
 
@@ -245,13 +258,13 @@ def parse_args():
             args.annotation_id,
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
-            args.skip_ambiguous_peaks)
+            args.include_ambiguous_peaks)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
         peaks_and_labels = load_labeled_peaks_from_beds(
             args.pos_regions, args.neg_regions, args.half_peak_width)
-        
+    
     return ( peaks_and_labels, 
              genome_fasta, 
              args.output_fasta_filename_prefix, 
@@ -264,34 +277,40 @@ def run_deepsea(input_list):
     '''
     runs all functions
     '''
-    ( validation_data, 
-      sample, 
-      contig, 
+    print 'starting deepsea run..'
+    ( validation_data_iterator, 
+      sample,
+      contigs,
       normalize, 
       fasta_filename_prefix, 
       genome_fasta_fname, 
       tf_id, 
-      output_directory ) = input_list
+      output_directory,
+      ofp ) = input_list
+    # check objects are thread safe
+    assert isinstance(
+        validation_data_iterator, PeaksAndLabelsThreadSafeIterator)
+    assert isinstance(
+        ofp, ThreadSafeFile)
     genome_fasta = FastaFile(genome_fasta_fname)
     
     initial_wd = os.getcwd()
     os.chdir('./DeepSEA-v0.93/') # cd to run deepsea
     # name fasta file, has to end with .fasta for deepsea to read it - facepalm.
+    pid = str(int(os.getpid()))
     subset_fasta_filename = "%s_%s_%s.fasta" % (
-        fasta_filename_prefix, sample, contig)
-    print subset_fasta_filename
-    
-    subset_labels_filename = '.'.join([subset_fasta_filename, 'labels'])
-    subset_validation_data = validation_data.subset_data([sample], [contig])
-    encode_peaks_sequence_into_fasta_file(
-        subset_validation_data,
+        fasta_filename_prefix, sample, pid)
+    fasta_tsf = ThreadSafeFile(subset_fasta_filename, "w")
+
+    labels = encode_peaks_sequence_into_fasta_file(
+        validation_data_iterator,
         genome_fasta,
-        subset_fasta_filename,
-        subset_labels_filename)
-    
+        fasta_tsf)
+    fasta_tsf.close()
+    subset_output_directory = output_directory + pid
     start_time = time.time()
     scores = score_seq_with_deepsea_model(
-        tf_id, sample, subset_fasta_filename, output_directory)
+        tf_id, sample, subset_fasta_filename, subset_output_directory)
     end_time = time.time()
     
     os.chdir(initial_wd)
@@ -302,12 +321,16 @@ def run_deepsea(input_list):
         print 'time per sequence scoring: ', float(
             end_time-start_time)/len(scores)
     
-    result = evaluate_predictions(
-        scores, subset_validation_data.labels)
+    pred_labels = np.zeros(len(scores))
+    pred_labels[scores > 0.5] = 1.0
+    pred_labels[scores <= 0.5] = -1.0
+    assert len(labels)==len(pred_labels)
+    assert len(pred_labels)==len(scores)
+    for i in xrange(len(scores)):
+        ofp.write("%f %f %f\n" % (labels[i],
+                                  pred_labels[i],
+                                  scores[i])) 
     
-    return result
-
-
 def main():
     download_and_fix_deepsea()
     ( peaks_and_labels, 
@@ -317,28 +340,29 @@ def main():
       output_directory, 
       normalize,
       num_threads ) = parse_args()
-    inputs = []
-    for count, (train, valid) in enumerate(
-            peaks_and_labels.iter_train_validation_subsets()):        
-        for sample in valid.sample_ids:
-            for contig in valid.contigs:
-                inputs.append([valid, 
-                               sample, 
-                               contig, 
-                               normalize,
-                               fasta_filename_prefix, 
-                               genome_fasta.filename,
-                               tf_id, 
-                               output_directory])
-        break
-
-    for args in inputs:
-        run_deepsea(args)
-
-    print 'printing results from all cv runs...'
-    for i, result in enumerate(results):
-        print 'sample and contig: ', inputs[i][1], inputs[i][2]
-        print result
+    results = []
+    validation_contigs = ['chr8', 'chr9']
+    for sample in peaks_and_labels.sample_ids:
+        print 'subsetting to deepsea test data...'
+        validation_data = peaks_and_labels.subset_data([sample],
+                                                       validation_contigs)
+        print 'creating thread safe iterator..'
+        validation_data_iterator = validation_data.thread_safe_iter()
+        ofname = "deepsea.results.%s.%s.txt" % (tf_id, sample)
+        ofp = ThreadSafeFile(ofname, "w")
+        inputs = [[validation_data_iterator, sample, validation_contigs,
+                  normalize, fasta_filename_prefix, genome_fasta.filename,
+                  tf_id, output_directory, ofp]]
+        print 'spawning deepsea run...'
+        fork_and_wait(num_threads, run_deepsea, inputs)
+        ofp.close()
+        labels, pred_labels, scores = load_results(ofname)
+        result = ClassificationResult(labels, pred_labels, scores)
+        results.append(result)
+    print 'printing results from all test runs...'
+    for i, sample in enumerate(peaks_and_labels.sample_ids):
+        print 'sample: ', sample
+        print results[i]
    
 if __name__ == '__main__':
     main()

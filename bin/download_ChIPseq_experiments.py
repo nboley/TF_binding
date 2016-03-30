@@ -1,7 +1,13 @@
 import os, sys
 import subprocess
 
-from ENCODE_ChIPseq_tools import find_chipseq_experiments, find_bams
+from pyTFbindtools.ENCODE_ChIPseq_tools import (
+    find_ENCODE_chipseq_experiment_ids,
+    find_ENCODE_DCC_bams, 
+    find_ENCODE_DCC_experiment_metadata
+)
+
+from pyTFbindtools.DB import load_ENCODE_target_id, insert_chipseq_bam_into_db, sync_ENCODE_chipseq_bam_files
 
 def parse_arguments():
     import argparse
@@ -12,7 +18,7 @@ def parse_arguments():
         help='Which genome and assembly to target.')
 
     parser.add_argument( '--factors', nargs='*',
-        help='Factors to download - use --list-factors to list avaialble factors')
+        help='Factors to download - use --list-factors to list available factors')
 
     parser.add_argument( '--list-factors', default=False, action='store_true',
         help='List available factors and exit')
@@ -35,30 +41,30 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
-    factors = None if args.factors == None else set(args.factors) 
+    if args.list_samples is True:
+        raise NotImplemented, "List samples is not implemented"
+    
+    if args.list_factors is True:
+        raise NotImplemented, "List factors is not implemented"
+    target_ids = None if args.factors == None else set(
+        load_ENCODE_target_id(args.factors) )
     samples = None if args.samples == None else set(args.samples) 
-    experiments = find_chipseq_experiments(args.assembly)
     ps = []
-    for exp_id, exp_meta_data in experiments:
-        biosample_type = exp_meta_data['biosample_term_name']
-        factor = exp_meta_data['target']['label']
-        if samples != None and biosample_type not in samples: continue
-        if factors != None and factor not in factors: continue
-        if args.list_factors: 
-            print factor
-        elif args.list_samples:
-            print biosample_type
-        else:
-            print biosample_type, factor, exp_id
-            for bam in find_bams(exp_id):
-                fname = bam.build_fname()
-                if args.download_and_index:
-                    cmd = "wget --quiet {} -O {} && samtools index {}".format( 
-                        bam.file_loc, fname, fname)
-                    p = subprocess.Popen(cmd, shell=True)
-                    ps.append(p)
-    for p in ps:
-        p.wait()
+    for exp_id in find_ENCODE_chipseq_experiment_ids(args.assembly):
+        for file_data in find_ENCODE_DCC_bams(exp_id):
+            if samples != None and file_data.sample_type not in samples: 
+                continue
+            if target_ids != None and file_data.target_id not in target_ids: 
+                continue
+            print "INSERTING ", file_data
+            try: 
+                insert_chipseq_bam_into_db(file_data)
+            except Exception, inst:
+                print inst
+
+    sync_ENCODE_chipseq_bam_files()
+    #for p in ps:
+    #    p.wait()
 
 if __name__ == '__main__':
     main()
