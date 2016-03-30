@@ -31,25 +31,31 @@ def config_theano(device, num_omp_threads=1):
 def init_prediction_script_argument_parser(description):
     parser = argparse.ArgumentParser(
         description=description)
-
+    pos_data = parser.add_mutually_exclusive_group(required=False)
+    neg_data = parser.add_mutually_exclusive_group(required=False)
     parser.add_argument('--tf-id',
                         help='TF to build model on')
     parser.add_argument('--annotation-id', type=int,
         help='genome annotation to get peak sequence from (default: hg19)')
 
-    parser.add_argument('--pos-regions', type=getFileHandle,
+    pos_data.add_argument('--pos-regions', type=getFileHandle,
                         help='regions with positive label')
-    parser.add_argument('--neg-regions', type=getFileHandle,
+    neg_data.add_argument('--neg-regions', type=getFileHandle,
                         help='regions with negative labels')
+    pos_data.add_argument('--pos-sequences', type=getFileHandle,
+                        help='fasta with positive sequences')
+    neg_data.add_argument('--neg-sequences', type=getFileHandle,
+                        help='fasta with negative sequences')
     parser.add_argument('--genome-fasta', type=FastaFile,
                         help='genome file to get sequences')
 
     parser.add_argument('--half-peak-width', type=int, default=500,
                         help='half peak width about summits for training')
-    parser.add_argument( '--skip-ambiguous-peaks', 
+    parser.add_argument( '--include-ambiguous-peaks', 
         default=False, action='store_true', 
-        help='Skip regions that dont overlap the optimal peak set but do overlap a relaxed set')
+        help='Include regions that dont overlap the optimal peak set but do overlap a relaxed set')
 
+    
     #parser.add_argument('--device', type=str, required=True,
     #                    choices=['cpu', 'gpu', 'gpu1', 'gpu2', 'gpu3', 'gpu4'],
     #                    help='Use the specified device.')

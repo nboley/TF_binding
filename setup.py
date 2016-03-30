@@ -35,9 +35,7 @@ config = {
     'download_url': 'http://github.com/nboley/TF_binding/',
     'author_email': 'npboley@gmail.com',
     'version': '0.1.1',
-    'packages': ['pyTFbindtools', 
-                 'pyTFbindtools.selex'
-             ],
+    'packages': ['pyTFbindtools', ],
     'setup_requires': [],
     'install_requires': [ 'scipy', 'numpy' ],
     'scripts': [],
