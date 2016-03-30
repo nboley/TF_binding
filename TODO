@@ -1,3 +1,26 @@
+NEW TODO:
+Model development
+   - Add in support for flanking sequence
+   - try my model on Peyton/Ana's data
+   - we want the region to be of some specified lengt, and then for the
+     available region to be much longer (eg 200bp region, 400 bp flanking
+     on each side)
+   - Add support for 3 base embeddings
+   - add a simple deep neural network that predicts chemical affinity from expression, other occupncies, and #D data
+   - integrate conservation information
+   - refactor the data objects to be mote intuitive
+   - refactor so that the model is separated from the data
+   - play with different DNASE smoothin methods (e.g. adaptive, signal-control, multi tracks @ different smoothing windows)
+   - add daniels data to the database
+   - add the missing ENCODE data, add get a script that does the sync automatically
+Towards a paper
+   - freeze architecture
+   - compare to deepsea, deepbind, PIQ, gkSVM, random forests from my scored filters
+   - write archtiecture as it relates to the biophysical models
+   - compare occupancies to deeplift
+   - write script to nicely plot occupancies over a region
+   - extract and visualize co-bindidng map
+
 rSeqDNN
 
 Make sure the sample weighting is working correctly
