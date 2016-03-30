@@ -35,7 +35,8 @@ from theano.tensor.nnet.conv import conv2d
 from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.signal.pool import Pool
 from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid, binary_crossentropy, softmax, softplus
- 
+from theano.tensor.extra_ops import to_one_hot
+
 from pyTFbindtools.peaks import SelexData, PartitionedSamplePeaksAndLabels
 
 from lasagne.layers import (
@@ -177,7 +178,7 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = mse_skip_ambig # cross_entropy_skip_ambig #expected_F1_skip_ambig
+global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -269,7 +270,16 @@ class ConvolutionDNASequenceBinding(Layer):
                 b, (nb_motifs, ), name='b')
         else:
             self.b = None
-    
+
+    @staticmethod
+    def embed_sequence(input, embedding_size=1):
+        # if we're using standard one base encoding, then 
+        # we don't need to do anything
+        if embedding_size == 1:
+            return input
+        
+        pass
+
     def get_output_shape_for(self, input_shape):
         return (# number of obseravations
                 self.input_shape[0],
@@ -280,6 +290,39 @@ class ConvolutionDNASequenceBinding(Layer):
                 )
 
     def get_output_for(self, input, **kwargs):
+        assert not self.use_three_base_encoding
+        
+        # pad so that the output is the correct dimension
+        base_pad_shape = list(input.shape[:-1])
+        left_pad_shape = tuple(base_pad_shape+[int(math.ceil(self.motif_len/2))-1,])
+        right_pad_shape = tuple(base_pad_shape+[int(math.floor(self.motif_len/2)),])
+        X_fwd = TT.concatenate([
+            TT.zeros(left_pad_shape), input, TT.zeros(right_pad_shape)], axis=3)
+        X_rc = TT.concatenate([
+            TT.zeros(left_pad_shape), input, TT.zeros(right_pad_shape)], axis=3)
+        # take the reverse complement for the reverse complement section
+        X_rc = X_rc[:,:,::-1,::-1]
+        
+        # actually perform the convolution
+        fwd_rv = conv2d(X_fwd, self.W, border_mode='valid') 
+        rc_rv = conv2d(X_rc, self.W, border_mode='valid')
+        if self.b is not None:
+            fwd_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
+            rc_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
+        # flip the reverse complement sequence
+        rc_rv = rc_rv[:,:,:,::-1]
+
+        # add the strands together, and reshape
+        rv = TT.concatenate((fwd_rv, rc_rv), axis=2)
+        rv = rv.dimshuffle((0,2,1,3))
+
+        # no binding site should have a negative affinity to any strand of DNA
+        if USE_SOFTPLUS_ACTIVATION:
+            rv = softplus(rv)
+        return rv
+
+
+    def flip_filter_get_output_for(self, input, **kwargs):
         if self.use_three_base_encoding:
             X_fwd = input[:,:,1:,:]
             X_rc = input[:,:,:3,:]
@@ -531,7 +574,7 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 8
+        self.num_tf_specific_invitro_affinity_convs = 1
         self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
@@ -730,7 +773,7 @@ class JointBindingModel():
 
         # make sure that the single tf affinities are predictive of 
         # binding in the region
-        self._add_chipseq_regularization(single_tf_affinities, target_var)
+        #self._add_chipseq_regularization(single_tf_affinities, target_var)
 
         if include_dnase is True:
             access_input_var = TT.tensor4(name + '.dnase_cov')
@@ -752,17 +795,18 @@ class JointBindingModel():
             #)
             #network = DimshuffleLayer(network, (0,2,1,3))
 
-        #network = Conv2DLayer(
-        #    network, 
-        #    2*self.num_affinity_convs,
-        #    (2*self.num_affinity_convs,1),
-        #    nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
-        #                  else lasagne.nonlinearities.identity)
-        #)
-        #network = DimshuffleLayer(network, (0,2,1,3))
-        #if include_dnase is True:
-        #    network = ConvolveDNASELayer(network, access)
-        
+        """
+        network = Conv2DLayer(
+            network, 
+            2*self.num_affinity_convs,
+            (2*self.num_affinity_convs,1),
+            nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
+                          else lasagne.nonlinearities.identity)
+        )
+        network = DimshuffleLayer(network, (0,2,1,3))
+        if include_dnase is True:
+            network = ConvolveDNASELayer(network, dnase)
+        """
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
@@ -907,7 +951,7 @@ class JointBindingModel():
                  invivo_factor_names, 
                  sample_ids, 
                  invitro_factor_names=[],
-                 use_three_base_encoding=True):
+                 use_three_base_encoding=False):
         self.factor_names = invivo_factor_names + [
             x for x in invitro_factor_names if x not in invivo_factor_names]
         self.invivo_factor_names = invivo_factor_names
@@ -1296,8 +1340,13 @@ class JointBindingModel():
     def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
         # Finally, launch the training loop.
         if VERBOSE: print("\n\n\n\n\nStarting training...")
+        auPRCs = [0.0,]
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
+            print 'auPRCs', epoch, auPRCs[-3:], max(auPRCs[-3:]), max(auPRCs)
+            if max(auPRCs[-3:]) + 1e-6 < max(auPRCs):
+                break
+            
             self._selex_penalty.set_value( 
                 round(self._selex_penalty.get_value()/1.20, 6) )
             self._chipseq_regularization_penalty.set_value( 
@@ -1349,8 +1398,6 @@ class JointBindingModel():
                 err = self.test_fn(*filtered_data)
                 validation_err += err
                 validation_batches += 1
-            print( 'val_err: %s' % zip(
-                self._losses.keys(), (validation_err/validation_batches) ))
             real_task_key = [
                 key for key in self._losses.keys() 
                 if key.startswith('invivo') and key.endswith('sequence')
@@ -1364,9 +1411,16 @@ class JointBindingModel():
 
             # Print the validation results for this epoch:
             classification_results  = self.evaluate(batch_size)
+            auPRC = 0.0
+            for key, vals in sorted(classification_results.iteritems()):
+                auPRC += vals.auPRC
+            print( 'val_err: %s' % zip(
+                self._losses.keys(), (validation_err/validation_batches) ))
+            print( 'mean auPRC: %.4f' % (auPRC/len(classification_results)))
             for key, vals in sorted(classification_results.iteritems()):
                 print "-".join(key).ljust(40), vals
             self.validation_results.append(classification_results)
+            auPRCs.append(auPRC/len(classification_results))
             
             params = OrderedDict()
             for i, param in enumerate(self.get_all_params()):
@@ -1377,15 +1431,10 @@ class JointBindingModel():
                     print param, param.get_value()
                 if str(param) == 'dnase_weight':
                     print param, param.get_value()
+
             self.model_params.append(params)
-            #print "Affinity Conv Bias: %.2f-%.2f" % (
-            #    self.affinity_conv_bias.get_value() 
-            #    + self.affinity_conv_filter.get_value().min(axis=2).sum(axis=-1),
-            #    self.affinity_conv_bias.get_value() 
-            #    + self.affinity_conv_filter.get_value().max(axis=2).sum(axis=-1)
-            #)
-            
-        pass
+
+        return
 
 def load_chipseq_reads(bam_fps):
     factor_grpd_reads = defaultdict(list)
@@ -1464,6 +1513,7 @@ def many_tfs_main():
     for batch in pks.iter_train_data(10):
         break
     print pks.factor_names
+    #assert False
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
     model.train(n_samples, 100, 60)
     model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))

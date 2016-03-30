@@ -955,7 +955,7 @@ class SamplePeaksAndLabels():
     def build_ordered_indices(self):
         return np.arange(self.labels.shape[0])
 
-    def iter_batches_from_indices(self, 
+    def iter_batches_from_indices_generator(self, 
                                   batch_size, 
                                   repeat_forever, 
                                   indices_generator, 
@@ -995,7 +995,7 @@ class SamplePeaksAndLabels():
         else:
             indices_generator = self.build_ordered_indices
         
-        return self.iter_batches_from_indices(
+        return self.iter_batches_from_indices_generator(
             batch_size, 
             repeat_forever, 
             indices_generator,
@@ -1127,17 +1127,10 @@ class PartitionedSamplePeaksAndLabels():
         for i in xrange(batch_size - inner_batch_sizes.sum()):
             inner_batch_sizes[i] += 1
 
-        ### XXXXX - PUT THIS IN THE ACTUAL GENERATOR
-        ## build the sample labels array
-        #sample_labels = np.zeros(
-        #    (batch_size, len(data_subset)), dtype='float32')
-        #for i in xrange(len(data_subset)):
-        #    start_index = (0 if i == 0 else np.cumsum(inner_batch_sizes)[i-1])
-        #    stop_index = np.cumsum(inner_batch_sizes)[i]
-        #    sample_labels[start_index:stop_index,i] = 1
         iterators = OrderedDict(
             (sample_id, 
-             data.iter_batches(i_batch_size, repeat_forever, **kwargs) )
+             data.iter_batches(
+                 i_batch_size, repeat_forever, **kwargs) )
             for i_batch_size, (sample_id, data) in zip(
                     inner_batch_sizes, data_subset.iteritems())
         )
