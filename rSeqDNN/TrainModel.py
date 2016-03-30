@@ -327,7 +327,7 @@ def main_test(main_args, test_args):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
-OA            validation_contigs=validation_contigs, single_celltype=single_celltype))
+            validation_contigs=validation_contigs, single_celltype=single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
         if len(peaks_and_labels.sample_ids) > 1:
             (valid_signal_arrays,
