@@ -71,22 +71,19 @@ def balance_matrices(X, labels, balance_option='downsample'):
     """
     if isinstance(X, list):
         heights = [np.shape(x)[2] for x in X]
-        X_arr = np.concatenate(X, axis=2)
-        pos_full = X_arr[(labels == 1)]
-        neg_full = X_arr[(labels == 0)]
-    else:
-        pos_full = X[(labels == 1)]
-        neg_full = X[(labels == 0)]
+        X = np.concatenate(X, axis=2)
+    pos_indxs = np.where(labels==1)[0]
+    neg_indxs = np.where(labels==0)[0]
+    pos_size = len(pos_indxs)
+    neg_size = len(neg_indxs)
     if balance_option=='downsample':
-        sample_size = min(pos_full.shape[0], neg_full.shape[0])
-        if neg_full.shape[0] > pos_full.shape[0]:
-            pos = pos_full
-            neg = neg_full[
-                np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+        sample_size = min(pos_size, neg_size)
+        if neg_size > pos_size:
+            pos = np.take(X, pos_indxs, axis=0)
+            neg = np.take(X, np.random.choice(neg_indxs, pos_size, replace=False), axis=0)
         else:
-            neg = neg_full
-            pos = pos_full[
-                np.random.choice(pos_full.shape[0], sample_size, replace=False)]
+            neg = np.take(X, neg_indxs, axis=0)
+            pos = np.take(X, np.random.choice(pos_indxs, neg_size, replace=False), axis=0)
     elif balance_option=='upsample':
         sample_size = max(pos_full.shape[0], neg_full.shape[0])
         pos = pos_full[
