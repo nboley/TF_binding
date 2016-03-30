@@ -177,7 +177,7 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
+global_loss_fn = mse_skip_ambig # cross_entropy_skip_ambig #expected_F1_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -1448,19 +1448,24 @@ def all_tfs_main():
     return
 
 def many_tfs_main():
-    tf_names = sys.argv[1].split(",")
-    sample_ids = sys.argv[2].split(",")
+    sample_ids = sys.argv[1].split(",")
+    try:
+        tf_names = sys.argv[2].split(",")
+    except IndexError:
+        tf_names=None
     try: 
         n_samples = int(sys.argv[3])
     except IndexError: 
-        n_samples = None
+        n_samples = 100000
+    
     print tf_names, sample_ids, n_samples
     pks = PartitionedSamplePeaksAndLabels(
         sample_ids, factor_names=tf_names, n_samples=5000)
     for batch in pks.iter_train_data(10):
         break
+    print pks.factor_names
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
-    model.train(n_samples, 500, 60)
+    model.train(n_samples, 100, 60)
     model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))
     
 
