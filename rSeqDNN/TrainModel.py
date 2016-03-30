@@ -112,6 +112,9 @@ def parse_args():
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
             include_ambiguous_peaks=True)
+        # general preprocessing
+        peaks_and_labels = peaks_and_labels.remove_ambiguous_labeled_entries()
+        peaks_and_labels = peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
         if args.include_dnase_foldchange:
             args.bigwig_features = load_matching_dnase_foldchange_fnames_from_DB(args.tf_id, args.annotation_id)
         if args.include_conservation:
@@ -171,9 +174,6 @@ def main_train(main_args, train_args):
       jitter_peaks_by,
       target_metric,
       run_grid_search ) = train_args
-    # general preprocessing
-    peaks_and_labels = peaks_and_labels.remove_ambiguous_labeled_entries()
-    peaks_and_labels = peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -327,7 +327,7 @@ def main_test(main_args, test_args):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
     else:
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets(
-            validation_contigs=validation_contigs, single_celltype=single_celltype))
+OA            validation_contigs=validation_contigs, single_celltype=single_celltype))
     for fold_index, (train, valid) in enumerate(train_validation_subsets):
         if len(peaks_and_labels.sample_ids) > 1:
             (valid_signal_arrays,
