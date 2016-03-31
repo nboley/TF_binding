@@ -253,15 +253,24 @@ def load_data(fname):
 class ConvolutionDNASequenceBinding(Layer):
     def __init__(self, 
                  input,
-                 nb_motifs, motif_len, 
+                 nb_motifs, 
+                 motif_len, 
                  use_three_base_encoding=False,
-                 W=init.HeNormal(), b=init.Constant(-3.0),
+                 word_size=1, # the number of bases to group into a word
+                 W=init.HeNormal(), 
+                 b=init.Constant(-3.0),
                  **kwargs):
         super(ConvolutionDNASequenceBinding, self).__init__(input, **kwargs)
+
+        assert use_three_base_encoding is False
         self.use_three_base_encoding = use_three_base_encoding
+        
         self.motif_len = motif_len
         self.nb_motifs = nb_motifs
-        base_size = (3 if self.use_three_base_encoding else 4)
+        self.word_size = word_size
+        base_size = 4**word_size
+        if self.use_three_base_encoding:
+            base_size -= 1
         filter_shape = (base_size, motif_len)
         self.W = self.add_param(
              W, (nb_motifs, 1, base_size, motif_len), name='W')
@@ -271,14 +280,25 @@ class ConvolutionDNASequenceBinding(Layer):
         else:
             self.b = None
 
-    @staticmethod
-    def embed_sequence(input, embedding_size=1):
+    def embed_sequence(self, input, embedding_size=1):
         # if we're using standard one base encoding, then 
         # we don't need to do anything
-        if embedding_size == 1:
-            return input
-        
-        pass
+        #if embedding_size == 1:
+        #    return input
+        #assert self.word_size == 2
+        conv_array = np.array([[0,1,2,3],[0,4,8,12]], dtype='float32')[
+            None,None,:,:]
+        for i in xrange(self.word_size):
+            indexes = conv2d(
+                input[i:], 
+                self.W, 
+                border_mode='valid', 
+                subsample=(1,self.word_size)
+            ).astype('int32')
+            p_op = theano.printing.Print('indices: ')
+            return p_op(input)
+            return to_one_hot(p_op(indexes), self.word_size)
+        return input
 
     def get_output_shape_for(self, input_shape):
         return (# number of obseravations
@@ -290,7 +310,7 @@ class ConvolutionDNASequenceBinding(Layer):
                 )
 
     def get_output_for(self, input, **kwargs):
-        assert not self.use_three_base_encoding
+        #input = self.embed_sequence(input)
         
         # pad so that the output is the correct dimension
         base_pad_shape = list(input.shape[:-1])
@@ -783,17 +803,19 @@ class JointBindingModel():
                 input_var=access_input_var
             )
             network = ConvolveDNASELayer(single_tf_affinities, dnase)
-            #access = TT.log(
-            #    TT.clip(dnase/TT.max(dnase, keepdims=True), 1e-8, 1.0)
-            #)[None,None,:,:]
-            #network = ConcatLayer([access, network], axis=2)
-            #network = Conv2DLayer(
-            #    network, 
-            #    2*self.num_affinity_convs,
-            #    (2*self.num_affinity_convs+1,1),
-            #    nonlinearity=lasagne.nonlinearities.identity
-            #)
-            #network = DimshuffleLayer(network, (0,2,1,3))
+            """
+            access = ExpressionLayer(dnase, lambda x: TT.log(
+                1e-12 + x/TT.max(x, keepdims=True))
+            )
+            network = ConcatLayer([access, single_tf_affinities], axis=2)
+            network = Conv2DLayer(
+                network, 
+                2*self.num_affinity_convs,
+                (2*self.num_affinity_convs+1,1),
+                nonlinearity=lasagne.nonlinearities.identity
+            )
+            network = DimshuffleLayer(network, (0,2,1,3))
+            """
 
         """
         network = Conv2DLayer(
@@ -807,10 +829,11 @@ class JointBindingModel():
         if include_dnase is True:
             network = ConvolveDNASELayer(network, dnase)
         """
+        
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
-            len(self.invivo_factor_names),
+            2*self.num_affinity_convs, #len(self.invivo_factor_names),
             (2*self.num_affinity_convs,16),
             b=None,
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
@@ -835,7 +858,7 @@ class JointBindingModel():
         network = OccMaxPool(network, 1, 8)
         
         network = AnyBoundOcc(network)
-        network = OccMaxPool(network, 1, 'full')
+        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
                 
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
@@ -848,8 +871,8 @@ class JointBindingModel():
 
 
     def add_DIGN_chipseq_samples(self, pks_and_labels, include_DNASE=True): 
-        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_id
-        name = 'invivo_%s_DIGN_sequence' % pks_and_labels.sample_id 
+        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
+        name = 'invivo_%s_DIGN_sequence' % "-".join(pks_and_labels.sample_ids) 
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
@@ -874,20 +897,20 @@ class JointBindingModel():
             network = ConcatLayer([access, network], axis=2)
             network = Conv2DLayer(
                 network, n_convs, (5,15),
-                nonlinearity=lasagne.nonlinearities.rectify)
+                nonlinearity=lasagne.nonlinearities.leaky_rectify)
         else:
             network = Conv2DLayer(
                 network, n_convs, (4,15),
-                nonlinearity=lasagne.nonlinearities.rectify)
+                nonlinearity=lasagne.nonlinearities.leaky_rectify)
 
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
             network, n_convs, (1,15),
-            nonlinearity=lasagne.nonlinearities.rectify)
+            nonlinearity=lasagne.nonlinearities.leaky_rectify)
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
             network, n_convs, (1,15),
-            nonlinearity=lasagne.nonlinearities.rectify)
+            nonlinearity=lasagne.nonlinearities.leaky_rectify)
         network = DropoutLayer(network, 0.2)
         network = DimshuffleLayer(network, (0,2,1,3))
         network = MaxPool2DLayer(network, (1, 35))
@@ -900,7 +923,7 @@ class JointBindingModel():
         self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(global_loss_fn(target_var, prediction)) + cobinding_penalty
+        loss = TT.mean(global_loss_fn(target_var, prediction))
         self._losses[name] = loss
         return
 
@@ -1471,10 +1494,10 @@ def single_sample_main():
     #    next(model.iter_data(100, 'train', False, include_dnase_signal=True)))
     #assert False
 
+    #model.train(
+    #    n_samples if n_samples is not None else 100000, 200, 15, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 100000, 100, 5, balanced=True)
-    model.train(
-        n_samples if n_samples is not None else 100000, 100, 10, balanced=False)
+        n_samples if n_samples is not None else 100000, 200, 12, balanced=False)
     model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
     return
 
@@ -1492,7 +1515,7 @@ def all_tfs_main():
     print pks.train.labels.shape
     #return
     model = JointBindingModel(300000, pks.factor_names, sample_ids)
-    model.train(300000, 100, 30)
+    model.train(300000, 500, 30)
     model.save('Multitask.%s.h5' % sample_id)
     return
 
@@ -1505,7 +1528,7 @@ def many_tfs_main():
     try: 
         n_samples = int(sys.argv[3])
     except IndexError: 
-        n_samples = 100000
+        n_samples = None
     
     print tf_names, sample_ids, n_samples
     pks = PartitionedSamplePeaksAndLabels(
@@ -1513,10 +1536,15 @@ def many_tfs_main():
     for batch in pks.iter_train_data(10):
         break
     print pks.factor_names
-    #assert False
     model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
-    model.train(n_samples, 100, 60)
-    model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))
+
+    #model.train(
+    #    n_samples if n_samples is not None else 300000, 500, 15, balanced=True)
+    model.train(
+        n_samples if n_samples is not None else 300000, 500, 25, balanced=False)
+
+    #model.train(n_samples, 500, 60)
+    #model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))
     
 
 def main():        
