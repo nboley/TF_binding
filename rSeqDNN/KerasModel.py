@@ -272,18 +272,18 @@ class KerasModelBase():
                 pickle.dump(self.model, fp)
 
     def predict(self, X_validation, verbose=False):
-        if isinstance(self.model.layers[0], Merge):
-            return self.model.predict_classes(X_validation, verbose=int(verbose))
-        else:
+        if self.stack_arrays and isinstance(X_validation, list):
             return self.model.predict_classes(np.concatenate(X_validation, axis=2),
                                               verbose=int(verbose))
+        else:
+            return self.model.predict_classes(X_validation, verbose=int(verbose))
 
     def predict_proba(self, X_validation, verbose=False):
-        if isinstance(self.model.layers[0], Merge):
-            return self.model.predict_proba(X_validation, verbose=int(verbose))
-        else:
+        if self.stack_arrays and isinstance(X_validation, list):
             return self.model.predict_proba(np.concatenate(X_validation, axis=2),
                                             verbose=int(verbose))
+        else:
+            return self.model.predict_proba(X_validation, verbose=int(verbose))
 
     def find_optimal_ambiguous_peak_threshold(self, X, y, scores):
         return find_optimal_ambiguous_peak_threshold(
