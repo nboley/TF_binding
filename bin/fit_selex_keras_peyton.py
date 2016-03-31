@@ -250,13 +250,54 @@ def load_data(fname):
 
     return (train_seqs, train_labels), (validation_seqs, validation_labels)
 
+def multi_base_embedding(seqs, word_len):
+    def one_hot(t, r=None):
+        """
+        given a tensor t of dimension d with integer values from range(r), return a
+        new tensor of dimension d + 1 with values 0/1, where the last dimension
+        gives a one-hot representation of the values in t.
+
+        if r is not given, r is set to max(t) + 1
+        """
+        if r is None:
+            r = TT.max(t) + 1
+
+        ranges = TT.shape_padleft(TT.arange(r), t.ndim)
+        return TT.eq(ranges, TT.shape_padright(t, 1))
+
+    def build_embedding_conv(word_len):
+        rv = []
+        for i in xrange(word_len):
+            rv.append([0, (4**i), 2*(4**i), 3*(4**i)])
+        return np.array(rv, dtype='float32').T[None,None,::-1,::-1]
+
+    #first build the embedding matrix
+    transform_array = build_embedding_conv(word_len)
+    # for each offset
+    res = []
+    seq_len = seqs.shape[-1]
+    num_words = (seq_len-word_len+1)//word_len
+    for i in xrange(word_len):
+        # build the index matrices
+        
+        trans_seqs = conv2d(
+            seqs[:,:,:,i:i+num_words*word_len],
+            transform_array,
+            border_mode='valid',
+            subsample=(1,word_len)
+        )
+        # reconvert to one-hot
+        res.append(one_hot(trans_seqs[:,0,:,:], 4**word_len))
+    return TT.concatenate(res, axis=3).dimshuffle(0,1,3,2)
+
+
 class ConvolutionDNASequenceBinding(Layer):
     def __init__(self, 
                  input,
                  nb_motifs, 
                  motif_len, 
                  use_three_base_encoding=False,
-                 word_size=1, # the number of bases to group into a word
+                 word_size=2, # the number of bases to group into a word
                  W=init.HeNormal(), 
                  b=init.Constant(-3.0),
                  **kwargs):
@@ -281,24 +322,7 @@ class ConvolutionDNASequenceBinding(Layer):
             self.b = None
 
     def embed_sequence(self, input, embedding_size=1):
-        # if we're using standard one base encoding, then 
-        # we don't need to do anything
-        #if embedding_size == 1:
-        #    return input
-        #assert self.word_size == 2
-        conv_array = np.array([[0,1,2,3],[0,4,8,12]], dtype='float32')[
-            None,None,:,:]
-        for i in xrange(self.word_size):
-            indexes = conv2d(
-                input[i:], 
-                self.W, 
-                border_mode='valid', 
-                subsample=(1,self.word_size)
-            ).astype('int32')
-            p_op = theano.printing.Print('indices: ')
-            return p_op(input)
-            return to_one_hot(p_op(indexes), self.word_size)
-        return input
+        return multi_base_embedding(input, embedding_size).astype('float32')
 
     def get_output_shape_for(self, input_shape):
         return (# number of obseravations
@@ -309,9 +333,7 @@ class ConvolutionDNASequenceBinding(Layer):
                 self.input_shape[3],
                 )
 
-    def get_output_for(self, input, **kwargs):
-        #input = self.embed_sequence(input)
-        
+    def get_output_for(self, input, **kwargs):        
         # pad so that the output is the correct dimension
         base_pad_shape = list(input.shape[:-1])
         left_pad_shape = tuple(base_pad_shape+[int(math.ceil(self.motif_len/2))-1,])
@@ -323,9 +345,13 @@ class ConvolutionDNASequenceBinding(Layer):
         # take the reverse complement for the reverse complement section
         X_rc = X_rc[:,:,::-1,::-1]
         
+        # embed the sequences
+        X_fwd = self.embed_sequence(X_fwd)
+        X_rc = self.embed_sequence(X_rc)
+        
         # actually perform the convolution
-        fwd_rv = conv2d(X_fwd, self.W, border_mode='valid') 
-        rc_rv = conv2d(X_rc, self.W, border_mode='valid')
+        fwd_rv = conv2d(X_fwd, self.W, border_mode='valid', subsample=(4**self.word_size,1)) 
+        rc_rv = conv2d(X_rc, self.W, border_mode='valid', subsample=(4**self.word_size,1))
         if self.b is not None:
             fwd_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
             rc_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
@@ -515,7 +541,7 @@ class OccupancyLayer(Layer):
         sample_chem_affinities = TT.dot(self.sample_ids, self.chem_affinity)
         rv = input + sample_chem_affinities[:,None,:,None]
         if self.dnase_signal is not None:
-            assert False
+            #assert False
             rv += self.dnase_weight[None, None, :, None]*self.dnase_signal[:,None,None,None]
         return sigmoid(rv)
 
@@ -833,7 +859,7 @@ class JointBindingModel():
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
-            2*self.num_affinity_convs, #len(self.invivo_factor_names),
+            len(self.invivo_factor_names),
             (2*self.num_affinity_convs,16),
             b=None,
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
@@ -844,7 +870,7 @@ class JointBindingModel():
         if include_dnase is True:
             grpd_dnase = OccMaxPool(dnase, 1, 92, 4) # try average pool XXX
             network = ConvolveDNASELayer(network, grpd_dnase)
-
+        
         sample_ids_var = TT.matrix(name + '.sample_ids')
         self._input_vars[name + '.sample_ids'] = sample_ids_var
 
@@ -855,10 +881,10 @@ class JointBindingModel():
             dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
-        network = OccMaxPool(network, 1, 8)
+        network = OccMaxPool(network, 1, 4)
         
         network = AnyBoundOcc(network)
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
+        #network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
                 
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
@@ -946,7 +972,7 @@ class JointBindingModel():
             TT.sum(losses) + regularization_loss, 
             params
         )
-        #updates = lasagne.updates.apply_momentum(updates, params, 0.9)
+        #updates = lasagne.updates.apply_momentum(updates, params, 0.5)
         # build the training function
         all_vars = self._input_vars.values() + self._target_vars.values()
         self.train_fn = theano.function(
@@ -1541,7 +1567,7 @@ def many_tfs_main():
     #model.train(
     #    n_samples if n_samples is not None else 300000, 500, 15, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 300000, 500, 25, balanced=False)
+        n_samples if n_samples is not None else 300000, 100, 25, balanced=False)
 
     #model.train(n_samples, 500, 60)
     #model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))
