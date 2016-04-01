@@ -529,3 +529,15 @@ def load_conservation_fnames_from_DB():
 
     return load_conservation_files_from_db()
 
+def load_matching_dnase_cut_fnames_from_DB(tf_id, annotation_id):
+    """
+    Checks samples available for target tf,
+    and loads dnase filenames for those samples.
+    """
+    from DB import (
+        load_samples_from_db_by_tfid,
+        load_DNASE_cut_files_from_db_by_sample )
+    samples = load_samples_from_db_by_tfid(tf_id, annotation_id)
+
+    return load_DNASE_cut_files_from_db_by_sample(samples)
+

@@ -341,5 +341,19 @@ def load_conservation_files_from_db():
     rv = [fname for (fname,) in cur.fetchall()]
     return rv
 
+def load_DNASE_cut_files_from_db_by_sample(samples):
+    cur = conn.cursor()
+    query = """
+    SELECT roadmap_sample_id,
+           local_filename
+      FROM roadmap_dnase_cut_files;
+    """
+    rv = defaultdict(str)
+    cur.execute(query)
+    for (sample_id, dnase_foldchange_fname) in cur.fetchall():
+        if sample_id in samples:
+            rv[sample_id] = dnase_foldchange_fname
+    return rv
+
 import psycopg2
 conn = psycopg2.connect("host=mitra dbname=cisbp")
