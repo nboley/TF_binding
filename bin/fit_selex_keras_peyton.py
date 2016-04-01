@@ -178,7 +178,7 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
+global_loss_fn = mse_skip_ambig #cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -250,36 +250,35 @@ def load_data(fname):
 
     return (train_seqs, train_labels), (validation_seqs, validation_labels)
 
-def multi_base_embedding(seqs, word_len):
-    def one_hot(t, r=None):
-        """
-        given a tensor t of dimension d with integer values from range(r), return a
-        new tensor of dimension d + 1 with values 0/1, where the last dimension
-        gives a one-hot representation of the values in t.
+def one_hot_from_indices(t, r=None):
+    """
+    given a tensor t of dimension d with integer values from range(r), return a
+    new tensor of dimension d + 1 with values 0/1, where the last dimension
+    gives a one-hot representation of the values in t.
 
-        if r is not given, r is set to max(t) + 1
-        """
-        if r is None:
-            r = TT.max(t) + 1
+    if r is not given, r is set to max(t) + 1
+    """
+    if r is None:
+        r = TT.max(t) + 1
 
-        ranges = TT.shape_padleft(TT.arange(r), t.ndim)
-        return TT.eq(ranges, TT.shape_padright(t, 1))
+    ranges = TT.shape_padleft(TT.arange(r), t.ndim)
+    return TT.eq(ranges, TT.shape_padright(t, 1))
 
-    def build_embedding_conv(word_len):
-        rv = []
-        for i in xrange(word_len):
-            rv.append([0, (4**i), 2*(4**i), 3*(4**i)])
-        return np.array(rv, dtype='float32').T[None,None,::-1,::-1]
+def build_embedding_conv_filter(word_len):
+    rv = []
+    for i in xrange(word_len):
+        rv.append([0, (4**i), 2*(4**i), 3*(4**i)])
+    return np.array(rv, dtype='float32').T[None,None,::-1,::-1]
 
-    #first build the embedding matrix
-    transform_array = build_embedding_conv(word_len)
+def multi_base_stacked_embedding(seqs, word_len):
+    #first build the embedding filter
+    transform_array = build_embedding_conv_filter(word_len)
     # for each offset
     res = []
     seq_len = seqs.shape[-1]
     num_words = (seq_len-word_len+1)//word_len
     for i in xrange(word_len):
         # build the index matrices
-        
         trans_seqs = conv2d(
             seqs[:,:,:,i:i+num_words*word_len],
             transform_array,
@@ -287,9 +286,20 @@ def multi_base_embedding(seqs, word_len):
             subsample=(1,word_len)
         )
         # reconvert to one-hot
-        res.append(one_hot(trans_seqs[:,0,:,:], 4**word_len))
+        res.append(one_hot_from_indices(trans_seqs[:,0,:,:], 4**word_len))
     return TT.concatenate(res, axis=3).dimshuffle(0,1,3,2)
 
+def multi_base_interleaved_embedding(seqs, word_len):
+    #first build the embedding filter
+    transform_array = build_embedding_conv_filter(word_len)
+    # build the index matrices
+    trans_seqs = conv2d(
+        seqs,
+        transform_array,
+        border_mode='valid'
+    )
+    rv = one_hot_from_indices(trans_seqs[:,0,:,:], 4**word_len)
+    return rv.dimshuffle(0,1,3,2)
 
 class ConvolutionDNASequenceBinding(Layer):
     def __init__(self, 
@@ -297,7 +307,8 @@ class ConvolutionDNASequenceBinding(Layer):
                  nb_motifs, 
                  motif_len, 
                  use_three_base_encoding=False,
-                 word_size=2, # the number of bases to group into a word
+                 word_size=1, # the number of bases to group into a word
+                 use_interleaved_words=True,
                  W=init.HeNormal(), 
                  b=init.Constant(-3.0),
                  **kwargs):
@@ -306,23 +317,38 @@ class ConvolutionDNASequenceBinding(Layer):
         assert use_three_base_encoding is False
         self.use_three_base_encoding = use_three_base_encoding
         
-        self.motif_len = motif_len
+        # make sure the motif_len is divisble byt he word size
+        self.motif_len = word_size*(motif_len//word_size)
         self.nb_motifs = nb_motifs
         self.word_size = word_size
+        self.use_interleaved_words = (use_interleaved_words or (word_size == 1))
+        
         base_size = 4**word_size
         if self.use_three_base_encoding:
             base_size -= 1
-        filter_shape = (base_size, motif_len)
-        self.W = self.add_param(
-             W, (nb_motifs, 1, base_size, motif_len), name='W')
+        if not self.use_interleaved_words:
+            filter_shape = (
+                nb_motifs, 1, base_size, self.motif_len//self.word_size)
+        else:
+            filter_shape = (
+                nb_motifs, 1, base_size, self.motif_len)
+        self.W = self.add_param(W, filter_shape, name='W')
         if use_three_base_encoding:
             self.b = self.add_param(
                 b, (nb_motifs, ), name='b')
         else:
             self.b = None
 
-    def embed_sequence(self, input, embedding_size=1):
-        return multi_base_embedding(input, embedding_size).astype('float32')
+    def embed_sequence(self, input):
+        if self.word_size == 1:
+            return input
+        assert self.word_size > 1
+        if self.use_interleaved_words:
+            return multi_base_interleaved_embedding(
+                input, self.word_size).astype('float32')
+        else:
+            return multi_base_stacked_embedding(
+                input, self.word_size).astype('float32')
 
     def get_output_shape_for(self, input_shape):
         return (# number of obseravations
@@ -333,29 +359,43 @@ class ConvolutionDNASequenceBinding(Layer):
                 self.input_shape[3],
                 )
 
+    def get_single_strand_output_for(self, X):
+        # embed the sequences
+        X = self.embed_sequence(X)
+        # actually perform the convolution
+        rv = conv2d(X, 
+                    self.W, 
+                    border_mode='valid', 
+                    subsample=(4**self.word_size,1)
+        ) 
+        # add the bias term
+        if self.b is not None:
+            rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
+        
+        # interleave the binding site affinities
+        if not self.use_interleaved_words:
+            rv = rv.dimshuffle(0,1,3,2)
+            rv = rv.reshape((rv.shape[0],rv.shape[1],rv.shape[2]*rv.shape[3],1))
+            rv = rv.dimshuffle(0,1,3,2)
+        
+        return rv
+
     def get_output_for(self, input, **kwargs):        
         # pad so that the output is the correct dimension
         base_pad_shape = list(input.shape[:-1])
-        left_pad_shape = tuple(base_pad_shape+[int(math.ceil(self.motif_len/2))-1,])
-        right_pad_shape = tuple(base_pad_shape+[int(math.floor(self.motif_len/2)),])
-        X_fwd = TT.concatenate([
-            TT.zeros(left_pad_shape), input, TT.zeros(right_pad_shape)], axis=3)
-        X_rc = TT.concatenate([
-            TT.zeros(left_pad_shape), input, TT.zeros(right_pad_shape)], axis=3)
-        # take the reverse complement for the reverse complement section
-        X_rc = X_rc[:,:,::-1,::-1]
+        left_pad_shape = tuple(base_pad_shape+[32,]) #int(math.ceil(self.motif_len/2))-1,])
+        right_pad_shape = tuple(base_pad_shape+[32,]) #int(math.floor(self.motif_len/2)),])
         
         # embed the sequences
-        X_fwd = self.embed_sequence(X_fwd)
-        X_rc = self.embed_sequence(X_rc)
-        
-        # actually perform the convolution
-        fwd_rv = conv2d(X_fwd, self.W, border_mode='valid', subsample=(4**self.word_size,1)) 
-        rc_rv = conv2d(X_rc, self.W, border_mode='valid', subsample=(4**self.word_size,1))
-        if self.b is not None:
-            fwd_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
-            rc_rv += TT.reshape(self.b, (1, self.nb_motifs, 1, 1))
-        # flip the reverse complement sequence
+        X_fwd = TT.concatenate([
+            TT.zeros(left_pad_shape), input, TT.zeros(right_pad_shape)], axis=3)
+        fwd_rv = self.get_single_strand_output_for(X_fwd)
+
+        # take the reverse complement for the reverse complement section
+        X_rc = TT.concatenate([
+            TT.zeros(left_pad_shape), input, TT.zeros(right_pad_shape)], axis=3)
+        X_rc = X_rc[:,:,::-1,::-1]
+        rc_rv = self.get_single_strand_output_for(X_rc)
         rc_rv = rc_rv[:,:,:,::-1]
 
         # add the strands together, and reshape
@@ -687,20 +727,25 @@ class JointBindingModel():
             network, 
             nb_motifs=self.num_tf_specific_invitro_affinity_convs, 
             motif_len=self.affinity_conv_size,
-            use_three_base_encoding=self._use_three_base_encoding,
-            W=W, 
-            b=b)
+            use_three_base_encoding=self._use_three_base_encoding)
+            #W=W, 
+            #b=b)
         network = StackStrands(network)
-        network = OccupancyLayer(network, -6.0)
         network = OccMaxPool(network, 'full', 'full' )
+        #network = DenseLayer(
+        #    network, 
+        #    1, 
+        #    nonlinearity=lasagne.nonlinearities.sigmoid)
+
+        network = OccupancyLayer(network, -2.0)
         network = FlattenLayer(network)
         
         self._networks[name + ".output"] = network
         self._data_iterators[name] = selex_experiment.iter_batches
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(lasagne.objectives.squared_error(prediction, target_var))
-        self._losses[name] = self._selex_penalty*loss
+        loss = TT.mean(global_loss_fn(target_var, prediction))
+        self._losses[name] = loss #self._selex_penalty*loss
 
     def add_selex_experiments(self, selex_experiments):
         for exp in selex_experiments:
@@ -1037,15 +1082,16 @@ class JointBindingModel():
         for factor_name in invitro_factor_names:
             selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
-        #self.add_selex_experiments(selex_experiments)
+        self.add_selex_experiments(selex_experiments)
 
-        self._chipseq_regularization_penalty = create_param(
-            lambda x: 2.0, (), 'chipseq_penalty')
-        pks = PartitionedSamplePeaksAndLabels(
-            sample_ids, factor_names=invivo_factor_names, n_samples=n_samples)
-        #self.add_DIGN_chipseq_samples(pks)
-        self.add_chipseq_samples(pks)
-        #self.add_simple_chipseq_model(pks)
+        if len(invivo_factor_names) > 0:
+            self._chipseq_regularization_penalty = create_param(
+                lambda x: 2.0, (), 'chipseq_penalty')
+            pks = PartitionedSamplePeaksAndLabels(
+                sample_ids, factor_names=invivo_factor_names, n_samples=n_samples)
+            #self.add_DIGN_chipseq_samples(pks)
+            self.add_chipseq_samples(pks)
+            #self.add_simple_chipseq_model(pks)
 
         self._build()
     
@@ -1177,9 +1223,8 @@ class JointBindingModel():
             try: 
                 sample_ids[key].append(data[key.split(".")[0] + '.sample_ids'])
             except KeyError:
-                raise
-                sample_ids.append(
-                    np.zeros((data.values()[0].shape[0], 1), dtype='float32')
+                sample_ids[key].append(
+                    np.ones((data.values()[0].shape[0], 1), dtype='float32')
                 )
         
         # stack everything back together
@@ -1373,15 +1418,18 @@ class JointBindingModel():
                         index_name = str(index)
                     # skip purely ambiguous labels
                     if (labels[key][sample_indices,index] < -0.5).all():
+                        assert False
                         continue
                     res = ClassificationResult(
                         labels[key][sample_indices,index], 
                         pred_prbs[key][sample_indices,index] > 0.5, 
                         pred_prbs[key][sample_indices,index]
                     )
+                    try: sample_id = "sample%s-" % self.sample_ids[sample_index]
+                    except IndexError: sample_id = ""
                     classification_results[
-                        ("sample%s-%s" % (
-                            self.sample_ids[sample_index], key.split("_")[-1]), 
+                        ("%s%s" % (
+                            sample_id, key.split("_")[-1]), 
                          index_name)
                     ] = res
         return classification_results
@@ -1396,10 +1444,10 @@ class JointBindingModel():
             if max(auPRCs[-3:]) + 1e-6 < max(auPRCs):
                 break
             
-            self._selex_penalty.set_value( 
-                round(self._selex_penalty.get_value()/1.20, 6) )
-            self._chipseq_regularization_penalty.set_value( 
-                round(self._chipseq_regularization_penalty.get_value()/1.20, 6))
+            #self._selex_penalty.set_value( 
+            #    round(self._selex_penalty.get_value()/1.20, 6) )
+            #self._chipseq_regularization_penalty.set_value( 
+            #    round(self._chipseq_regularization_penalty.get_value()/1.20, 6))
             
             # In each epoch, we do a full pass over the training data:
             train_err = np.zeros(len(self._losses), dtype=float)
@@ -1451,12 +1499,12 @@ class JointBindingModel():
                 key for key in self._losses.keys() 
                 if key.startswith('invivo') and key.endswith('sequence')
             ]
-            assert len(real_task_key) == 1
-            self.validation_losses.append(
-                dict(zip(
-                    self._losses.keys(), (validation_err/validation_batches))
-                 )[real_task_key[0]]
-            )
+            #assert len(real_task_key) == 1
+            #self.validation_losses.append(
+            #    dict(zip(
+            #        self._losses.keys(), (validation_err/validation_batches))
+            #     )[real_task_key[0]]
+            #)
 
             # Print the validation results for this epoch:
             classification_results  = self.evaluate(batch_size)
@@ -1496,6 +1544,22 @@ def load_chipseq_reads(bam_fps):
     
     return dict(factor_grpd_reads)
 
+def selex_main():
+    tf_name = sys.argv[1]
+    try: 
+        n_samples = int(sys.argv[2])
+    except IndexError: 
+        n_samples = None
+
+    model = JointBindingModel(
+        n_samples, 
+        invivo_factor_names=[], # tf_name, 
+        sample_ids=[],
+        invitro_factor_names=[tf_name,],
+        use_three_base_encoding=False)
+    model.train(
+        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
+
 def single_sample_main():
     tf_name = sys.argv[1]
     sample_id = sys.argv[2]
@@ -1511,7 +1575,7 @@ def single_sample_main():
     #return
     model = JointBindingModel(
         n_samples, 
-        [tf_name,], 
+        [], # tf_name, 
         [sample_id,],
     #    ['YY1', 'CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
         [tf_name,],
@@ -1607,3 +1671,4 @@ if __name__ == '__main__':
     #single_sample_main()
     #all_tfs_main()
     many_tfs_main()
+    #selex_main()

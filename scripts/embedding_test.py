@@ -28,7 +28,7 @@ import numpy as np
 import theano
 import theano.tensor as TT
 from theano.tensor.nnet.conv import conv2d as theano_conv2d
-from theano.tensor.extra_ops import to_one_hot
+from theano.tensor.extra_ops import to_one_hot, CpuContiguous 
 from pyDNAbinding.sequence import one_hot_encode_sequences
 
 
@@ -70,19 +70,41 @@ def multi_base_embedding(seqs, word_len):
         )
         #res.append(trans_seqs)
         # reconvert to one-hot
-        res.append(one_hot(trans_seqs[:,0,:,:], 4**word_len))
-    return TT.concatenate(res, axis=2).dimshuffle(0,1,3,2)
+        res.append(
+            one_hot(trans_seqs[:,0,:,:], 4**word_len)
+        )
+    rv = TT.concatenate(res, axis=3)
+    return rv.astype('float32').dimshuffle(0,1,3,2)
 
 word_len = 2
 #transform_array = build_embedding_conv(word_len)
 #print transform_array
 #trans_seqs = theano_conv2d(
 #    one_hot_seqs, transform_array, border_mode='valid', subsample=(word_len,1))
-seqs = ['TATGGGTT', 'AAGGGGTT', 'TTTTTTTT']
-#seqs = ['TTTT',]
+#seqs = ['TATGGGTT', 'AAGGGGTT', 'TTTTTTTT']
+seqs = ['TAATTT',]
+seq_len = len(seqs[0])
 one_hot_seqs = TT.tensor4(name='one_hot_seqs', dtype='float32')
 f = theano.function(
-    [one_hot_seqs,], multi_base_embedding(one_hot_seqs, word_len))
+    [one_hot_seqs,], 
+    multi_base_embedding(one_hot_seqs, word_len)
+)
+
+f1 = theano.function(
+    [one_hot_seqs,], theano_conv2d(
+        multi_base_embedding(one_hot_seqs, word_len), 
+        np.array([1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0], dtype='float32')[None,None,:,None],
+        subsample=(4**word_len,1)
+    )
+)
+
+f2 = theano.function(
+    [one_hot_seqs,], theano_conv2d(
+        multi_base_embedding(one_hot_seqs, word_len), 
+        np.array([1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0], dtype='float32')[None,None,:,None],
+        subsample=(4**word_len,1)
+    ).dimshuffle(0,1,3,2).reshape((1,1,word_len*((seq_len-word_len+1)//word_len),1)).dimshuffle(0,1,3,2)
+)
 
 #ddg = TT.matrix(name='ddg', dtype='float32')
 #bs_affinities = theano_conv2d(one_hot_seqs, ddg)
@@ -94,8 +116,11 @@ f = theano.function(
 #seqs = np.zeros((10, 10, 4), dtype='float32')
 one_hot_seqs = np.swapaxes(one_hot_encode_sequences(seqs), 1, 2)[:,None,:,:]
 print seqs
-print one_hot_seqs.shape
-print f(one_hot_seqs)
 print one_hot_seqs
 print one_hot_seqs.shape
+print f(one_hot_seqs)
+print one_hot_seqs.shape
 print f(one_hot_seqs).shape
+
+print f1(one_hot_seqs)
+print f2(one_hot_seqs)
