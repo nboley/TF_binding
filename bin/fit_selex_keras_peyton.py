@@ -178,7 +178,7 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = mse_skip_ambig #cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
+global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -308,7 +308,7 @@ class ConvolutionDNASequenceBinding(Layer):
                  motif_len, 
                  use_three_base_encoding=False,
                  word_size=1, # the number of bases to group into a word
-                 use_interleaved_words=True,
+                 use_interleaved_words=False,
                  W=init.HeNormal(), 
                  b=init.Constant(-3.0),
                  **kwargs):
@@ -380,11 +380,11 @@ class ConvolutionDNASequenceBinding(Layer):
         
         return rv
 
-    def get_output_for(self, input, **kwargs):        
+    def flip_sequence_get_output_for(self, input, **kwargs):
         # pad so that the output is the correct dimension
         base_pad_shape = list(input.shape[:-1])
-        left_pad_shape = tuple(base_pad_shape+[32,]) #int(math.ceil(self.motif_len/2))-1,])
-        right_pad_shape = tuple(base_pad_shape+[32,]) #int(math.floor(self.motif_len/2)),])
+        left_pad_shape = tuple(base_pad_shape+[int(math.ceil(self.motif_len/2))-1,])
+        right_pad_shape = tuple(base_pad_shape+[int(math.floor(self.motif_len/2)  ),])
         
         # embed the sequences
         X_fwd = TT.concatenate([
@@ -406,8 +406,7 @@ class ConvolutionDNASequenceBinding(Layer):
         if USE_SOFTPLUS_ACTIVATION:
             rv = softplus(rv)
         return rv
-
-
+    
     def flip_filter_get_output_for(self, input, **kwargs):
         if self.use_three_base_encoding:
             X_fwd = input[:,:,1:,:]
@@ -435,6 +434,12 @@ class ConvolutionDNASequenceBinding(Layer):
         if USE_SOFTPLUS_ACTIVATION:
             rv = softplus(rv)
         return rv
+
+    def get_output_for(self, *args, **kwargs):
+        if self.word_size == 1:
+            return self.flip_filter_get_output_for(*args, **kwargs)
+        else:
+            return self.flip_sequence_get_output_for(*args, **kwargs)
 
 def theano_calc_log_occs(affinities, chem_pot):
     inner = (-chem_pot+affinities)/(R*T)
@@ -660,7 +665,7 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 1
+        self.num_tf_specific_invitro_affinity_convs = 25
         self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
@@ -793,7 +798,8 @@ class JointBindingModel():
         return
 
     def add_simple_chipseq_model(self, pks_and_labels):
-        name = 'invivo_%s_sequence.simple' % pks_and_labels.sample_id 
+        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
+        name = 'invivo_%s_sequence' % "-".join(pks_and_labels.sample_ids) 
 
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
