@@ -980,20 +980,23 @@ class JointBindingModel():
             network = ConcatLayer([access, network], axis=2)
             network = Conv2DLayer(
                 network, n_convs, (5,15),
-                nonlinearity=lasagne.nonlinearities.leaky_rectify)
+                W=lasagne.init.HeNormal(),
+                nonlinearity=lasagne.nonlinearities.rectify)
         else:
             network = Conv2DLayer(
                 network, n_convs, (4,15),
-                nonlinearity=lasagne.nonlinearities.leaky_rectify)
+                nonlinearity=lasagne.nonlinearities.rectify)
 
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
             network, n_convs, (1,15),
-            nonlinearity=lasagne.nonlinearities.leaky_rectify)
+            W=lasagne.init.HeNormal(),
+            nonlinearity=lasagne.nonlinearities.rectify)
         network = DropoutLayer(network, 0.2)
         network = Conv2DLayer(
             network, n_convs, (1,15),
-            nonlinearity=lasagne.nonlinearities.leaky_rectify)
+            W=lasagne.init.HeNormal(),
+            nonlinearity=lasagne.nonlinearities.rectify)
         network = DropoutLayer(network, 0.2)
         network = DimshuffleLayer(network, (0,2,1,3))
         network = MaxPool2DLayer(network, (1, 35))
