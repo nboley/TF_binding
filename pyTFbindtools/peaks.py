@@ -18,7 +18,7 @@ from pysam import Tabixfile, FastaFile
 from pyDNAbinding.sequence import one_hot_encode_sequence
 
 from grit.lib.multiprocessing_utils import Counter
-from grit.files.reads import ChIPSeqReads, MergedReads
+from grit.files.reads import ChIPSeqReads, DNASESeqReads, MergedReads
 
 from cross_validation import iter_train_validation_splits
 
@@ -694,7 +694,7 @@ def load_DNASE_coverage(sample_id, peaks):
             dtype='float32')
         fnames = load_dnase_fnames(sample_id)
         reads = MergedReads([
-            ChIPSeqReads(fname).init() for fname in fnames])
+            DNASESeqReads(fname).init() for fname in fnames])
         for i, pk in enumerate(peaks):
             cov = reads.build_read_coverage_array(
                 pk[0], '.', pk[1], pk[2]-1)
