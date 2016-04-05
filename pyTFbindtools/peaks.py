@@ -613,7 +613,7 @@ def load_accessibility_data(sample_ids, pks):
         hash(tuple(fnames))
      )
     try:
-        raise IOError, 'DONT CACHE'
+        #raise IOError, 'DONT CACHE'
         with open(cached_fname) as fp:
             print "Loading cached accessibility data"
             rv = np.load(fp)

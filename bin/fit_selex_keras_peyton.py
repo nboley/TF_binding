@@ -927,7 +927,7 @@ class JointBindingModel():
 
         network = OccupancyLayer(
             network, 
-            init_chem_affinity=-8.0,
+            init_chem_affinity=-10,
             nsamples_and_sample_ids=(len(self.sample_ids), sample_ids_var),
             dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
@@ -1105,8 +1105,8 @@ class JointBindingModel():
             pks = PartitionedSamplePeaksAndLabels(
                 sample_ids, factor_names=invivo_factor_names, n_samples=n_samples)
             self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
-            #self.add_simple_chipseq_model(pks)
+            self.add_chipseq_samples(pks)
+            self.add_simple_chipseq_model(pks)
 
         self._build()
     
@@ -1455,8 +1455,8 @@ class JointBindingModel():
         auPRCs = [0.0,]
         # We iterate over epochs:
         for epoch in xrange(nb_epoch):
-            print 'auPRCs', epoch, auPRCs[-3:], max(auPRCs[-3:]), max(auPRCs)
-            if max(auPRCs[-3:]) + 1e-6 < max(auPRCs):
+            print 'auPRCs', epoch, auPRCs[-6:], max(auPRCs[-6:]), max(auPRCs)
+            if max(auPRCs[-6:]) + 1e-6 < max(auPRCs):
                 break
             
             #self._selex_penalty.set_value( 
