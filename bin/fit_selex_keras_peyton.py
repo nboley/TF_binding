@@ -969,8 +969,14 @@ class JointBindingModel():
                 shape=(None, 1, 1, pks_and_labels.seq_length),
                 input_var=access_input_var
             )
-            access = ExpressionLayer(access, lambda x: TT.log(
-                1e-12+x/TT.max(x, keepdims=True)))
+            #access = ExpressionLayer(access, lambda x: TT.log(
+            #    1e-12+x/TT.max(x, keepdims=True)))
+            access = ExpressionLayer(
+                access, 
+                lambda x: (
+                    x - TT.mean(x, axis=-1, keepdims=True)
+                )/TT.std(x, axis=-1, keepdims=True)
+            )
             network = ConcatLayer([access, network], axis=2)
             network = Conv2DLayer(
                 network, n_convs, (5,15),
@@ -1095,8 +1101,8 @@ class JointBindingModel():
                 lambda x: 2.0, (), 'chipseq_penalty')
             pks = PartitionedSamplePeaksAndLabels(
                 sample_ids, factor_names=invivo_factor_names, n_samples=n_samples)
-            #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
+            self.add_DIGN_chipseq_samples(pks)
+            #self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
 
         self._build()

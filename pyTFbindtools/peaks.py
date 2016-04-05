@@ -903,7 +903,7 @@ class SamplePeaksAndLabels():
             print "DNASE SHAPE:", self._dnase_coverage.shape
             # normalize the coverage
             sums = self._dnase_coverage.sum(axis=1).sum(axis=1)
-            self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
+            #self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
         return self._dnase_coverage
 
     @property
