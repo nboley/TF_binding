@@ -599,17 +599,21 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
 
 def load_accessibility_data(sample_ids, pks):
+    import sys
+    sys.path.insert(0, "/users/nasa/FeatureExtractionTools/bigWigFeaturize/")
+    import bigWigFeaturize
+    Region = namedtuple('Region', ['chrom', 'start', 'stop'])
     from pyTFbindtools.DB import load_dnase_fnames
     # get the correct filename
     fnames = load_dnase_fnames(sample_ids)
-    
-    pk_width = pks[0]['stop'] - pks[0]['start'] + 1
-    
+    fnames = ['/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/E114-DNase.bw',]
+    pk_width = pks[0]['stop'] - pks[0]['start']
     cached_fname = "cachedaccessibility.%s.%s.obj" % (
-        hashlib.sha1(self.pks.view(np.uint8)).hexdigest(),
+        hashlib.sha1(pks.view(np.uint8)).hexdigest(),
         hash(tuple(fnames))
-    )
+     )
     try:
+        raise IOError, 'DONT CACHE'
         with open(cached_fname) as fp:
             print "Loading cached accessibility data"
             rv = np.load(fp)
@@ -618,14 +622,14 @@ def load_accessibility_data(sample_ids, pks):
             fnames,
             pk_width, 
             intervals=[
-                Region(pk['contig'], pk['start'], pk['stop']) for pk in self.pks
+                Region(pk['contig'], pk['start'], pk['stop']) for pk in pks
             ]
-        )
+        )[:,0,0,:]
 
         with open(cached_fname, "w") as ofp:
             print "Saving accessibility data"
             np.save(ofp, rv)
-
+    
     return rv
 
 def load_chipseq_coverage(sample_id, tf_id, peaks):
@@ -898,11 +902,11 @@ class SamplePeaksAndLabels():
     def dnase_coverage(self):
         if self._dnase_coverage is None:
             self._dnase_coverage = np.concatenate([
-                load_DNASE_coverage(self.sample_id, self.pks)
+                load_accessibility_data(self.sample_id, self.pks)
             ], axis=1)
             print "DNASE SHAPE:", self._dnase_coverage.shape
-            # normalize the coverage
-            sums = self._dnase_coverage.sum(axis=1).sum(axis=1)
+            ## normalize the coverage
+            #sums = self._dnase_coverage.sum(axis=1)
             #self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
         return self._dnase_coverage
 
@@ -974,7 +978,7 @@ class SamplePeaksAndLabels():
                    'output': self.labels[indices]
             }
             if include_dnase_signal:
-                rv['dnase_cov'] = self.dnase_coverage[0,indices][:,None,None,:]
+                rv['dnase_cov'] = self.dnase_coverage[indices,None,None,:]
             if include_chipseq_signal:
                 rv['chipseq_cov'] = (
                     np.swapaxes(self.chipseq_coverage[:,indices], 0, 1))[:,:,None,:]
