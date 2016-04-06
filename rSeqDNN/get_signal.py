@@ -52,8 +52,8 @@ def encode_peaks_sequence_into_array(peaks, fasta):
 
     return data
 
-def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache='./',
-                                   local_norm_halfwidth=5000):
+def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None,
+                                   local_norm_halfwidth=500):
     """
     Extracts bigwig input arrays.
 
@@ -77,7 +77,6 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache='./',
     pk_width = peaks[0].pk_width
     # make sure that the peaks are all the same width
     assert all(pk.pk_width == pk_width for pk in peaks)
-    assert local_norm_halfwidth>1.*pk_width/2
     print('num of peaks: %i' % len(peaks))
     intervals=get_intervals_from_peaks(peaks)
     print('num of intervals: %i' % len(intervals))
@@ -136,7 +135,7 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fnames,
 
     return signal_arrays
 
-def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fname_dict,
+def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, sample_dependent_bigwigs,
                                        sample_independent_bigwigs=None,
                                        reverse_complement=False,
                                        return_labels=False, return_scores=False):
@@ -147,8 +146,9 @@ def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fn
     ----------
     peaks_and_labels : PeaksAndLabels obj
     genome_fasta : FastaFile
-    bigwig_fname_dict : dict
-        dictionary with sample names as keys and filenames as values.
+    sample_dependent_bigwigs: dict
+        dictionary with sample names as keys and lists of
+        sample-specific filenames as values.
     sample_independent_bigwigs: sequence, optional
         sample independent bigwig signals (e.g. conservation).
     reverse_complement : boolean, default: false
@@ -160,6 +160,9 @@ def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fn
     results, a list with sequence of signal arrays
     and, optionally, labels and scores.
     """
+    ## check number of bigwigs per sample is constant
+    num_bigwigs = len(sample_dependent_bigwigs.values()[0])
+    assert all(len(bigwigs)==num_bigwigs for bigwigs in sample_dependent_bigwigs.values())
     ## TODO: logic is convoluted, needs refactoring
     results = []
     per_sample_signal_arrays = []
@@ -170,7 +173,7 @@ def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fn
     for sample in samples:
         peaks_and_labels_sample = peaks_and_labels.subset_data([sample], contigs)
         print 'loading sample %s' % sample
-        bigwig_fnames = [bigwig_fname_dict[sample]]
+        bigwig_fnames = sample_dependent_bigwigs[sample]
         if sample_independent_bigwigs is not None:
             for bigwig_fname in sample_independent_bigwigs:
                 bigwig_fnames.append(bigwig_fname)
@@ -207,3 +210,19 @@ def get_peaks_signal_arrays_by_samples(peaks_and_labels, genome_fasta, bigwig_fn
             results.append(per_sample_scores[0])
 
     return results
+
+def merge_sample_specific_bigwigs(bigwig_dictionaries):
+    """
+    Merge bigwig dictionaries.
+
+    Parameters
+    ----------
+    bigwig_dictionaries: sequence of dict
+        each dict contains sample names as keys and
+        lists of filenames as values.
+
+    Returns
+    -------
+    sample_specific_bigwigs
+    """
+    pass
