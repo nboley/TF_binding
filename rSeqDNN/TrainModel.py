@@ -15,12 +15,16 @@ from pyTFbindtools.peaks import (
     load_labeled_peaks_from_fastas,
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
     load_conservation_fnames_from_DB,
+    load_matching_dnase_cut_fnames_from_DB,
     load_matching_dnase_foldchange_fnames_from_DB
 )
 from pyTFbindtools.cross_validation import (
     ClassificationResult, ClassificationResults
 )
-from get_signal import get_peaks_signal_arrays, get_peaks_signal_arrays_by_samples
+from get_signal import (
+    get_peaks_signal_arrays, get_peaks_signal_arrays_by_samples,
+    merge_sample_specific_bigwigs
+)
 from KerasModel import KerasModel, load_model
 from grid_search import MOESearch
 
@@ -49,6 +53,10 @@ def parse_args():
                         help='bigwig file to get conservation features')
     parser.add_argument('--include-conservation',  action='store_true',
                         help='integrate conservation features when loading from db')
+    parser.add_argument('--dnase-cut-features',  default=None, type=str,
+                        help='bigwig file to get features')
+    parser.add_argument('--include-dnase-cuts',  action='store_true',
+                        help='integrate dnase cut features when loading from db')
     subparsers = parser.add_subparsers(help='sub-command help', dest='command')
     train_parser = subparsers.add_parser('train', help='training help')
     test_parser = subparsers.add_parser('test', help='testing help')
@@ -119,6 +127,8 @@ def parse_args():
             args.bigwig_features = load_matching_dnase_foldchange_fnames_from_DB(args.tf_id, args.annotation_id)
         if args.include_conservation:
             args.conservation_features = load_conservation_fnames_from_DB()
+        if args.include_dnase_cuts:
+            args.dnase_cut_features = load_matching_dnase_cut_fnames_from_DB(args.tf_id, args.annotation_id)
     else:
         if args.pos_regions != None:
             assert args.neg_regions != None, \
@@ -135,6 +145,7 @@ def parse_args():
             raise ValueError('either --tf-id or (--pos-regions and --neg-regions)\
             or (--pos-sequences and --neg-sequences) must be set')
 
+    #sample_specific_bigwigs = merge_bigwigs_dictionaries(args.bigwig_features, args.dnase_cut_features)
     main_args = ( peaks_and_labels,
                   genome_fasta,
                   args.only_test_one_fold,
@@ -143,12 +154,13 @@ def parse_args():
                   args.validation_contigs,
                   args.include_model_report,
                   args.conservation_features,
+                  args.dnase_cut_features,
                   args.bigwig_features)
     if args.command=='train':
         command_args = ( args.model_prefix,
                          args.model_file,
-                         args.multi_mode,
                          args.weights_file,
+                         args.multi_mode,
                          args.jitter_peaks_by,
                          args.target_metric,
                          args.run_grid_search)
@@ -166,6 +178,7 @@ def main_train(main_args, train_args):
       validation_contigs,
       include_model_report,
       conservation_features,
+      dnase_cut_features,
       bigwig_features ) = main_args
     ( model_ofname_prefix,
       model_fname,
@@ -174,6 +187,7 @@ def main_train(main_args, train_args):
       jitter_peaks_by,
       target_metric,
       run_grid_search ) = train_args
+    bigwig_features = dnase_cut_features
     np.random.seed(random_seed) # fix random seed
     results = ClassificationResults()
     clean_results = ClassificationResults()
@@ -316,6 +330,7 @@ def main_test(main_args, test_args):
       validation_contigs,
       include_model_report,
       conservation_features,
+      dnase_cut_features,
       bigwig_features ) = main_args
     model_fname, weights_fname = test_args
     np.random.seed(random_seed) # fix random seed
