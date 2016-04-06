@@ -328,7 +328,7 @@ def load_DNASE_foldchange_files_from_db_by_sample(samples):
     cur.execute(query)
     for (sample_id, dnase_foldchange_fname) in cur.fetchall():
         if sample_id in samples:
-            rv[sample_id] = dnase_foldchange_fname
+            rv[sample_id] = [dnase_foldchange_fname]
     return rv
 
 def load_conservation_files_from_db():
@@ -352,7 +352,7 @@ def load_DNASE_cut_files_from_db_by_sample(samples):
     cur.execute(query)
     for (sample_id, dnase_foldchange_fname) in cur.fetchall():
         if sample_id in samples:
-            rv[sample_id] = dnase_foldchange_fname
+            rv[sample_id] = [dnase_foldchange_fname]
     return rv
 
 import psycopg2
