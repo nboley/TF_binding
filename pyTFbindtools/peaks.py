@@ -598,28 +598,25 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
     return peaks_and_labels
 
 
-def load_accessibility_data(sample_ids, pks):
+def load_accessibility_data(sample_id, pks):
     import sys
     sys.path.insert(0, "/users/nasa/FeatureExtractionTools/bigWigFeaturize/")
     import bigWigFeaturize
     Region = namedtuple('Region', ['chrom', 'start', 'stop'])
-    from pyTFbindtools.DB import load_dnase_fnames
-    # get the correct filename
-    fnames = load_dnase_fnames(sample_ids)
-    fnames = ['/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/E114-DNase.bw',]
+    fname = '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(sample_id)
     pk_width = pks[0]['stop'] - pks[0]['start']
     cached_fname = "cachedaccessibility.%s.%s.obj" % (
         hashlib.sha1(pks.view(np.uint8)).hexdigest(),
-        hash(tuple(fnames))
+        hash(tuple(fname))
      )
     try:
-        #raise IOError, 'DONT CACHE'
+        raise IOError, 'DONT CACHE'
         with open(cached_fname) as fp:
             print "Loading cached accessibility data"
             rv = np.load(fp)
     except IOError:
         rv = bigWigFeaturize.new(
-            fnames,
+            [fname,],
             pk_width, 
             intervals=[
                 Region(pk['contig'], pk['start'], pk['stop']) for pk in pks
@@ -708,7 +705,7 @@ def load_DNASE_coverage(sample_id, peaks):
             print "Saving cached DNASE coverage for %s (%s)" % (
                 sample_id, cached_fname)
             np.save(ofp, rv)
-    return rv
+    return rv[0,:,:]
 
 
 class SamplePeaksAndLabels():
@@ -902,6 +899,7 @@ class SamplePeaksAndLabels():
     def dnase_coverage(self):
         if self._dnase_coverage is None:
             self._dnase_coverage = np.concatenate([
+                #load_DNASE_coverage(self.sample_id, self.pks)
                 load_accessibility_data(self.sample_id, self.pks)
             ], axis=1)
             print "DNASE SHAPE:", self._dnase_coverage.shape
