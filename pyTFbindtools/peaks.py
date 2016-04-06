@@ -417,6 +417,8 @@ def build_peaks_label_mat(
     # extract the accessibility peaks
     dnase_peaks_fnames = peak_fnames['dnase']
     print annotation_id, roadmap_sample_id
+    if len(dnase_peaks_fnames) == 0:
+        raise ValueError, "Can not load DNASE peaks for roadmap sample ID '%s'" % roadmap_sample_id
     assert len(dnase_peaks_fnames) == 1
     dnase_peaks_fname = next(iter(dnase_peaks_fnames))
     del peak_fnames['dnase']

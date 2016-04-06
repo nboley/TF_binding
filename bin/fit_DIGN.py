@@ -1436,7 +1436,6 @@ class JointBindingModel():
                         index_name = str(index)
                     # skip purely ambiguous labels
                     if (labels[key][sample_indices,index] < -0.5).all():
-                        assert False
                         continue
                     res = ClassificationResult(
                         labels[key][sample_indices,index], 
@@ -1637,7 +1636,7 @@ def many_tfs_main():
         n_samples = int(sys.argv[3])
     except IndexError: 
         n_samples = None
-    validation_sample_ids = None # ['E117',]
+    validation_sample_ids = ['E114',]
     print tf_names, sample_ids, n_samples
     pks = PartitionedSamplePeaksAndLabels(
         sample_ids, 
@@ -1648,7 +1647,12 @@ def many_tfs_main():
     for batch in pks.iter_train_data(10):
         break
     print pks.factor_names
-    model = JointBindingModel(n_samples, pks.factor_names, sample_ids)
+    model = JointBindingModel(
+        n_samples, 
+        pks.factor_names, 
+        sample_ids, 
+        validation_sample_ids=validation_sample_ids
+    )
 
     #model.train(
     #    n_samples if n_samples is not None else 300000, 500, 15, balanced=True)
