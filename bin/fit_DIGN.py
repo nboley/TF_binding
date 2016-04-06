@@ -178,7 +178,7 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
+global_loss_fn = mse_skip_ambig #cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
@@ -586,7 +586,6 @@ class OccupancyLayer(Layer):
         sample_chem_affinities = TT.dot(self.sample_ids, self.chem_affinity)
         rv = input + sample_chem_affinities[:,None,:,None]
         if self.dnase_signal is not None:
-            #assert False
             rv += self.dnase_weight[None, None, :, None]*self.dnase_signal[:,None,None,None]
         return sigmoid(rv)
 
@@ -1059,6 +1058,7 @@ class JointBindingModel():
                  n_samples, 
                  invivo_factor_names, 
                  sample_ids, 
+                 validation_sample_ids=None,
                  invitro_factor_names=[],
                  use_three_base_encoding=False):
         self.factor_names = invivo_factor_names + [
@@ -1103,10 +1103,13 @@ class JointBindingModel():
             self._chipseq_regularization_penalty = create_param(
                 lambda x: 2.0, (), 'chipseq_penalty')
             pks = PartitionedSamplePeaksAndLabels(
-                sample_ids, factor_names=invivo_factor_names, n_samples=n_samples)
+                sample_ids, 
+                factor_names=invivo_factor_names, 
+                n_samples=n_samples, 
+                validation_sample_ids=validation_sample_ids)
             self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
-            self.add_simple_chipseq_model(pks)
+            #self.add_chipseq_samples(pks)
+            #self.add_simple_chipseq_model(pks)
 
         self._build()
     
@@ -1634,10 +1637,14 @@ def many_tfs_main():
         n_samples = int(sys.argv[3])
     except IndexError: 
         n_samples = None
-    
+    validation_sample_ids = None # ['E117',]
     print tf_names, sample_ids, n_samples
     pks = PartitionedSamplePeaksAndLabels(
-        sample_ids, factor_names=tf_names, n_samples=5000)
+        sample_ids, 
+        factor_names=tf_names, 
+        n_samples=5000, 
+        validation_sample_ids=validation_sample_ids
+    ) 
     for batch in pks.iter_train_data(10):
         break
     print pks.factor_names

@@ -1067,10 +1067,17 @@ class PartitionedSamplePeaksAndLabels():
     def __init__(self, 
                  roadmap_sample_ids, 
                  factor_names, 
-                 n_samples=None, 
+                 n_samples=None,
+                 validation_sample_ids=None,
                  annotation_id=1, 
                  half_peak_width=500):
+        # make sure that validation sample id is loaded
+        if validation_sample_ids is not None:
+            for sample_id in validation_sample_ids: 
+                assert sample_id in roadmap_sample_ids
+
         self.sample_ids = roadmap_sample_ids
+        self.validation_sample_ids = validation_sample_ids
         if factor_names is None:
             factor_names = set()
             for x in map(load_tf_names_for_sample, roadmap_sample_ids):
@@ -1084,9 +1091,10 @@ class PartitionedSamplePeaksAndLabels():
         self.data = {}
         self.train = {}
         self.validation = {}
+        
         for sample_id in self.sample_ids:
             try: 
-                #raise IOError, "TEST"
+                raise IOError, "TEST"
                 self._load_cached(sample_id)
             except IOError:
                 self.data[sample_id] = self._load_data(
@@ -1095,22 +1103,29 @@ class PartitionedSamplePeaksAndLabels():
                     self.n_samples, 
                     self.annotation_id, 
                     self.half_peak_width)
+                
                 assert self.data[sample_id].seq_length == self.seq_length
                 print "Splitting out train data"        
-                self.train[sample_id] = self.data[
-                    sample_id].subset_pks_by_contig(
-                        contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
-                    )
+                if ( validation_sample_ids is None 
+                     or sample_id not in validation_sample_ids ):
+                    self.train[sample_id] = self.data[
+                        sample_id].subset_pks_by_contig(
+                            contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
+                        )
+                
                 print "Splitting out validation data"        
-                self.validation[sample_id] = self.data[
-                    sample_id].subset_pks_by_contig(
-                        contigs_to_include=('chr8', 'chr9')
-                    )
-                self._save_cached(sample_id)
+                if ( validation_sample_ids is None 
+                     or sample_id in validation_sample_ids ):
+                    self.validation[sample_id] = self.data[
+                        sample_id].subset_pks_by_contig(
+                            contigs_to_include=('chr8', 'chr9')
+                        )
+                #self._save_cached(sample_id)
 
-            assert (self.train[sample_id].factor_names 
-                    == self.validation[sample_id].factor_names)
+            #assert (self.train[sample_id].factor_names 
+            #        == self.validation[sample_id].factor_names)
             #self.factor_names = self.train.factor_names
+        #assert False
 
     def iter_batches(self, batch_size, data_subset, repeat_forever, **kwargs):
         ## determine the batch sizes
@@ -1143,22 +1158,29 @@ class PartitionedSamplePeaksAndLabels():
             while True:
                 grpd_res = defaultdict(list)
                 cnts = []
-                for sample_id, iterator in iterators.iteritems():
-                    data = next(iterator)
-                    cnt = None
-                    for key, vals in data.iteritems():
-                        grpd_res[key].append(vals)
-                        if cnt == None: cnt = vals.shape[0]
-                        assert cnt == vals.shape[0]
-                    cnts.append(cnt)
+                for sample_id in self.sample_ids:
+                    if sample_id not in iterators:
+                        cnts.append(0)
+                    elif sample_id in iterators:
+                        iterator = iterators[sample_id]
+                        data = next(iterator)
+                        cnt = None
+                        for key, vals in data.iteritems():
+                            grpd_res[key].append(vals)
+                            if cnt == None: cnt = vals.shape[0]
+                            assert cnt == vals.shape[0]
+                        cnts.append(cnt)
+                    else:
+                        assert False
+                
                 for key, vals in grpd_res.iteritems():
                     grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
                     
                 # build the sample labels
                 cnts = np.array(cnts)
                 sample_labels = np.zeros(
-                    (cnts.sum(), len(iterators)), dtype='float32')
-                for i in xrange(len(data_subset)):
+                    (cnts.sum(), len(self.sample_ids)), dtype='float32')
+                for i in xrange(len(cnts)):
                     start_index = (0 if i == 0 else np.cumsum(cnts)[i-1])
                     stop_index = np.cumsum(cnts)[i]
                     sample_labels[start_index:stop_index,i] = 1                
