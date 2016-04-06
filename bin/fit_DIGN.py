@@ -178,7 +178,7 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     )
     return rv*y_true.shape[0]/cnts
 
-global_loss_fn = mse_skip_ambig #cross_entropy_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
+global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
 
 def load_data(fname):
     cached_fname = "peytons.cachedseqs.obj"
