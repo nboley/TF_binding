@@ -122,9 +122,9 @@ def set_ambiguous_labels(labels, scores, threshold):
 class KerasModelBase():
     def __init__(self, arrays_shapes=None, model_fname=None,
                  multi_mode=False, target_metric='recall_at_05_fdr',
-                 batch_size=200, num_conv_layers=3, l1_decay=0,
-                 num_conv=25, conv_height=5, conv_width=15, dropout=0.2,
-                 maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
+                 batch_size=200, num_conv_layers=5, l1_decay=0,
+                 num_conv=25, conv_height=5, conv_width=10, dropout=0.2,
+                 maxpool_size=25, maxpool_stride=25, gru_size=35, tdd_size=45,
                  model_type='cnn'):
         """
         Base class for Keras model objects.
@@ -363,12 +363,13 @@ class KerasModel(KerasModelBase):
         print("Compiling model with cross entropy loss.")
         weights_ofname = "%s.%s" % (ofname, "fit_weights.hd5")
         self.model.save_weights(weights_ofname, overwrite=True)
-        self.compile(ofname, 'binary_crossentropy', self.model.optimizer)
+        self.compile(ofname, 'binary_crossentropy', Adam())
         self.model.load_weights(weights_ofname)
         res = self.evaluate(X_validation, y_validation)
         self.best_target_metric = getattr(res, self.target_metric)
+        epochs_no_imporvement = 0
 
-        for epoch in xrange(numEpochs):
+        while epochs_no_imporvement < numEpochs:
             self.model.fit(
                 X_train, y_train,
                 validation_data=(X_validation, y_validation),
@@ -384,6 +385,9 @@ class KerasModel(KerasModelBase):
                 print("highest %s so far. Saving weights." % self.target_metric)
                 self.model.save_weights(weights_ofname, overwrite=True)
                 self.best_target_metric = current_target_metric
+                epochs_no_imporvement = 0
+            else:
+                epochs_no_imporvement += 1
 
         # load and return the best model
         print "Loading best model"
@@ -392,7 +396,7 @@ class KerasModel(KerasModelBase):
 
     def train(self, fitting_arrays, fitting_labels, fitting_scores,
               stopping_arrays, stopping_labels, stopping_scores, ofname,
-              unbalanced_train_epochs=12):
+              unbalanced_train_epochs=3):
         # filter ambiguous examples
         y_train = np.copy(fitting_labels)
         y_validation = np.copy(stopping_labels)
@@ -408,9 +412,9 @@ class KerasModel(KerasModelBase):
             X_train = fitting_arrays
             X_validation = stopping_arrays
         # fit calls with sequence of input arrays
-        print("Initializing model from balanced training set.")
-        self._fit_with_balanced_data(
-            X_train, y_train, X_validation, y_validation, ofname)
+        #print("Initializing model from balanced training set.")
+        #self._fit_with_balanced_data(
+        #    X_train, y_train, X_validation, y_validation, ofname)
 
         print("Fitting full training set with cross entropy loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
