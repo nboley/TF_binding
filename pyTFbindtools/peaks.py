@@ -602,7 +602,7 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
 def load_accessibility_data(sample_id, pks):
     import sys
-    sys.path.insert(0, "/users/nasa/FeatureExtractionTools/bigWigFeaturize/")
+    sys.path.insert(0, "/users/nboley/src/bigWigFeaturize/")
     import bigWigFeaturize
     Region = namedtuple('Region', ['chrom', 'start', 'stop'])
     fname = '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(sample_id)

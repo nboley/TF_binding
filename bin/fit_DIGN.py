@@ -664,8 +664,8 @@ class JointBindingModel():
     def _init_shared_affinity_params(self, use_three_base_encoding):
         # initialize the full subdomain convolutional filter
         self.num_invivo_convs = 0
-        self.num_tf_specific_invitro_affinity_convs = 25
-        self.num_tf_specific_invivo_affinity_convs = 0 # HERE 
+        self.num_tf_specific_invitro_affinity_convs = 1
+        self.num_tf_specific_invivo_affinity_convs = 7 # HERE 
         self.num_tf_specific_convs = (
             self.num_tf_specific_invitro_affinity_convs
             + self.num_tf_specific_invivo_affinity_convs
@@ -928,7 +928,7 @@ class JointBindingModel():
             network, 
             init_chem_affinity=-10,
             nsamples_and_sample_ids=(len(self.sample_ids), sample_ids_var),
-            dnase_signal=None #TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
+            dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
         network = OccMaxPool(network, 1, 4)
@@ -956,7 +956,7 @@ class JointBindingModel():
         self._target_vars[name + '.output'] = target_var
         self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
 
-        n_convs = 25*len(self.factor_names)
+        n_convs = int(25*(1+np.log2(len(self.factor_names))))
         
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
@@ -1107,8 +1107,8 @@ class JointBindingModel():
                 factor_names=invivo_factor_names, 
                 n_samples=n_samples, 
                 validation_sample_ids=validation_sample_ids)
-            self.add_DIGN_chipseq_samples(pks)
-            #self.add_chipseq_samples(pks)
+            #self.add_DIGN_chipseq_samples(pks)
+            self.add_chipseq_samples(pks)
             #self.add_simple_chipseq_model(pks)
 
         self._build()
