@@ -13,19 +13,17 @@ from pyTFbindtools.cross_validation import (
     plot_ambiguous_peaks,
     plot_peak_ranks,
     plot_pr_curve )
-from pyTFbindtools.peaks import merge_peaks_and_labels, get_intervals_from_peaks
 from ScoreModel import (
     score_convolutions, rank_convolutions,
     get_encode_pwm_hits,
     plot_convolutions )
-from extractors import BigwigExtractor
+from get_signal import encode_peaks_sequence_into_array, encode_peaks_bigwig_into_array
 
-from keras.preprocessing import sequence
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
 from keras.models import Sequential
 from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute,
-    Flatten )
+    Flatten, Merge )
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.models import model_from_json
@@ -56,22 +54,36 @@ def balance_matrices(X, labels, balance_option='downsample'):
 
     Parameters
     ----------
-    X : ndarray
-        Expected shape is (samples, input_dim).
+    X : ndarray or sequence of ndarray
+        Expected shape is (samples, 1, height, length),
+        uniform samples and length in ndarrays.
     labels : 1d array
         Expects label of 1 for positives and 0 for negatives.
     balance_option : string, optional
         Method used to balance data.
         Legal values: 'downsample', 'upsample'.
+    Returns
+    -------
+    X_balanced : ndarray or sequence of ndarray
+        ndarrays balanced uniformly if a sequence.
+    y : 1d array
+        balanced labels.
     """
-    pos_full = X[(labels == 1)]
-    neg_full = X[(labels == 0)]
+    if isinstance(X, list):
+        heights = [np.shape(x)[2] for x in X]
+        X = np.concatenate(X, axis=2)
+    pos_indxs = np.where(labels==1)[0]
+    neg_indxs = np.where(labels==0)[0]
+    pos_size = len(pos_indxs)
+    neg_size = len(neg_indxs)
     if balance_option=='downsample':
-        sample_size = min(pos_full.shape[0], neg_full.shape[0])
-        pos = pos_full[
-            np.random.choice(pos_full.shape[0], sample_size, replace=False)]
-        neg = neg_full[
-            np.random.choice(neg_full.shape[0], sample_size, replace=False)]
+        sample_size = min(pos_size, neg_size)
+        if neg_size > pos_size:
+            pos = np.take(X, pos_indxs, axis=0)
+            neg = np.take(X, np.random.choice(neg_indxs, pos_size, replace=False), axis=0)
+        else:
+            neg = np.take(X, neg_indxs, axis=0)
+            pos = np.take(X, np.random.choice(pos_indxs, neg_size, replace=False), axis=0)
     elif balance_option=='upsample':
         sample_size = max(pos_full.shape[0], neg_full.shape[0])
         pos = pos_full[
@@ -80,36 +92,26 @@ def balance_matrices(X, labels, balance_option='downsample'):
             np.random.choice(neg_full.shape[0], sample_size, replace=True)]
     else:
         raise ValueError('invalid matrix balancing option!')
-    return np.vstack((pos, neg)), np.array(
-        [1]*sample_size + [0]*sample_size, dtype='float32')
-
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
-    for i, pk in enumerate(peaks):
-        if pk.seq is not None:
-            seq = pk.seq
-        else:
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-        # skip sequences overrunning the contig boundary
-        if len(seq) != pk_width: continue
-        coded_seq = one_hot_encode_sequence(seq)
-        data[i] = coded_seq
-    # swap base and position axes
-    return data.swapaxes(1,2)
-
-def add_reverse_complements(X, y):
-    return np.concatenate((X, X[:, :, ::-1, ::-1])), np.concatenate((y, y))
+    y = np.array([1]*sample_size + [0]*sample_size, dtype='float32')
+    if isinstance(X, list):
+        X_arr_balanced = np.vstack((pos, neg))
+        cum_height = np.cumsum([0]+heights)
+        X_balanced = []
+        for i in range(len(cum_height)-1):
+            X_balanced.append(X_arr_balanced[:,:,cum_height[i]:cum_height[i+1],:])
+        return X_balanced, y
+    else:
+        X_balanced = np.vstack((pos, neg))
+        return X_balanced, y
 
 def load_model(fname):
-    try:
-        with open(fname) as fp:
+    '''loads model saved as json or pickle file.
+    '''
+    if 'json' in fname:
+        return model_from_json(open(fname).read())
+    else:
+        with open(fname, 'r') as fp:
             return pickle.load(fp)
-    except:
-        return model_from_json(open(fname, 'r').read())
 
 def set_ambiguous_labels(labels, scores, threshold):
     ambig_labels = (labels == -1)
@@ -118,17 +120,25 @@ def set_ambiguous_labels(labels, scores, threshold):
     return labels
 
 class KerasModelBase():
-    def __init__(self, peaks_and_labels, target_metric='recall_at_05_fdr',
-                 batch_size=200, num_conv_layers=3, l1_decay=0,
-                 num_conv=25, conv_height=4, conv_width=15, dropout=0.2,
-                 maxpool_size=35, maxpool_stride=35, gru_size=35, tdd_size=45,
+    def __init__(self, arrays_shapes=None, model_fname=None,
+                 multi_mode=False, target_metric='recall_at_05_fdr',
+                 batch_size=200, num_conv_layers=5, l1_decay=0,
+                 num_conv=25, conv_height=5, conv_width=10, dropout=0.2,
+                 maxpool_size=25, maxpool_stride=25, gru_size=35, tdd_size=45,
                  model_type='cnn'):
         """
         Base class for Keras model objects.
+        Note: either arrays_shapes or model_fname have to be provided.
 
         Parameters
         ----------
-        peaks_and_labels : PeaksAndLabels
+        arrays_shapes : list, optional
+            list of shape tuples for each input array modality.
+        model_fname : keras model, optional
+            can be initialized from keras architecture.
+        stack_arrays : boolean, default: true
+            if true, input arrays are stacked into multi-channel format.
+            if false, each array connected to separate convolutions.
         target_metric : string, default: 'recall_at_05_fdr'
             Metric used for model selection.
             Expects an attribute of ClassificationResult.
@@ -150,40 +160,81 @@ class KerasModelBase():
         model_type, string, default: 'cnn'
             Model type. Legal values: 'cnn', 'cnn-rnn'tdd'.
         """
+        assert model_fname is not None or arrays_shapes is not None, \
+            "Either model_fname or arrays_shapes needed to initialize KerasModel!"
+        self.stack_arrays = not multi_mode
         self.batch_size = batch_size
-        self.seq_len = peaks_and_labels.max_peak_width
         self.ambiguous_peak_threshold = None
         self.target_metric = target_metric
+        # load model if provided, otherwise build model
+        if model_fname is not None:
+            self.model = load_model(model_fname)
+            return
+        # check uniform samples and length dimensions
+        assert all(shape[0] == arrays_shapes[0][0] for shape in arrays_shapes)
+        assert all(shape[-1] == arrays_shapes[0][-1] for shape in arrays_shapes)
+        length = arrays_shapes[0][-1]
 
         print 'building rSeqDNN architecture...'
-        num_conv_outputs = ((self.seq_len - num_conv_layers*conv_width) + num_conv_layers)
+        num_conv_outputs = ((length - num_conv_layers*conv_width) + num_conv_layers)
         num_maxpool_outputs = int(((num_conv_outputs-maxpool_size)/maxpool_stride)+1)
 
         # this fixes an implementation bug in Keras. If this is not true,
         # then the code runs much more slowly
         assert maxpool_size%maxpool_stride == 0
 
-        # Define architecture     
+        # Define architecture
         self.model = Sequential()
-        self.model.add(Convolution2D(
-            num_conv,
-            conv_height, conv_width,
-            activation="relu", init="he_normal",
-            input_shape=(1, conv_height, self.seq_len)
-        ))
-        self.model.add(Dropout(dropout))
-        for i in xrange(1, num_conv_layers):
+        if self.stack_arrays:
+            stacked_height = sum(shape[-2] for shape in arrays_shapes)
             self.model.add(Convolution2D(
                 num_conv,
-                1, conv_width,
+                stacked_height, conv_width,
                 activation="relu", init="he_normal",
-                W_regularizer=l1(l1_decay)
+                input_shape=(1, stacked_height, length)
+            ))
+            self.model.add(Dropout(dropout))
+            for i in xrange(1, num_conv_layers):
+                self.model.add(Convolution2D(
+                    num_conv,
+                    1, conv_width,
+                    activation="relu", init="he_normal",
+                    W_regularizer=l1(l1_decay)
                 ))
+                self.model.add(Dropout(dropout))
+        else:
+            unimodal_cnns = []
+            # build cnn for each mode
+            for i, shape in enumerate(arrays_shapes):
+                cnn = Sequential()
+                height = shape[-2]
+                cnn.add(Convolution2D(
+                    num_conv,
+                    height, conv_width,
+                    activation="relu", init="he_normal",
+                    input_shape=shape[1:]))
+                cnn.add(Dropout(dropout))
+                for i in xrange(1, num_conv_layers-1):
+                    cnn.add(Convolution2D(
+                        num_conv,
+                        1, conv_width,
+                        activation="relu", init="he_normal",
+                        W_regularizer=l1(l1_decay)))
+                    cnn.add(Dropout(dropout))
+                unimodal_cnns.append(cnn)
+            # concatenate unimodal cnns
+            self.model.add(Merge(unimodal_cnns, mode='concat', concat_axis=2))
+            # run conv layer on combined output
+            self.model.add(Convolution2D(
+                num_conv,
+                len(arrays_shapes), conv_width,
+                activation="relu", init="he_normal",
+                W_regularizer=l1(l1_decay)))
             self.model.add(Dropout(dropout))
         self.model.add(MaxPooling2D(
-            pool_size=(1,maxpool_size),
-            strides=(1,maxpool_stride)
-        ))
+                pool_size=(1,maxpool_size),
+                strides=(1,maxpool_stride)
+            ))
         if model_type=='cnn':
             self.model.add(Flatten())
         elif model_type=='cnn-rnn-tdd':
@@ -203,101 +254,85 @@ class KerasModelBase():
         return abs(hash(str(self.model.get_config())))
 
     def compile(self, ofname, loss, optimizer, class_mode="binary"):
-        loss_name = loss if isinstance(loss, str) else loss.__name__
-        fname = "%s.MODEL.%s.json" % (ofname, loss_name)
         print "compiling model..."
         self.model.compile(optimizer,
                            loss,
                            class_mode)
         print("Serializing compiled model." )
-        json_string = self.model.to_json()
-        open(fname, 'w').write(json_string)
+        loss_name = loss if isinstance(loss, str) else loss.__name__
+        if not isinstance(self.model.layers[0], Merge):
+            fname = "%s.MODEL.%s.json" % (ofname, loss_name)
+            json_string = self.model.to_json()
+            open(fname, 'w').write(json_string)
+        else:
+        # json is not stable for some merged models
+        # pickle instead
+            fname = "%s.MODEL.%s.pkl" % (ofname, loss_name)
+            with open(fname, 'w') as fp:
+                pickle.dump(self.model, fp)
 
     def predict(self, X_validation, verbose=False):
-        preds = self.model.predict_classes(X_validation, verbose=int(verbose))
-        # move the predicted labels into 0, 1 space
-        preds[preds == 0] = 0
-        return preds
+        if self.stack_arrays and isinstance(X_validation, list):
+            return self.model.predict_classes(np.concatenate(X_validation, axis=2),
+                                              verbose=int(verbose))
+        else:
+            return self.model.predict_classes(X_validation, verbose=int(verbose))
 
-    def predict_proba(self, predictors, verbose=False):
-        return self.model.predict_proba(predictors, verbose=int(verbose))
-    
+    def predict_proba(self, X_validation, verbose=False):
+        if self.stack_arrays and isinstance(X_validation, list):
+            return self.model.predict_proba(np.concatenate(X_validation, axis=2),
+                                            verbose=int(verbose))
+        else:
+            return self.model.predict_proba(X_validation, verbose=int(verbose))
+
     def find_optimal_ambiguous_peak_threshold(self, X, y, scores):
         return find_optimal_ambiguous_peak_threshold(
-            self, X, y, scores, 20)
-    
+            self, X, y, scores, 20, self.target_metric)
+
     def evaluate(self, X_validation, y_validation):
         preds = self.predict(X_validation)
         pred_probs = self.predict_proba(X_validation)
         return ClassificationResult(y_validation, preds, pred_probs)
-    
-    def evaluate_peaks_and_labels(
-            self, 
-            data, 
-            genome_fasta=None,
-            filter_ambiguous_labels=False,
-            bigwig_fnames=None,
-            plot_fname=None):
-        '''evaluate model
-        '''
-        X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data, genome_fasta,
-            filter_ambiguous_labels=filter_ambiguous_labels, bigwig_fnames=bigwig_fnames)
-        # set the ambiguous labels
-        if not filter_ambiguous_labels:
+
+    def evaluate_peaks_and_labels(self, X, labels, include_ambiguous_labels=False,
+                                  scores=None, plot_fname=None):
+        """
+        Evaluate model performance.
+
+        Parameters
+        ----------
+        X : sequence of ndarray
+        labels : 1d array
+        include_ambiguous_labels : boolean, default: False
+        scores : 1d array, required if include_ambiguous_labels
+        plot_fname : str, optional
+
+        Returns
+        -------
+        ClassificationResult, optionally plots ambiguous examples.
+        """
+        y_true = np.copy(labels)
+        if include_ambiguous_labels:
+            assert scores is not None, \
+                "model evaluation with ambiguous labels: must include scores!"
             if plot_fname is not None:
                 plot_ambiguous_peaks(
-                    data.scores[y_validation == 0], 
-                    self.predict_proba(X_validation)[y_validation == 0], 
+                    scores[y_true == -1],
+                    self.predict_proba(X)[y_true == -1],
                     plot_fname)
-            y_validation = set_ambiguous_labels(
-                y_validation, data.scores, self.ambiguous_peak_threshold)
- 
-        return self.evaluate(X_validation, y_validation)
-
-    def _reshape_coded_seqs_array(self, coded_seqs):
-        '''Reshape coded seqs into Keras acceptible format.
-        '''
-        if len(np.shape(coded_seqs)) == 3:
-            return np.reshape(coded_seqs, (len(coded_seqs), 1, 4, self.seq_len))
+            y_true = set_ambiguous_labels(
+                y_true, scores, self.ambiguous_peak_threshold)
         else:
-            return coded_seqs
+            X = [X_arr[y_true != -1,:,:,:] for X_arr in X]
+            y_true = y_true[y_true != -1]
 
-    def build_predictor_and_label_matrices(
-            self, data, genome_fasta=None, bigwig_fname=None, filter_ambiguous_labels=True):
-        signal_arr_list = []
-        if genome_fasta is not None:
-            signal_arr_list.append(self._reshape_coded_seqs_array(
-                encode_peaks_sequence_into_binary_array(
-                    data.peaks, genome_fasta)))
-        if bigwig_fname is not None:
-            print('loading features from bigwig...')
-            N = len(data.labels)
-            bigwig_batch_size = 1000
-            bw = BigwigExtractor(bigwig_fname)
-            pks, samples, labels, scores = data[:bigwig_batch_size]
-            bigwig_features = bw(get_intervals_from_peaks(zip(pks, samples, labels, scores)))
-            for start in xrange(bigwig_batch_size, N, bigwig_batch_size):
-                stop = min(start+bigwig_batch_size, N)
-                pks, samples, labels, scores = data[start:stop]
-                data_batch = zip(pks, samples, labels, scores)
-                bigwig_features = np.concatenate((bigwig_features, bw(get_intervals_from_peaks(data_batch))))
-            signal_arr_list.append(bigwig_features)
-        X = np.concatenate(tuple(signal_arr_list), axis=2)
-        y = np.array(data.labels, dtype='float32')
-        if filter_ambiguous_labels:
-            X = X[y != -1,:,:,:]
-            y = y[y != -1]
-
-        return X, y
+        return self.evaluate(X, y_true)
 
 class KerasModel(KerasModelBase):
     def _fit_with_balanced_data(
             self, X_train, y_train, X_validation, y_validation, ofname):
-        b_X_validation, b_y_validation = balance_matrices(
-            X_validation, y_validation)
+        b_X_validation, b_y_validation = balance_matrices(X_validation, y_validation)
         b_X_train, b_y_train = balance_matrices(X_train, y_train)
-        b_X_train, b_y_train = add_reverse_complements(b_X_train, b_y_train)
         print 'num training positives: ', sum(b_y_train==1)
         print 'num training negatives: ', sum(b_y_train==0)
         
@@ -318,7 +353,6 @@ class KerasModel(KerasModelBase):
         return self
 
     def _fit(self, X_train, y_train, X_validation, y_validation, numEpochs, ofname):
-        X_train, y_train = add_reverse_complements(X_train, y_train)
         neg_class_cnt = (y_train == 0).sum()
         pos_class_cnt = (y_train == 1).sum()
         assert neg_class_cnt + pos_class_cnt == len(y_train)
@@ -333,8 +367,9 @@ class KerasModel(KerasModelBase):
         self.model.load_weights(weights_ofname)
         res = self.evaluate(X_validation, y_validation)
         self.best_target_metric = getattr(res, self.target_metric)
+        epochs_no_imporvement = 0
 
-        for epoch in xrange(numEpochs):
+        while epochs_no_imporvement < numEpochs:
             self.model.fit(
                 X_train, y_train,
                 validation_data=(X_validation, y_validation),
@@ -350,56 +385,59 @@ class KerasModel(KerasModelBase):
                 print("highest %s so far. Saving weights." % self.target_metric)
                 self.model.save_weights(weights_ofname, overwrite=True)
                 self.best_target_metric = current_target_metric
+                epochs_no_imporvement = 0
+            else:
+                epochs_no_imporvement += 1
 
         # load and return the best model
         print "Loading best model"
         self.model.load_weights(weights_ofname)
         return self
 
-    def train(self, data, ofname, genome_fasta=None,
-              bigwig_fname=None, jitter_peaks_by=None, unbalanced_train_epochs=12):
-        # split into fitting and early stopping
-        data_fitting, data_stopping = next(data.iter_train_validation_subsets())
-        if jitter_peaks_by is not None:
-            data_fitting_positives = data_fitting.filter_by_label(1)
-            jittered_positives = merge_peaks_and_labels(
-                data_fitting_positives.jitter_peaks(jitter)
-                for jitter in jitter_peaks_by)
-            data_fitting = data_fitting.add_peaks_and_labels(jittered_positives)
-        X_validation, y_validation = self.build_predictor_and_label_matrices(
-            data_stopping, genome_fasta,
-            bigwig_fname, filter_ambiguous_labels=True)
-
-        X_train, y_train = self.build_predictor_and_label_matrices(
-            data_fitting, genome_fasta,
-            bigwig_fname, filter_ambiguous_labels=True)
-
-        print("Initializing model from balanced training set.")
-        self._fit_with_balanced_data(
-            X_train, y_train, X_validation, y_validation, ofname)
+    def train(self, fitting_arrays, fitting_labels, fitting_scores,
+              stopping_arrays, stopping_labels, stopping_scores, ofname,
+              unbalanced_train_epochs=3):
+        # filter ambiguous examples
+        y_train = np.copy(fitting_labels)
+        y_validation = np.copy(stopping_labels)
+        if self.stack_arrays:
+            fitting_arrays = [np.concatenate(fitting_arrays, axis=2)]
+            stopping_arrays = [np.concatenate(stopping_arrays, axis=2)]
+        if any(fitting_labels==-1) or any(stopping_labels==-1):
+            X_train = [X[fitting_labels != -1,:,:,:] for X in fitting_arrays]
+            y_train = y_train[y_train != -1]
+            X_validation = [X[stopping_labels != -1,:,:,:] for X in stopping_arrays]
+            y_validation = y_validation[y_validation != -1]
+        else:
+            X_train = fitting_arrays
+            X_validation = stopping_arrays
+        # fit calls with sequence of input arrays
+        #print("Initializing model from balanced training set.")
+        #self._fit_with_balanced_data(
+        #    X_train, y_train, X_validation, y_validation, ofname)
 
         print("Fitting full training set with cross entropy loss.")
         self._fit(X_train, y_train, X_validation, y_validation,
                   unbalanced_train_epochs, ofname)
 
-        if any(data.labels==-1):
-            # build predictor matrices with  ambiguous labels
-            print("Setting the ambiguous labels peak threshold.")
-            X_train, y_train = self.build_predictor_and_label_matrices(
-                data_fitting, genome_fasta, bigwig_fname, filter_ambiguous_labels=False)
+        if any(fitting_labels==-1) or any(stopping_labels==-1):
+            print("Starting training with ambiguous examples...")
+            print("Setting the ambiguous labels peak threshold...")
+            X_train = fitting_arrays
+            y_train = np.copy(fitting_labels)
+            X_validation = stopping_arrays
+            y_validation = np.copy(stopping_labels)
             self.ambiguous_peak_threshold = \
                 self.find_optimal_ambiguous_peak_threshold(
-                    X_train, y_train, data_fitting.scores)
+                    X_train, y_train, fitting_scores)
             y_train = set_ambiguous_labels(
-                y_train, data_fitting.scores, self.ambiguous_peak_threshold)
+                y_train, fitting_scores, self.ambiguous_peak_threshold)
 
-            X_validation, y_validation = self.build_predictor_and_label_matrices(
-                data_stopping, genome_fasta, bigwig_fname, filter_ambiguous_labels=False)
             y_validation = set_ambiguous_labels(
-                y_validation, data_stopping.scores, self.ambiguous_peak_threshold)
+                y_validation, stopping_scores, self.ambiguous_peak_threshold)
             print self.evaluate(X_validation, y_validation)
 
-            print("Re-fitting the model with the imputed data.")
+            print("Re-fitting the model with the imputed ambiguous examples...")
             self._fit(X_train, y_train, X_validation, y_validation,
                       unbalanced_train_epochs, ofname)
 
@@ -407,19 +445,35 @@ class KerasModel(KerasModelBase):
 
     def score(self): return self.best_target_metric
 
-    def classification_report(
-            self, data, genome_fasta, ofname, filter_ambiguous_labels=True):
-        '''plots TP, FP, FN, TN peaks
-        '''
-        X, y_true = self.build_predictor_and_label_matrices(
-            data, genome_fasta, False)
-        if filter_ambiguous_labels:
-            X = X = X[y_true != -1,:,:,:]
-            y_true_scores = data.scores[y_true != -1]
-            y_true = y_true[y_true != -1]
+    def classification_report(self, X, labels, ofname, scores=None):
+        """
+        Generate plots summarizing model behavior.
+
+        Parameters
+        ----------
+        X : sequence of ndarrays
+            model inputs.
+        labels : 1d array
+        ofname : string
+        scores : 1d array, optional
+
+        Returns
+        -------
+        Precision recall curve,
+        ranked sequence filter plots matched to known motifs
+        """
+        y_true = np.copy(labels)
+        if any(labels == -1):
+            if scores is not None:
+                y_true = set_ambiguous_labels(
+                    y_true, scores, self.ambiguous_peak_threshold)
+            else:
+                X = [X_arr[y_true != -1,:,:,:] for X_arr in X]
+                y_true = y_true[y_true != -1]
         y_pred = self.predict(X).squeeze()
         y_pred_scores = self.predict_proba(X).squeeze()
-        plot_peak_ranks(y_pred, y_pred_scores, y_true, y_true_scores, ofname)
+        if scores is not None:
+            plot_peak_ranks(y_pred, y_pred_scores, y_true, scores, ofname)
         plot_pr_curve(y_true, y_pred_scores, ofname)
         print 'getting encode pwm matches...'
         encode_pwm_hits = get_encode_pwm_hits(self.model)

@@ -34,7 +34,7 @@ def encode_peaks_sequence_into_fasta_file(
         # it must run off the chromosome so skip it
         if len(seq) != pk.pk_width: 
             continue
-        if label == 0: # skip ambiguous peaks if included
+        if label == -1: # skip ambiguous peaks if included
             continue
         fasta_tsf.write('>'+str(i)+'\n')
         fasta_tsf.write(seq+'\n')
@@ -79,17 +79,53 @@ def get_deepsea_sample_name(sample):
         raise ValueError(
             'this sample is not supported for DeepSea predictions!')
 
+deepsea_tf_name_dict = {}
+deepsea_tf_name_dict['T011266_1.02'] = 'Max'
+deepsea_tf_name_dict['T044268_1.02'] = 'CTCF'
+deepsea_tf_name_dict['T007405_1.02'] = 'ARID3A'
+deepsea_tf_name_dict['T025301_1.02'] = 'ATF3'
+deepsea_tf_name_dict['T044305_1.02'] = 'BCL11A'
+deepsea_tf_name_dict['T153674_1.02'] = 'BCL3'
+deepsea_tf_name_dict['T153671_1.02'] = 'BCLAF1'
+deepsea_tf_name_dict['T014206_1.02'] = 'BHLHE40'
+deepsea_tf_name_dict['T077335_1.02'] = 'BRCA1'
+deepsea_tf_name_dict['T025313_1.02'] = 'CEBPB'
+deepsea_tf_name_dict['T076679_1.02'] = 'E2F6'
+deepsea_tf_name_dict['T076679_1.02'] = 'Egr-1'
+deepsea_tf_name_dict['T077988_1.02'] = 'ELF1'
+deepsea_tf_name_dict['T077991_1.02'] = 'ETS1'
+deepsea_tf_name_dict['T081595_1.02'] = 'FOXA1'
+deepsea_tf_name_dict['T077997_1.02'] = 'GABP'
+deepsea_tf_name_dict['T084684_1.02'] = 'GATA2'
+deepsea_tf_name_dict['T132746_1.02'] = 'HNF4A'
+deepsea_tf_name_dict['T025316_1.02'] = 'c-Jun'
+deepsea_tf_name_dict['T025286_1.02'] = 'JunD'
+deepsea_tf_name_dict['T025320_1.02'] = 'MafF'
+deepsea_tf_name_dict['T025323_1.02'] = 'MafK'
+deepsea_tf_name_dict['T014210_1.02'] = 'c-Myc'
+deepsea_tf_name_dict['T014191_1.02'] = 'Mxi1'
+deepsea_tf_name_dict['T153691_1.02'] = 'NF-YB'
+deepsea_tf_name_dict['T153683_1.02'] = 'Nrf1'
+deepsea_tf_name_dict['T044249_1.02'] = 'NRSF'
+deepsea_tf_name_dict['T138768_1.02'] = 'RFX5'
+deepsea_tf_name_dict['T153703_1.02'] = 'SIN3A'
+deepsea_tf_name_dict['T093385_1.02'] = 'SIX5'
+deepsea_tf_name_dict['T044652_1.02'] = 'SP1'
+deepsea_tf_name_dict['T044474_1.02'] = 'SP2'
+deepsea_tf_name_dict['T077981_1.02'] = 'PU.1'
+deepsea_tf_name_dict['T150542_1.02'] = 'TBP'
+deepsea_tf_name_dict['T014212_1.02'] = 'TCF12'
+deepsea_tf_name_dict['T144100_1.02'] = 'TCF7L2'
+deepsea_tf_name_dict['T151689_1.02'] = 'TEAD4'
+deepsea_tf_name_dict['T014218_1.02'] = 'USF1'
+deepsea_tf_name_dict['T014176_1.02'] = 'USF2'
+deepsea_tf_name_dict['T044261_1.02'] = 'YY1'
+deepsea_tf_name_dict['T044578_1.02'] = 'ZBTB33'
+deepsea_tf_name_dict['T044594_1.02'] = 'ZBTB7A'
+deepsea_tf_name_dict['T044468_1.02'] = 'Znf143'
+
 def get_deepsea_tf_name(tf_id):
-    if tf_id=='T014210_1.02': # MYC
-        return 'c-Myc'
-    elif tf_id=='T011266_1.02': # MAX
-        return 'Max'
-    elif tf_id=='T044261_1.02': # YY1
-        return 'YY1'
-    elif tf_id=='T044268_1.02': # CTCF
-        return 'CTCF'
-    else:
-        raise ValueError('this TF is not supported for DeepSea predictions!')
+    return deepsea_tf_name_dict[tf_id]
 
 def get_scores_from_deepsea_output(read_lines, tf_id, sample):
     '''get deepsea probabilities for tf_name from deepsea output
@@ -121,7 +157,7 @@ def score_seq_with_deepsea_model(tf_id, sample, input_fasta, output_dir):
     '''scores sequences and returns arrays with scores
     TODO: check rundeepsea.py is in PATH
     '''
-    command = ' '.join(['python ./rundeepsea_fixed.py',
+    command = ' '.join(['python ./rundeepsea.py',
                         input_fasta,
                         output_dir])
     # run command
@@ -170,9 +206,9 @@ def download_and_fix_deepsea():
     BASE_PATH = os.path.abspath(os.path.dirname(__file__))
     DEEPSEA_PATH = os.path.join(BASE_PATH, "./DeepSEA-v0.93/")
     deepsea_script = os.path.join(
-        DEEPSEA_PATH, "rundeepsea_fixed.py")
-    patched_deepsea_script = os.path.join(
         DEEPSEA_PATH, "rundeepsea.py")
+    patched_deepsea_script = os.path.join(
+        DEEPSEA_PATH, "rundeepsea_fixed.py")
     download_deepsea_script = os.path.join(
         BASE_PATH, "./download_deepsea.sh")
     # If we've already done this, then continue
@@ -180,9 +216,10 @@ def download_and_fix_deepsea():
         return
 
     initial_wd = os.getcwd()
-
+    
     # download deepsea
-    if not os.path.exists(download_deepsea_script):
+    if not os.path.exists(DEEPSEA_PATH):
+        print 'downloading deepsea...'
         os.chdir(BASE_PATH) # cd to run deepsea
         if not os.path.exists(download_deepsea_script):
             raise ValueError('download_deepsea.sh is missing! exiting!')
@@ -194,6 +231,7 @@ def download_and_fix_deepsea():
     os.chdir(DEEPSEA_PATH) # cd to run deepsea    
     with open(deepsea_script, 'r') as fp:
         deepsea_lines = fp.readlines()
+    print "patched_deepsea_script:", patched_deepsea_script
     with open(patched_deepsea_script, 'w') as wf:
         wf.write('#!/usr/bin/env python') # modify 
         for line in deepsea_lines[:16]:
@@ -258,7 +296,7 @@ def parse_args():
             args.annotation_id,
             args.half_peak_width, 
             args.max_num_peaks_per_sample, 
-            args.include_ambiguous_peaks)
+            include_ambiguous_peaks=True)
     else:
         assert args.pos_regions != None and args.neg_regions != None, \
             "either --tf-id or both (--pos-regions and --neg-regions) must be set"
@@ -323,7 +361,7 @@ def run_deepsea(input_list):
     
     pred_labels = np.zeros(len(scores))
     pred_labels[scores > 0.5] = 1.0
-    pred_labels[scores <= 0.5] = -1.0
+    pred_labels[scores <= 0.5] = 0.0
     assert len(labels)==len(pred_labels)
     assert len(pred_labels)==len(scores)
     for i in xrange(len(scores)):
@@ -346,6 +384,7 @@ def main():
         print 'subsetting to deepsea test data...'
         validation_data = peaks_and_labels.subset_data([sample],
                                                        validation_contigs)
+        validation_data = validation_data.remove_ambiguous_labeled_entries()
         print 'creating thread safe iterator..'
         validation_data_iterator = validation_data.thread_safe_iter()
         ofname = "deepsea.results.%s.%s.txt" % (tf_id, sample)

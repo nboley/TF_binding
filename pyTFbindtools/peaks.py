@@ -36,6 +36,19 @@ class NarrowPeak(NarrowPeakData):
     def pk_width(self):
         return self.stop - self.start
 
+    def outside_contig_edge(self, contig_edge, genome_fasta):
+        """
+        Checks if peak is within specified distance of contig edge.
+        Note: norm window starts from peak center, not summit.
+        """
+        contig_start_edge = 0 + contig_edge
+        contig_stop = genome_fasta.lengths[genome_fasta.references.index(self.contig)]
+        contig_end_edge = contig_stop - contig_edge
+        if self.start>contig_start_edge and self.stop<=contig_end_edge:
+            return True
+        else:
+            return False
+
 class Peaks(list):
     pass
 
@@ -126,7 +139,7 @@ class PeaksAndLabels():
         self.labels.flags.writeable = False
         self.scores = np.array(self.scores, dtype='float32')
         self.scores.flags.writeable = False
-        
+
     def subset_data(self, sample_names, contigs):
         '''return data covering sample+names and contigs
         '''
@@ -162,18 +175,20 @@ class PeaksAndLabels():
             if pk_and_label.label == label
         )
 
-    def add_peaks_and_labels(self, peaks_and_labels):
+    def filter_by_contig_edge(self, contig_edge, genome_fasta):
         """
-        Append entries in peaks_and_labels.
+        Removes peaks where norm window runs over chr edge.
         """
         return PeaksAndLabels(
-            chain.from_iterable([self, peaks_and_labels]))
+            pk_and_label for pk_and_label in self
+            if pk_and_label.peak.outside_contig_edge(contig_edge, genome_fasta)
+        )
 
     def iter_train_validation_subsets(
-            self, validation_contigs=None, single_celltype=False):
+            self, validation_contigs=None, same_celltype=False, single_celltype=False):
         for train_indices, valid_indices in iter_train_validation_splits(
                 self.sample_ids, self.contigs,
-                validation_contigs, single_celltype):
+                validation_contigs, same_celltype, single_celltype):
             yield (self.subset_data(*train_indices),
                    self.subset_data(*valid_indices))
 
@@ -201,11 +216,10 @@ def merge_peaks_and_labels(*peaks_and_labels_iterable):
     """
     return PeaksAndLabels(chain.from_iterable(*peaks_and_labels_iterable))
 
-def get_intervals_from_peaks(peaks_and_labels):
+def get_intervals_from_peaks(peaks):
     '''returns list of pybedtools intervals
     '''
-    return [Interval(pk.contig, pk.start, pk.stop)
-            for pk, sample, label, score in peaks_and_labels]
+    return [Interval(pk.contig, pk.start, pk.stop) for pk in peaks]
 
 class FastaPeaksAndLabels(PeaksAndLabels):
     @staticmethod
@@ -278,13 +292,14 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
 
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
-        half_peak_width=None):
+        half_peak_width=None,
+        max_num_peaks_per_sample=None):
     def iter_all_pks():        
         for pos_pk in iter_summit_centered_peaks(
-                iter_narrow_peaks(pos_regions_fp), half_peak_width):
+                iter_narrow_peaks(pos_regions_fp, max_num_peaks_per_sample), half_peak_width):
             yield PeakAndLabel(pos_pk, 'sample', 1, pos_pk.signalValue)
         for neg_pk in iter_summit_centered_peaks(
-                iter_narrow_peaks(neg_regions_fp), half_peak_width):
+                iter_narrow_peaks(neg_regions_fp, max_num_peaks_per_sample), half_peak_width):
             yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
     return PeaksAndLabels(iter_all_pks())
 
@@ -371,7 +386,7 @@ def label_and_score_peak_with_chipseq_peaks(
         # if the contig isn't in the contig list, then it
         # can't be a valid peak
         if peak.contig not in fp.contigs: 
-            labels.append(-1)
+            labels.append(0)
             scores.append(0)
             continue
         overlap_frac = 0.0
@@ -493,3 +508,36 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
     with open(pickle_fname, "w") as ofp:
         pickle.dump(peaks_and_labels, ofp)
     return peaks_and_labels
+
+def load_matching_dnase_foldchange_fnames_from_DB(tf_id, annotation_id):
+    """
+    Checks samples available for target tf,
+    and loads dnase filenames for those samples.
+    """
+    from DB import (
+        load_samples_from_db_by_tfid,
+        load_DNASE_foldchange_files_from_db_by_sample )
+    samples = load_samples_from_db_by_tfid(tf_id, annotation_id)
+
+    return load_DNASE_foldchange_files_from_db_by_sample(samples)
+
+def load_conservation_fnames_from_DB():
+    """
+    Returns sequence conservation filenames.
+    """
+    from DB import load_conservation_files_from_db
+
+    return load_conservation_files_from_db()
+
+def load_matching_dnase_cut_fnames_from_DB(tf_id, annotation_id):
+    """
+    Checks samples available for target tf,
+    and loads dnase filenames for those samples.
+    """
+    from DB import (
+        load_samples_from_db_by_tfid,
+        load_DNASE_cut_files_from_db_by_sample )
+    samples = load_samples_from_db_by_tfid(tf_id, annotation_id)
+
+    return load_DNASE_cut_files_from_db_by_sample(samples)
+
