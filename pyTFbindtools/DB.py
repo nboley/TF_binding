@@ -502,7 +502,11 @@ def load_tf_ids(tf_names):
     tf_ids = []
     for tf_name in tf_names:
         cur.execute(query, [tf_name,])
-        tf_ids.append(cur.fetchall()[0][0])
+        res = cur.fetchall()
+        if len(res) == 0: 
+            raise ValueError, "Can not find TFID for factor name '%s'" % tf_name
+        assert len(res) == 1
+        tf_ids.append(res[0][0])
     return tf_ids
 
 def load_tf_names_for_sample(sample_id):

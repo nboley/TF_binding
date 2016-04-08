@@ -915,7 +915,7 @@ class JointBindingModel():
             nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
                           else lasagne.nonlinearities.identity),
         )
-        cobinding_penalty = 0 #regularize_layer_params(network,l1)
+        cobinding_penalty = 1e-5*regularize_layer_params(network,l1)
         network = DimshuffleLayer(network, (0,2,1,3))
         if include_dnase is True:
             grpd_dnase = OccMaxPool(dnase, 1, 92, 4) # try average pool XXX
@@ -941,7 +941,7 @@ class JointBindingModel():
         self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
-        loss = TT.mean(global_loss_fn(target_var, prediction))
+        loss = TT.mean(global_loss_fn(target_var, prediction)) + cobinding_penalty
         self._losses[name] = loss
         return
 
@@ -1527,7 +1527,8 @@ class JointBindingModel():
             classification_results  = self.evaluate(batch_size)
             auPRC = 0.0
             for key, vals in sorted(classification_results.iteritems()):
-                auPRC += vals.auPRC
+                if not math.isnan(vals.auPRC):
+                    auPRC += vals.auPRC
             print( 'val_err: %s' % zip(
                 self._losses.keys(), (validation_err/validation_batches) ))
             print( 'mean auPRC: %.4f' % (auPRC/len(classification_results)))
@@ -1637,19 +1638,26 @@ def many_tfs_main():
     except IndexError: 
         n_samples = None
     validation_sample_ids = ['E114',]
+
     print tf_names, sample_ids, n_samples
-    pks = PartitionedSamplePeaksAndLabels(
-        sample_ids, 
-        factor_names=tf_names, 
-        n_samples=5000, 
-        validation_sample_ids=validation_sample_ids
-    ) 
-    for batch in pks.iter_train_data(10):
-        break
-    print pks.factor_names
+
+    # This is code that loads a small batch to catch errors 
+    # early during debugging
+    if False:
+        pks = PartitionedSamplePeaksAndLabels(
+            sample_ids, 
+            factor_names=tf_names, 
+            n_samples=5000, 
+            validation_sample_ids=validation_sample_ids
+        ) 
+        for batch in pks.iter_train_data(10):
+            break
+        tf_names = pks.factor_names
+    
+    print tf_names
     model = JointBindingModel(
         n_samples, 
-        pks.factor_names, 
+        tf_names, 
         sample_ids, 
         validation_sample_ids=validation_sample_ids
     )
