@@ -325,8 +325,8 @@ def load_labeled_peaks_from_beds(
     return PeaksAndLabels(iter_all_pks())
 
 def load_and_label_peaks_from_beds(
-        background_regions_fp, pos_regions_fp,
-        bin_size, flank_size,
+        background_regions_fp, pos_regions_fp, ambiguous_regions_fp=None,
+        bin_size=200, flank_size=400,
         max_num_peaks=None):
     """
     Bins background regions, labels with positive regions, adds flanks.
@@ -341,6 +341,13 @@ def load_and_label_peaks_from_beds(
             for pk_bin in pk.bins(bin_size):
                 labels, scores = label_and_score_peak_with_chipseq_peaks(
                     [pos_regions_fp.name], pk_bin)
+                labels = np.array(labels)
+                scores = np.array(scores)
+                if ambiguous_regions_fp is not None:
+                    ambiguous_labels, ambiguous_scores = label_and_score_peak_with_chipseq_peaks(
+                        [ambiguous_regions_fp.name], pk_bin)
+                    labels_to_ignore = np.array(ambiguous_labels)>labels
+                    labels[labels_to_ignore] = -1
                 yield PeakAndLabel(
                     pk_bin.slop(flank_size), sample_name, labels[0], scores[0])
     return PeaksAndLabels(iter_all_pks())
