@@ -1551,158 +1551,74 @@ class JointBindingModel():
 
         return
 
-def load_chipseq_reads(bam_fps):
-    factor_grpd_reads = defaultdict(list)
-    for fp in bam_fps:
-        reads = ChIPSeqReads(fp.name).init()
-        factor_grpd_reads[reads.factor].append(reads)
-    
-    for factor in factor_grpd_reads.iterkeys():
-        factor_grpd_reads[factor] = MergedReads(factor_grpd_reads[factor])
-    
-    return dict(factor_grpd_reads)
-
-def selex_main():
-    tf_name = sys.argv[1]
-    try: 
-        n_samples = int(sys.argv[2])
-    except IndexError: 
-        n_samples = None
-
+def selex_main(n_samples, tf_name):
     model = JointBindingModel(
         n_samples, 
-        invivo_factor_names=[], # tf_name, 
+        invivo_factor_names=[], 
         sample_ids=[],
         invitro_factor_names=[tf_name,],
         use_three_base_encoding=False)
     model.train(
         n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
 
-def single_sample_main():
-    tf_name = sys.argv[1]
-    sample_id = sys.argv[2]
-    try: 
-        n_samples = int(sys.argv[3])
-    except IndexError: 
-        n_samples = None
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser('Fit an rSeqDNN model')
+    parser.add_argument(
+        '--roadmap-sample-ids', 
+        required=True,
+        nargs='+',
+        help='Roadmap sample ids to use.')
+    parser.add_argument(
+        '--validation-roadmap-sample-ids', 
+        nargs='+',
+        default=None,
+        help='Roadmap sample id to validate on (ie dont train on this sample)')
+    parser.add_argument(
+        '--tf-names', 
+        required=True,
+        nargs='+',
+        help='Transcription factors to use.')
+    parser.add_argument(
+        '--n-peaks', 
+        default=None,
+        help='Maximum number of peaks to user per sample.')
 
-    pks = PartitionedSamplePeaksAndLabels(
-        sample_id, factor_names=[tf_name,], n_samples=n_samples)
-    rv = next(pks.iter_batches(
-        100, 'train', False, include_chipseq_signal=False, include_dnase_signal=True))
-    #return
-    model = JointBindingModel(
-        n_samples, 
-        [], # tf_name, 
-        [sample_id,],
-    #    ['YY1', 'CTCF', 'MAX', 'RFX5', 'USF1', 'PU1', 'NFE2', 'ATF4', 'ATF7'])
-        [tf_name,],
-        use_three_base_encoding=False)
-    #model.predict_deeplifft_scores_on_batch(
-    #    next(model.iter_data(100, 'train', False, include_dnase_signal=True)))
-    #assert False
+    args = parser.parse_args()
+    return args
+    
 
-    #model.train(
-    #    n_samples if n_samples is not None else 100000, 200, 15, balanced=True)
-    model.train(
-        n_samples if n_samples is not None else 100000, 200, 12, balanced=False)
-    model.save('model.%s.%s.%i.h5' % (tf_name, sample_id, n_samples))
-    return
-
-def all_tfs_main():
-    sample_id = sys.argv[1]
-    try: 
-        n_samples = int(sys.argv[2])
-    except IndexError: 
-        n_samples = None
-    sample_ids = [sample_id,]
-    pks = PartitionedSamplePeaksAndLabels(
-        sample_id, factor_names=None, n_samples=5000)
-    print len(pks.factor_names)
-    print pks.factor_names
-    print pks.train.labels.shape
-    #return
-    model = JointBindingModel(300000, pks.factor_names, sample_ids)
-    model.train(300000, 500, 30)
-    model.save('Multitask.%s.h5' % sample_id)
-    return
-
-def many_tfs_main():
-    sample_ids = sys.argv[1].split(",")
-    try:
-        tf_names = sys.argv[2].split(",")
-    except IndexError:
-        tf_names=None
-    try: 
-        n_samples = int(sys.argv[3])
-    except IndexError: 
-        n_samples = None
-    validation_sample_ids = ['E114',]
-
-    print tf_names, sample_ids, n_samples
+def chipseq_main():        
+    args = parse_args()
 
     # This is code that loads a small batch to catch errors 
     # early during debugging
     if False:
         pks = PartitionedSamplePeaksAndLabels(
-            sample_ids, 
-            factor_names=tf_names, 
+            args.roadmap_sample_ids, 
+            factor_names=args.tf_names, 
             n_samples=5000, 
-            validation_sample_ids=validation_sample_ids
+            validation_sample_ids=args.validation_roadmap_sample_ids
         ) 
         for batch in pks.iter_train_data(10):
             break
         tf_names = pks.factor_names
     
-    print tf_names
     model = JointBindingModel(
-        n_samples, 
-        tf_names, 
-        sample_ids, 
-        validation_sample_ids=validation_sample_ids
+        args.n_peaks, 
+        args.tf_names, 
+        args.roadmap_sample_ids, 
+        validation_sample_ids=args.validation_roadmap_sample_ids
     )
 
-    #model.train(
-    #    n_samples if n_samples is not None else 300000, 500, 15, balanced=True)
     model.train(
-        n_samples if n_samples is not None else 300000, 100, 25, balanced=False)
-
-    #model.train(n_samples, 500, 60)
-    #model.save('Multitask.%s.%s.h5'%("-".join(sample_ids), "_".join(tf_names)))
-    
-
-def main():        
-    #tf_names = [x[1] for x in SelexData.find_all_selex_experiments()]
-    tf_names = ['CTCF', 'MAX', 'MYC', 'YY1'] # 'MAX', 'MYC', 'YY1'] #'MYC', 'YY1'] # 'MAX', 'BHLHE40']
-    sample_ids = ['E123',]
-    model = JointBindingModel(50000, tf_names, sample_ids)
-    model.train(10000, 500, 10)
+        args.n_peaks if args.n_peaks is not None else 300000, 
+        100, 
+        25, 
+        balanced=False)
     model.save('Multitest.h5')
     return
 
-def test_chipseq():
-    from pyTFbindtools.peaks import load_chipseq_coverage, build_peaks_label_mat
-    tf_name = sys.argv[1]
-    tf_id = 'T044268_1.02'
-    sample_id = sys.argv[2]
-    #pks, tf_ids, labels = build_peaks_label_mat(1, sample_id, 500)
-    #load_chipseq_coverage(sample_id, x, pks)
-    #from grit.lib.multiprocessing_utils import run_in_parallel
-    #run_in_parallel(
-    #    8, #len(tf_ids), 
-    #    lambda x: load_chipseq_coverage(sample_id, x, pks),
-    #    [[x,] for x in tf_ids]
-    #)
-    n_samples = 1000
-    pks = PartitionedSamplePeaksAndLabels(
-        sample_id, factor_names=[tf_name,], n_samples=n_samples)
-    print pks.data.chipseq_coverage.shape
-
-#test_chipseq()
-
 if __name__ == '__main__':
-    #main()
-    #single_sample_main()
-    #all_tfs_main()
-    many_tfs_main()
+    chipseq_main()
     #selex_main()
