@@ -106,7 +106,7 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None,
             return bigWigFeaturize.new(bigwig_fnames, pk_width,
                                        intervals=intervals)
 
-def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fnames,
+def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fnames=None,
                             reverse_complement=False):
     """
     Get sequence of signal arrays.
@@ -126,12 +126,13 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fnames,
             sequence_array = np.concatenate((sequence_array,
                                              sequence_array[:, :, ::-1, ::-1]))
         signal_arrays.append(sequence_array)
-    for bigwig_fname in bigwig_fnames:
-        print('loading features from bigwig %s' % bigwig_fname)
-        bigwig_array = encode_peaks_bigwig_into_array(peaks, [bigwig_fname])
-        if reverse_complement:
-            bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
-        signal_arrays.append(bigwig_array)
+    if bigwig_fnames is not None:
+        for bigwig_fname in bigwig_fnames:
+            print('loading features from bigwig %s' % bigwig_fname)
+            bigwig_array = encode_peaks_bigwig_into_array(peaks, [bigwig_fname])
+            if reverse_complement:
+                bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
+                signal_arrays.append(bigwig_array)
 
     return signal_arrays
 
