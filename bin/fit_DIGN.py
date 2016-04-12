@@ -26,7 +26,6 @@ import lasagne.layers
 import lasagne.nonlinearities
 import lasagne.updates
 
-import keras.backend as K
 from keras.utils.generic_utils import Progbar
 
 import theano
@@ -34,7 +33,7 @@ import theano.tensor as TT
 from theano.tensor.nnet.conv import conv2d
 from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.signal.pool import Pool
-from theano.tensor.nnet import sigmoid, ultra_fast_sigmoid, binary_crossentropy, softmax, softplus
+from theano.tensor.nnet import sigmoid, binary_crossentropy, softplus
 from theano.tensor.extra_ops import to_one_hot
 
 from pyTFbindtools.peaks import SelexData, PartitionedSamplePeaksAndLabels
@@ -55,93 +54,10 @@ def zero_rows_penalty(x):
 def keep_positive_penalty(x):
     return TT.sum((abs(x) - x)/2 )
 
-def subsample_batch(model, batch, subsample_sizes):
-    output = OrderedDict()
-    pred_vals = model.predict_on_batch(batch)
-    for key in pred_vals:
-        batch_size = subsample_sizes[key]
-
-        losses = (pred_vals[key] - batch[key])**2
-        weights = np.zeros_like(losses)
-        
-        # set ambiguous labels to 0
-        losses[batch[key] < -0.5] = 0
-        # add to the losses,
-        weights = losses.sum(1)
-        # re-weight the rows with ambiguous labels
-        weights *= losses.shape[1]/((
-            batch[key] > -0.5).sum(1) + 1e-6)
-        # make sure that every row has some weight
-        weights += 1e-6
-        # normalize the weights to 1
-        weights /= weights.sum()
-
-        # choose the max batch sizes random indices
-        loss_indices = np.random.choice(
-            len(weights), size=subsample_sizes[key], replace=False, p=weights)
-        output[key] = batch[key][loss_indices,:]
-    return output
-
-def iter_balanced_batches(batch_iterator):
-    labels = None
-    batch_size = subsample_sizes[key]
-    weights = np.ones(batch_size)
-
-    losses = (pred_vals[key] - batch[key])**2
-    # set ambiguous labels to 0
-    losses[batch[key] < -0.5] = 0
-    # add to the losses,
-    inner_weights = losses.sum(1)
-    # re-weight the rows with ambiguous labels
-    inner_weights *= losses.shape[1]/((
-        batch[key] > -0.5).sum(1) + 1e-6)
-    # make sure that every row has some weight
-    inner_weights += 1e-6
-    weights += inner_weights
-    # normalize the weights to 1
-    weights /= weights.sum()
-
-    # choose the max batch sizes random indices
-    loss_indices = np.random.choice(
-        len(weights), size=subsample_sizes[key], replace=False, p=weights)
-    output[key] = batch[key][loss_indices,:]
-
-    return output
-
-def iter_weighted_batch_samples(
-        model, batch_iterator, oversampling_ratio=1, callback=subsample_batch):
-    """Iter batches where poorly predicted samples are more frequently selected.
-
-    model: the model to predict from
-    batch_iterator: batch iterator to draw samples from
-    oversampling_ratio: how many batch_iterator batches to sample from
-    """
-    assert oversampling_ratio > 0
-
-    while True:
-        # group the output of oversampling_ratio batches together
-        all_batches = OrderedDict()
-        batch_sizes = OrderedDict()
-        for key, val in next(batch_iterator).iteritems():
-            all_batches[key] = [val,]
-            batch_sizes[key] = val.shape[0]
-        for i in xrange(oversampling_ratio-1):
-            for key, val in next(batch_iterator).iteritems():
-                all_batches[key].append(val)
-        # stack the output
-        for key, batches in all_batches.iteritems():
-            all_batches[key] = np.vstack(batches)
-
-        yield callback(model, all_batches, batch_sizes)
-    
-    return
-
 def mse_skip_ambig(y_true, y_pred):
-    #return (y_true - y_pred)**2
     non_ambig = (y_true > -0.5)
     cnts = non_ambig.sum(axis=0, keepdims=True)
-    return K.square(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts
-
+    return TT.sqr(y_pred*non_ambig - y_true*non_ambig)*y_true.shape[0]/cnts
 
 def cross_entropy_skip_ambig(y_true, y_pred):
     non_ambig = (y_true > -0.5)
@@ -166,7 +82,8 @@ def expected_F1_loss(y_true, y_pred, beta=0.5):
     recall = expected_true_positives/(
         expected_true_positives + expected_false_negatives + 1.0)
 
-    return (-1e-6 -(1+beta*beta)*precision*recall)/(beta*beta*precision+recall+2e-6)
+    return (-1e-6 -(1+beta*beta)*precision*recall)/(
+        beta*beta*precision+recall+2e-6)
 
 def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     non_ambig = (y_true > -0.5)
@@ -179,76 +96,6 @@ def expected_F1_skip_ambig(y_true, y_pred, beta=0.5):
     return rv*y_true.shape[0]/cnts
 
 global_loss_fn = cross_entropy_skip_ambig #mse_skip_ambig #mse_skip_ambig #expected_F1_skip_ambig
-
-def load_data(fname):
-    cached_fname = "peytons.cachedseqs.obj"
-    try:
-        with open(cached_fname) as fp:
-            print "Loading cached seqs"
-            obj = np.load(fp)
-            return (obj['ts'], obj['tl']), (obj['vs'], obj['vl'])
-    except IOError:
-        pass
-
-    genome_fasta = FastaFile('hg19.genome.fa')
-    with open(fname) as fp:
-        num_lines = sum(1 for line in fp)
-    with open(fname) as fp:
-        n_cols = len(next(iter(fp)).split())
-    pk_width = 1000
-
-    n_train = 0
-    train_seqs = 0.25 * np.ones((num_lines, pk_width, 4), dtype='float32')
-    train_labels = np.zeros((num_lines, n_cols-4), dtype='float32')
-    
-    n_validation = 0
-    validation_seqs = 0.25 * np.ones((num_lines, pk_width, 4), dtype='float32')
-    validation_labels = np.zeros((num_lines, n_cols-4), dtype='float32')
-    
-    with open(fname) as fp:
-        for i, line in enumerate(fp):
-            if i%1000 == 0: print i
-            if i == 0: continue
-            data = line.split()
-            seq = genome_fasta.fetch(data[0], int(data[1]), int(data[2]))
-            if len(seq) != pk_width: continue
-            if data[0] in ('chr3', 'chr4'): 
-                # dont include jittered peaks in the test set
-                if i > 100000 and i < 300000:
-                    continue
-                # skip testing for now
-                continue
-            elif data[0] in ('chr1', 'chr2'): 
-                # dont include jittered peaks in the validation set
-                if i > 100000 and i < 300000:
-                    continue
-                pk_index = n_validation
-                n_validation += 1
-                rv = validation_seqs
-                labels = validation_labels
-            else:
-                pk_index = n_train
-                n_train += 1
-                rv = train_seqs
-                labels = train_labels
-            coded_seq = one_hot_encode_sequence(seq)
-            rv[pk_index,:,:] = coded_seq
-            labels[pk_index,:] = np.array([float(x) for x in data[4:]])
-    
-    train_seqs = train_seqs[:n_train,:,:]
-    train_labels = train_labels[:n_train]
-    
-    validation_seqs = validation_seqs[:n_validation,:,:]
-    validation_labels = validation_labels[:n_validation]
-
-    with open(cached_fname, "w") as ofp:
-        print "Saving seqs"
-        np.savez(
-            ofp, 
-            ts=train_seqs, tl=train_labels, 
-            vs=validation_seqs, vl=validation_labels)
-
-    return (train_seqs, train_labels), (validation_seqs, validation_labels)
 
 def one_hot_from_indices(t, r=None):
     """
@@ -436,25 +283,19 @@ class ConvolutionDNASequenceBinding(Layer):
         return rv
 
     def get_output_for(self, *args, **kwargs):
+        # if the word size is 1 then it is faster to flip the filter than 
+        # the input sequence
         if self.word_size == 1:
             return self.flip_filter_get_output_for(*args, **kwargs)
         else:
             return self.flip_sequence_get_output_for(*args, **kwargs)
 
-def theano_calc_log_occs(affinities, chem_pot):
-    inner = (-chem_pot+affinities)/(R*T)
-    return -TT.log(1.0 + TT.exp(inner))
-    lower = TT.switch(inner<-10, TT.exp(inner), 0)
-    mid = TT.switch((inner >= -10)&(inner <= 35), 
-                    TT.log(1.0 + TT.exp(inner)),
-                    0 )
-    upper = TT.switch(inner>35, inner, 0)
-    return -(lower + mid + upper)
-
-
 class StackStrands(Layer):
     """Stack strand independent convolutions.
 
+    This is simply checking that the size of the second dimension is two
+    (because there are two strands) and then concatanating them in the 
+    third dimension.
     """
     def get_output_shape_for(self, input_shape):
         # make sure there are exactly 2 signal tracks (one for each strand
@@ -468,60 +309,6 @@ class StackStrands(Layer):
     def get_output_for(self, X, **kwargs):
         assert self.input_shape[1] == 2
         return X.reshape((X.shape[0], 1, 2*X.shape[2], X.shape[3]))
-    
-class LogNormalizedOccupancy(Layer):
-    def __init__(
-            self, 
-            input,
-            init_chem_affinity=0.0, 
-            steric_hindrance_win_len=None, 
-            **kwargs):
-        super(LogNormalizedOccupancy, self).__init__(input, **kwargs)
-        self.init_chem_affinity = init_chem_affinity
-        self.chem_affinity = self.add_param(
-            init.Constant(self.init_chem_affinity),
-            (), 
-            name='chem_affinity')
-        self.steric_hindrance_win_len = (
-            0 if steric_hindrance_win_len is None 
-            else steric_hindrance_win_len
-        )
-
-    def get_output_shape_for(self, input_shape):
-        #return self.input_shape
-        assert self.input_shape[1] == 2
-        return (# number of obseravations
-                self.input_shape[0], 
-                1,
-                2*self.input_shape[2],
-                # sequence length minus the motif length
-                self.input_shape[3] #-2*(self.steric_hindrance_win_len-1)
-        )
-    
-    def get_output_for(self, input, **kwargs):
-        X = input #self.get_input(train)
-        X = X.reshape(
-            (X.shape[0], 1, 2*X.shape[2], X.shape[3]))
-        # calculate the log occupancies
-        log_occs = theano_calc_log_occs(-X, self.chem_affinity)
-        # reshape the output so that the forward and reverse complement 
-        # occupancies are viewed as different tracks 
-        if self.steric_hindrance_win_len == 0:
-            log_norm_factor = 0
-        else:
-            # correct occupancies for overlapping binding sites
-            occs = K.exp(log_occs)
-            kernel = K.ones((1, 1, 1, 2*self.steric_hindrance_win_len-1), dtype='float32')
-            win_occ_sum = K.conv2d(occs, kernel, border_mode='same').sum(axis=2, keepdims=True)
-            win_prb_all_unbnd = TT.exp(
-                K.conv2d(K.log(1-occs), kernel, border_mode='same')).sum(axis=2, keepdims=True)
-            log_norm_factor = TT.log(win_occ_sum + win_prb_all_unbnd)
-        #start = max(0, self.steric_hindrance_win_len-1)
-        #stop = min(self.output_shape[3], 
-        #           self.output_shape[3]-(self.steric_hindrance_win_len-1))
-        #rv = log_occs[:,:,:,start:stop] - log_norm_factor
-        rv = (log_occs - log_norm_factor)
-        return rv
 
 class AnyBoundOcc(Layer):
     def get_output_shape_for(self, input_shape):
@@ -529,16 +316,10 @@ class AnyBoundOcc(Layer):
 
     def get_output_for(self, input, **kwargs):
         input = TT.clip(input, 1e-6, 1-1e-6)
-        #return softmax(input)
-        #return TT.clip(input.sum(axis=3, keepdims=True), 1e-6, 1-1e-6)
         log_none_bnd = TT.sum(
             TT.log(1-input), axis=3, keepdims=True)
         at_least_1_bnd = 1-TT.exp(log_none_bnd)
         return at_least_1_bnd
-        ## we take the weighted sum because the max is easier to fit, and 
-        ## thus this helps to regularize the optimization procedure
-        max_occ = TT.max(input, axis=3, keepdims=True)
-        return max_occ # + 0.5*at_least_1_bnd
 
 class OccupancyLayer(Layer):
     def __init__(
@@ -573,16 +354,6 @@ class OccupancyLayer(Layer):
         return self.input_shape
 
     def get_output_for(self, input, **kwargs):
-        """
-        inner = (-chem_pot+affinities)/(R*T)
-        return -TT.log(1.0 + TT.exp(inner))
-        lower = TT.switch(inner<-10, TT.exp(inner), 0)
-        mid = TT.switch((inner >= -10)&(inner <= 35), 
-                         TT.log(1.0 + TT.exp(inner)),
-                        0 )
-        upper = TT.switch(inner>35, inner, 0)
-        return -(lower + mid + upper)
-        """
         sample_chem_affinities = TT.dot(self.sample_ids, self.chem_affinity)
         rv = input + sample_chem_affinities[:,None,:,None]
         if self.dnase_signal is not None:
@@ -631,8 +402,6 @@ class OccMaxPool(Layer):
         rv = max_pool_2d(
             X, ds=ds, st=st, ignore_border=True, mode='max')
         return rv
-
-
 
 class ConvolveDNASELayer(MergeLayer):
     def __init__(self, incoming, dnase, **kwargs):
@@ -755,47 +524,6 @@ class JointBindingModel():
         for exp in selex_experiments:
             self.add_selex_experiment(exp)
     
-    def add_chipseq_trace_model(self, pks_and_labels):
-        name = 'invivo_%s_sequence' % pks_and_labels.sample_id 
-
-        input_var = TT.tensor4(name + '.fwd_seqs')
-        self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.output')
-        self._target_vars[name + '.output'] = target_var
-        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
-        #cov_target_var = TT.matrix(name + '.chipseq_cov')
-        #self._target_vars[name + '.chipseq_cov'] = cov_target_var
-        #self._multitask_labels[name + '.chipseq_cov'] = pks_and_labels.factor_names
-        
-        network = InputLayer(
-            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
-
-        network = ConvolutionDNASequenceBinding(
-            network, 
-            nb_motifs=self.num_affinity_convs, 
-            motif_len=self.affinity_conv_size, 
-            use_three_base_encoding=self._use_three_base_encoding,
-            W=self.affinity_conv_filter, 
-            b=self.affinity_conv_bias)
-        network = LogNormalizedOccupancy(network, -6.0)
-        #network = LogAnyBoundOcc(network)
-        network = OccMaxPool(network, 2*self.num_tf_specific_convs, 1)
-        network = ExpressionLayer(network, TT.exp)
-        #occs_prediction = lasagne.layers.get_output(network)
-
-        network = OccMaxPool(network, 'full', 'full')        
-        network = FlattenLayer(network)
-        #network = DenseLayer(network, pks_and_labels.labels.shape[1])
-
-        prediction = lasagne.layers.get_output(network) 
-        label_loss = TT.mean(TT.sum(global_loss_fn(target_var, prediction), axis=-1))
-        cov_loss = 0 #TT.sum((TT.flatten(cov_target_var)-TT.flatten(occs_prediction))**2)
-        self._networks[name + ".output"] = network
-        self._data_iterators[name] = pks_and_labels.iter_batches
-        self._losses[name] = label_loss + cov_loss
-
-        return
-
     def add_simple_chipseq_model(self, pks_and_labels):
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
         name = 'invivo_%s_sequence' % "-".join(pks_and_labels.sample_ids) 
@@ -879,33 +607,7 @@ class JointBindingModel():
                 input_var=access_input_var
             )
             network = ConvolveDNASELayer(single_tf_affinities, dnase)
-            """
-            access = ExpressionLayer(dnase, lambda x: TT.log(
-                1e-12 + x/TT.max(x, keepdims=True))
-            )
-            network = ConcatLayer([access, single_tf_affinities], axis=2)
-            network = Conv2DLayer(
-                network, 
-                2*self.num_affinity_convs,
-                (2*self.num_affinity_convs+1,1),
-                nonlinearity=lasagne.nonlinearities.identity
-            )
-            network = DimshuffleLayer(network, (0,2,1,3))
-            """
 
-        """
-        network = Conv2DLayer(
-            network, 
-            2*self.num_affinity_convs,
-            (2*self.num_affinity_convs,1),
-            nonlinearity=(softplus if USE_SOFTPLUS_ACTIVATION 
-                          else lasagne.nonlinearities.identity)
-        )
-        network = DimshuffleLayer(network, (0,2,1,3))
-        if include_dnase is True:
-            network = ConvolveDNASELayer(network, dnase)
-        """
-        
         network = OccMaxPool(network, 1, 32, 4)
         network = Conv2DLayer(
             network, 
@@ -934,8 +636,10 @@ class JointBindingModel():
         network = OccMaxPool(network, 1, 4)
         
         network = AnyBoundOcc(network)
+        ## Test if the any bound occupancy is actually helping - if the window 
+        ## sizes are small enough a maxpool may be just as good
         #network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
-                
+        
         network = FlattenLayer(network)
         self._networks[name + ".output"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
