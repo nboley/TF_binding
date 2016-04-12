@@ -1284,7 +1284,8 @@ def parse_args():
         nargs='+',
         help='Transcription factors to use.')
     parser.add_argument(
-        '--n-peaks', 
+        '--n-peaks',
+        type=int,
         default=None,
         help='Maximum number of peaks to user per sample.')
 
