@@ -323,8 +323,9 @@ class KerasModelBase():
             y_true = set_ambiguous_labels(
                 y_true, scores, self.ambiguous_peak_threshold)
         else:
-            X = [X_arr[y_true != -1,:,:,:] for X_arr in X]
-            y_true = y_true[y_true != -1]
+            if np.sum(y_true==-1) > 0:
+                X = [X_arr[y_true != -1,:,:,:] for X_arr in X]
+                y_true = y_true[y_true != -1]
 
         return self.evaluate(X, y_true)
 
