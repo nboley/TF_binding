@@ -46,11 +46,17 @@ def init_prediction_script_argument_parser(description):
                         help='fasta with positive sequences')
     neg_data.add_argument('--neg-sequences', type=getFileHandle,
                         help='fasta with negative sequences')
+    parser.add_argument('--background-regions', type=getFileHandle, default=None,
+                        help='regions labeled based on overlap with positive regions')
     parser.add_argument('--genome-fasta', type=FastaFile,
                         help='genome file to get sequences')
 
     parser.add_argument('--half-peak-width', type=int, default=500,
                         help='half peak width about summits for training')
+    parser.add_argument('--bin-size', type=int, default=200,
+                        help='used to bin background regions')
+    parser.add_argument('--flank-size', type=int, default=400,
+                        help='used to slop background region bins')
     parser.add_argument( '--include-ambiguous-peaks', 
         default=False, action='store_true', 
         help='Include regions that dont overlap the optimal peak set but do overlap a relaxed set')

@@ -11,6 +11,7 @@ except:
 from pyTFbindtools.peaks import (
     FastaPeaksAndLabels,
     merge_peaks_and_labels,
+    load_and_label_peaks_from_beds,
     load_labeled_peaks_from_beds,
     load_labeled_peaks_from_fastas,
     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
@@ -131,11 +132,19 @@ def parse_args():
             args.dnase_cut_features = load_matching_dnase_cut_fnames_from_DB(args.tf_id, args.annotation_id)
     else:
         if args.pos_regions != None:
-            assert args.neg_regions != None, \
-            "--neg-regions must be set"
-            peaks_and_labels = load_labeled_peaks_from_beds(
-                args.pos_regions, args.neg_regions,
-                args.half_peak_width, args.max_num_peaks_per_sample)
+            if args.neg_regions != None:
+            #assert args.neg_regions != None, \
+            #"--neg-regions must be set"
+                peaks_and_labels = load_labeled_peaks_from_beds(
+                    args.pos_regions, args.neg_regions,
+                    args.half_peak_width, args.max_num_peaks_per_sample)
+            elif args.background_regions:
+                peaks_and_labels = load_and_label_peaks_from_beds(
+                    args.background_regions, args.pos_regions,
+                    args.bin_size, args.flank_size, args.max_num_peaks_per_sample)
+            else:
+                raise RuntimeError("--neg-regions or --background-regions must be set when --pos-regions is set")
+            peaks_and_labels = peaks_and_labels.filter_by_contig_edge(9000, genome_fasta)
         elif args.pos_sequences != None:
             assert args.neg_sequences != None, \
             "--neg-sequences must be set"
