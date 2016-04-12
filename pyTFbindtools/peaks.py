@@ -4,6 +4,7 @@ from collections import namedtuple
 from itertools import izip, chain
 import random
 import cPickle as pickle
+import ntpath
 
 import numpy as np
 from sklearn.cross_validation import StratifiedKFold
@@ -48,6 +49,26 @@ class NarrowPeak(NarrowPeakData):
             return True
         else:
             return False
+
+    def bins(self, bin_size):
+        """
+        Bins NarrowPeak, generates binned NarrowPeaks
+        Note: peak sequence is removed
+        """
+        for bin_center in xrange(self.start, self.stop, bin_size):
+            yield NarrowPeak(
+                self.contig, bin_center-bin_size/2, bin_center+bin_size/2,
+                bin_size/2, self.score, self.signalValue, self.pValue, self.qValue,
+                self.idrValue, None)
+
+    def slop(self, flank_size):
+        """
+        Add flanks, same as bedtools slop. Removes underlying sequence.
+        """
+        return NarrowPeak(
+                self.contig, self.start-flank_size, self.stop+flank_size,
+                self.summit+flank_size, self.score, self.signalValue, self.pValue, self.qValue,
+                self.idrValue, None)
 
 class Peaks(list):
     pass
@@ -301,6 +322,27 @@ def load_labeled_peaks_from_beds(
         for neg_pk in iter_summit_centered_peaks(
                 iter_narrow_peaks(neg_regions_fp, max_num_peaks_per_sample), half_peak_width):
             yield PeakAndLabel(neg_pk, 'sample', 0, neg_pk.signalValue)
+    return PeaksAndLabels(iter_all_pks())
+
+def load_and_label_peaks_from_beds(
+        background_regions_fp, pos_regions_fp,
+        bin_size, flank_size,
+        max_num_peaks=None):
+    """
+    Bins background regions, labels with positive regions, adds flanks.
+
+    Returns
+    -------
+    PeaksAndLabels
+    """
+    sample_name = ntpath.basename(background_regions_fp.name)
+    def iter_all_pks():
+        for pk in iter_narrow_peaks(background_regions_fp, max_num_peaks):
+            for pk_bin in pk.bins(bin_size):
+                labels, scores = label_and_score_peak_with_chipseq_peaks(
+                    [pos_regions_fp.name], pk_bin)
+                yield PeakAndLabel(
+                    pk_bin.slop(flank_size), sample_name, labels[0], scores[0])
     return PeaksAndLabels(iter_all_pks())
 
 def iter_fasta(fp, max_n_peaks=None):
