@@ -36,7 +36,8 @@ from theano.tensor.signal.pool import Pool
 from theano.tensor.nnet import sigmoid, binary_crossentropy, softplus
 from theano.tensor.extra_ops import to_one_hot
 
-from pyTFbindtools.peaks import SelexData, PartitionedSamplePeaksAndLabels
+from pyTFbindtools.peaks import PartitionedSamplePeaksAndLabels
+from pyTFbindtools.selex.invivo import SelexData
 
 from lasagne.layers import (
     Layer, MergeLayer, InputLayer, Conv2DLayer, MaxPool2DLayer, 
@@ -1255,16 +1256,6 @@ class JointBindingModel():
 
         return
 
-def selex_main(n_samples, tf_name):
-    model = JointBindingModel(
-        n_samples, 
-        invivo_factor_names=[], 
-        sample_ids=[],
-        invitro_factor_names=[tf_name,],
-        use_three_base_encoding=False)
-    model.train(
-        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
-
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser('Fit an rSeqDNN model')
@@ -1326,6 +1317,16 @@ def chipseq_main():
     model.save('Multitest.h5')
     return
 
+def selex_main(n_samples, tf_name):
+    model = JointBindingModel(
+        n_samples, 
+        invivo_factor_names=[], 
+        sample_ids=[],
+        invitro_factor_names=[tf_name,],
+        use_three_base_encoding=False)
+    model.train(
+        n_samples if n_samples is not None else 100000, 500, 50, balanced=True)
+
 if __name__ == '__main__':
     chipseq_main()
-    #selex_main()
+    #selex_main(5000, 'CTCF')
