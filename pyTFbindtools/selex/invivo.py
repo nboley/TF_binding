@@ -5,6 +5,13 @@ import numpy as np
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 
+def upsample(seqs, num_seqs):
+    new_seqs = []
+    new_seqs.extend(seqs)
+    while len(new_seqs) < num_seqs:
+        new_seqs.extend(seqs[:num_seqs-len(new_seqs)])
+    return new_seqs
+
 class SelexDBConn(object):
     def __init__(self, host, dbname, user, exp_id):
         import psycopg2

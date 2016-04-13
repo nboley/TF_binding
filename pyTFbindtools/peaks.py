@@ -39,13 +39,6 @@ NarrowPeakData = namedtuple(
                    'score', 'signalValue', 'pValue', 'qValue', 'idrValue', 'seq'])
 NarrowPeakData.__new__.__defaults__ = (None,) * len(NarrowPeakData._fields)
 
-def upsample(seqs, num_seqs):
-    new_seqs = []
-    new_seqs.extend(seqs)
-    while len(new_seqs) < num_seqs:
-        new_seqs.extend(seqs[:num_seqs-len(new_seqs)])
-    return new_seqs
-
 def encode_peaks_sequence_into_binary_array(peaks, fasta):
     # find the peak width
     pk_width = peaks[0].pk_width
