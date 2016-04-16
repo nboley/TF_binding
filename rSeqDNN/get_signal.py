@@ -53,7 +53,7 @@ def encode_peaks_sequence_into_array(peaks, fasta):
     return data
 
 def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None,
-                                   local_norm_halfwidth=500):
+                                   local_norm_halfwidth=500, use_complement=False):
     """
     Extracts bigwig input arrays.
 
@@ -94,6 +94,9 @@ def encode_peaks_bigwig_into_array(peaks, bigwig_fnames, cache=None,
                 data = bigWigFeaturize.new(bigwig_fnames, 2*local_norm_halfwidth,
                                            intervals=slopped_intervals)
             assert len(data)==len(peaks), "Num of signal regions: %i!" % len(data)
+            if use_complement:
+                data *= -1.
+                data += np.expand_dims(data.max(axis=3), 3)
             mean = data.mean(axis=3, keepdims=True)
             std = data.std(axis=3, keepdims=True)
             data_norm = (data[:, :, :, -offset:(-offset+width)] - mean) / std
@@ -132,7 +135,7 @@ def get_peaks_signal_arrays(peaks, genome_fasta, bigwig_fnames=None,
             bigwig_array = encode_peaks_bigwig_into_array(peaks, [bigwig_fname])
             if reverse_complement:
                 bigwig_array = np.concatenate((bigwig_array, bigwig_array[:, :, :, ::-1]))
-                signal_arrays.append(bigwig_array)
+            signal_arrays.append(bigwig_array)
 
     return signal_arrays
 
