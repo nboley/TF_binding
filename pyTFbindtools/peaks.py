@@ -17,12 +17,16 @@ from grit.lib.multiprocessing_utils import Counter
 from cross_validation import iter_train_validation_splits
 
 def getFileHandle(filename, mode="r"):
-    if filename.endswith('.gz') or filename.endswith('.gzip'):
-        if (mode=="r"):
-            mode="rb";
-        return gzip.open(filename,mode)
+    def getHandle(filename):
+        if filename.endswith('.gz') or filename.endswith('.gzip'):
+            return gzip.open(filename, mode="rb")
+        else:
+            return open(filename, mode="r")
+    if ',' in filename:
+        fnames = filename.split(',')
+        return [getHandle(fname) for fname in fnames]
     else:
-        return open(filename,mode)
+        return getHandle(filename)
 
 NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 
@@ -56,10 +60,11 @@ class NarrowPeak(NarrowPeakData):
         Note: peak sequence is removed
         """
         for bin_center in xrange(self.start, self.stop, bin_size):
-            yield NarrowPeak(
-                self.contig, bin_center-bin_size/2, bin_center+bin_size/2,
-                bin_size/2, self.score, self.signalValue, self.pValue, self.qValue,
-                self.idrValue, None)
+            if bin_center-bin_size/2 >= 0:
+                yield NarrowPeak(
+                    self.contig, bin_center-bin_size/2, bin_center+bin_size/2,
+                    bin_size/2, self.score, self.signalValue, self.pValue, self.qValue,
+                    self.idrValue, None)
 
     def slop(self, flank_size):
         """
@@ -311,6 +316,33 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
 
     return
 
+def iter_bedtool_peaks(bedtool, max_num_peaks=None):
+    idrValue = -1.0
+    seq = None
+    for i, interval in bedtool:
+        if max_n_peaks != None and i > max_n_peaks:
+            break
+        chrm = interval.chrom
+        start = float(interval.start)
+        stop = float(interval.stop)
+
+        try: summit = int(interval.fields[9])
+        except IndexError: summit = (stop-start)/2
+        try: score = float(interval.fields[4])
+        except IndexError: score = -1.0
+        try: signalValue = float(interval.fields[6])
+        except IndexError: signalValue = -1.0
+        try: pValue = float(interval.fields[7])
+        except IndexError: pValue = -1.0
+        try: qValue = float(interval.fields[8])
+        except IndexError: qValue = -1.0
+
+        yield NarrowPeak(
+            chrm, start, stop, summit,
+            score, signalValue, pValue, qValue, idrValue, seq)
+
+    return
+
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
         half_peak_width=None,
@@ -325,32 +357,47 @@ def load_labeled_peaks_from_beds(
     return PeaksAndLabels(iter_all_pks())
 
 def load_and_label_peaks_from_beds(
-        background_regions_fp, pos_regions_fp, ambiguous_regions_fp=None,
+        background_regions_fp, pos_regions_fp_list,
+        ambiguous_regions_fp_list=None,
         bin_size=200, flank_size=400,
         max_num_peaks=None):
     """
     Bins background regions, labels with positive regions, adds flanks.
 
+    Parameters
+    ----------
+    background_regions_fp: filepointer
+    pos_regions_fp_list: list of filpointers
+    ambiguous_regions_fp_list: list of filepointers
+
     Returns
     -------
     PeaksAndLabels
     """
+    pos_regions_fname_list = [fp.name for fp in pos_regions_fp_list]
+    if ambiguous_regions_fp_list is not None:
+        assert len(ambiguous_regions_fp_list)==len(pos_regions_fp_list), \
+            "number of ambiguous region files must equal number of pos region files!"
+        ambiguous_regions_fname_list = [fp.name for fp in ambiguous_regions_fp_list]
+    else: ambiguous_regions_fname_list = None
     sample_name = ntpath.basename(background_regions_fp.name)
-    def iter_all_pks():
+    def iter_all_pks(pos_regions_fname_list, ambiguous_regions_fname_list):
         for pk in iter_narrow_peaks(background_regions_fp, max_num_peaks):
             for pk_bin in pk.bins(bin_size):
                 labels, scores = label_and_score_peak_with_chipseq_peaks(
-                    [pos_regions_fp.name], pk_bin)
+                    pos_regions_fname_list, pk_bin)
                 labels = np.array(labels)
                 scores = np.array(scores)
-                if ambiguous_regions_fp is not None:
+                if ambiguous_regions_fname_list is not None:
                     ambiguous_labels, ambiguous_scores = label_and_score_peak_with_chipseq_peaks(
-                        [ambiguous_regions_fp.name], pk_bin)
+                        ambiguous_regions_fname_list, pk_bin)
                     labels_to_ignore = np.array(ambiguous_labels)>labels
                     labels[labels_to_ignore] = -1
                 yield PeakAndLabel(
-                    pk_bin.slop(flank_size), sample_name, labels[0], scores[0])
-    return PeaksAndLabels(iter_all_pks())
+                    pk_bin.slop(flank_size), sample_name, labels, scores)
+                    #pk_bin.slop(flank_size), sample_name, labels[0], scores[0])
+    return PeaksAndLabels(iter_all_pks(
+        pos_regions_fname_list, ambiguous_regions_fname_list))
 
 def iter_fasta(fp, max_n_peaks=None):
     '''
