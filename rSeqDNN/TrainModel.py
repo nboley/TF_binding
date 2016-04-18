@@ -144,7 +144,8 @@ def parse_args():
                     args.bin_size, args.flank_size, args.max_num_peaks_per_sample)
             else:
                 raise RuntimeError("--neg-regions or --background-regions must be set when --pos-regions is set")
-            peaks_and_labels = peaks_and_labels.remove_ambiguous_labeled_entries()
+            if len(np.shape(peaks_and_labels.labels))==1:
+                peaks_and_labels = peaks_and_labels.remove_ambiguous_labeled_entries()
             peaks_and_labels = peaks_and_labels.filter_by_contig_edge(9000, genome_fasta)
         elif args.pos_sequences != None:
             assert args.neg_sequences != None, \
@@ -248,6 +249,7 @@ def main_train(main_args, train_args):
             stopping_scores = stopping_data.scores
         signal_arrays_shapes = [np.shape(signal_array) for signal_array in fitting_signal_arrays]
         print 'signal_arrays_shapes: ', signal_arrays_shapes
+        print "shape of the labels: ", np.shape(fitting_labels)
         if run_grid_search:
             param_grid  = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
                                    [[1,5], [10, 60], [8, 30], [5,50], [0, 0.01], [0, 0.5]]))
