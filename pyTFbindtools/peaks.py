@@ -236,6 +236,15 @@ class PeaksAndLabels():
             pk_and_label.jitter(jitter) for pk_and_label in self
         )
 
+    def slop_peaks(self, flank_size):
+        """
+        add flanks to peaks.
+        """
+        return PeaksAndLabels(
+            PeakAndLabel(pk.slop(flank_size), sample, label, score)
+            for pk, sample, label, score in self
+        )
+
 def merge_peaks_and_labels(*peaks_and_labels_iterable):
     """
     Merge multiple PeaksAndLabels into a single PeaksAndLabels.
