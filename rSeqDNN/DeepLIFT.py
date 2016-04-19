@@ -66,10 +66,7 @@ def main(args):
     print("scoring sequences...")
     sequence_dl_scores = get_sequence_dl_scores(model.model, pos_sequences)
     print("writing scores to bedGraph file..")
-    lines = []
     sequence_dl_scores_2d = np.sum(sequence_dl_scores.squeeze(), axis=1)
-    print "shape of sequence_dl_scores_2d: ", np.shape(sequence_dl_scores_2d)
-    print "num of pos peaks: ", len(pos_peaks_and_labels.peaks)
     with open("%s.%s" % (prefix, "bedGraph"), "w") as wf:
         for i, pk in enumerate(pos_peaks_and_labels.peaks):
             chrm = pk.contig
