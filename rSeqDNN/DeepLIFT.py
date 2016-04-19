@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from pysam import FastaFile
 
@@ -62,7 +63,26 @@ def main(args):
         9000, genome_fasta) # removes peaks in contigs edges
     print("extracting sequence from fasta..")
     pos_sequences = encode_peaks_sequence_into_array(pos_peaks_and_labels.peaks, genome_fasta)
+    print("scoring sequences...")
     sequence_dl_scores = get_sequence_dl_scores(model.model, pos_sequences)
+    print("writing scores to bedGraph file..")
+    lines = []
+    sequence_dl_scores_2d = np.sum(sequence_dl_scores.squeeze(), axis=1)
+    print "shape of sequence_dl_scores_2d: ", np.shape(sequence_dl_scores_2d)
+    print "num of pos peaks: ", len(pos_peaks_and_labels.peaks)
+    with open("%s.%s" % (prefix, "bedGraph"), "w") as wf:
+        for i, pk in enumerate(pos_peaks_and_labels.peaks):
+            chrm = pk.contig
+            starts = np.asarray(pk.start + np.arange(pk.pk_width), dtype='str')
+            stops = np.asarray(pk.start + np.arange(pk.pk_width) + 1, dtype='str')
+            for j in np.arange(pk.pk_width):
+                wf.write("%s\t%s\t%s\t%s\n" % (
+                    chrm, starts[j], stops[j], str(sequence_dl_scores_2d[i][j])))
+    print("processing bedGraph file into bigwig file...")
+    os.system("(sort -u -k1,1 -k2,2n -k3,3n -k4,4nr) < %s.bedGraph | (sort -u -k1,1 -k2,2n -k3,3n) > %s.bedGraph.max" % (prefix, prefix))
+    os.system("rm %s.bedGraph" % (prefix))
+    os.system("bedGraphToBigWig %s.bedGraph.max /mnt/data/annotations/by_organism/human/hg19.GRCh37/hg19.chrom.sizes %s.bw" % (prefix, prefix))
+    os.system("rm %s.bedGraph.max" % (prefix))
 
 if __name__ == '__main__':
     args = parse_args()
