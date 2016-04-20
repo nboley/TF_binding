@@ -18,7 +18,9 @@ from cross_validation import iter_train_validation_splits
 
 def getFileHandle(filename, mode="r"):
     def getHandle(filename):
-        if filename.endswith('.gz') or filename.endswith('.gzip'):
+        endings = ['.gz', '.gzip', '.bgz']
+        endswith_endings = [filename.endswith(ending) for ending in endings]
+        if any(endswith_endings):
             return gzip.open(filename, mode="rb")
         else:
             return open(filename, mode="r")
@@ -328,12 +330,12 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
 def iter_bedtool_peaks(bedtool, max_num_peaks=None):
     idrValue = -1.0
     seq = None
-    for i, interval in bedtool:
-        if max_n_peaks != None and i > max_n_peaks:
+    for i, interval in enumerate(bedtool):
+        if max_num_peaks != None and i > max_num_peaks:
             break
-        chrm = interval.chrom
-        start = float(interval.start)
-        stop = float(interval.stop)
+        chrm = str(interval.chrom)
+        start = int(interval.start)
+        stop = int(interval.stop)
 
         try: summit = int(interval.fields[9])
         except IndexError: summit = (stop-start)/2
@@ -352,6 +354,19 @@ def iter_bedtool_peaks(bedtool, max_num_peaks=None):
 
     return
 
+def merge_peaks(pk_iter):
+    """
+    uses merge from pybedtools to merge NarrowPeaks
+    """
+    from pybedtools import BedTool
+    intervals = get_intervals_from_peaks(pk_iter)
+    bedtool = BedTool(intervals)
+    print "printing bedtool count: ", bedtool.count()
+    merged_bedtool = bedtool.sort().merge()
+    print "count after merge: ", merged_bedtool.count()
+
+    return iter_bedtool_peaks(merged_bedtool)
+
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
         half_peak_width=None,
@@ -369,7 +384,7 @@ def load_and_label_peaks_from_beds(
         background_regions_fp, pos_regions_fp_list,
         ambiguous_regions_fp_list=None,
         bin_size=200, flank_size=400,
-        max_num_peaks=None):
+        max_num_peaks=None, include_pos_regions=True):
     """
     Bins background regions, labels with positive regions, adds flanks.
 
@@ -390,8 +405,16 @@ def load_and_label_peaks_from_beds(
         ambiguous_regions_fname_list = [fp.name for fp in ambiguous_regions_fp_list]
     else: ambiguous_regions_fname_list = None
     sample_name = ntpath.basename(background_regions_fp.name)
-    def iter_all_pks(pos_regions_fname_list, ambiguous_regions_fname_list):
-        for pk in iter_narrow_peaks(background_regions_fp, max_num_peaks):
+    if include_pos_regions:
+        regions_fp_list = [background_regions_fp] + pos_regions_fp_list
+        pk_iter_list = [iter_narrow_peaks(regions_fp, max_num_peaks)
+                        for regions_fp in regions_fp_list]
+        concat_pk_iter = chain.from_iterable(pk_iter_list)
+        pk_iter = merge_peaks(concat_pk_iter)
+    else:
+        pk_iter = iter_narrow_peaks(background_regions_fp, max_num_peaks)
+    def iter_pk_and_label(pk_iter, pos_regions_fname_list, ambiguous_regions_fname_list):
+        for pk in pk_iter:
             for pk_bin in pk.bins(bin_size):
                 labels, scores = label_and_score_peak_with_chipseq_peaks(
                     pos_regions_fname_list, pk_bin)
@@ -405,8 +428,8 @@ def load_and_label_peaks_from_beds(
                 yield PeakAndLabel(
                     pk_bin.slop(flank_size), sample_name, labels, scores)
                     #pk_bin.slop(flank_size), sample_name, labels[0], scores[0])
-    return PeaksAndLabels(iter_all_pks(
-        pos_regions_fname_list, ambiguous_regions_fname_list))
+    return PeaksAndLabels(iter_pk_and_label(
+        pk_iter, pos_regions_fname_list, ambiguous_regions_fname_list))
 
 def iter_fasta(fp, max_n_peaks=None):
     '''
