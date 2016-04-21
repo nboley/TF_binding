@@ -139,6 +139,9 @@ def parse_args():
                     args.pos_regions, args.neg_regions,
                     args.half_peak_width, args.max_num_peaks_per_sample)
             elif args.background_regions:
+                if not isinstance(args.pos_regions, list):
+                    args.pos_regions = [args.pos_regions]
+                    args.ambiguous_regions = [args.ambiguous_regions]
                 peaks_and_labels = load_and_label_peaks_from_beds(
                     args.background_regions, args.pos_regions, args.ambiguous_regions,
                     args.bin_size, args.flank_size, args.max_num_peaks_per_sample,
