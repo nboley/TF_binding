@@ -514,7 +514,7 @@ def label_and_score_peak_with_chipseq_peaks(
                 unzipped_fname = '.'.join(
                     fname.split('.')[:-1]) if fname.endswith('.gz') else fname
                 sorted_bed = BedTool(fname).sort().saveas(unzipped_fname)
-                tabix_fname = tabix_index(fname, preset="bed", force=True)
+                tabix_fname = tabix_index(unzipped_fname, preset="bed", force=True)
                 fp = TabixFile(tabix_fname)
             chipseq_peaks_tabix_file_cache[(pid, fname)] = fp
 
