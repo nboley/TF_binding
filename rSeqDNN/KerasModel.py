@@ -20,13 +20,12 @@ from ScoreModel import (
 from get_signal import encode_peaks_sequence_into_array, encode_peaks_bigwig_into_array
 
 from keras.optimizers import SGD, RMSprop, Adagrad, Adam, Adadelta
-from keras.models import Sequential
+from keras.models import model_from_json, Sequential, Graph
 from keras.layers.core import (
     Dense, Dropout, Activation, Reshape,TimeDistributedDense, Permute,
     Flatten, Merge )
 from keras.layers.recurrent import LSTM, GRU
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.models import model_from_json
 from keras.callbacks import EarlyStopping
 from keras.regularizers import l1
 
@@ -492,4 +491,228 @@ class KerasModel(KerasModelBase):
         print 'plotting convolutions...'
         plot_convolutions(self.model, ofname, rank_dictionary, encode_hit_names)
 
+        return self
+
+def class_weights(y):
+    """
+    num_samples / class_frequency
+    """
+    assert len(np.shape(y))==1
+    neg_count = float((y==0).sum())
+    pos_count = float((y==1).sum())
+    neg_weight = len(y)/neg_count
+    pos_weight = len(y)/pos_count
+    return neg_weight, pos_weight
+
+def sample_weights(y):
+    """
+    0 for -1 (masked) labels, 1 otherwise
+    """
+    assert len(np.shape(y))==1
+    masked_y = y!=-1
+    return masked_y.astype(float)
+
+class KerasModelMultitask():
+    def __init__(self, num_tasks, arrays_shapes=None, model_fname=None,
+                 multi_mode=False, target_metric='recall_at_05_fdr',
+                 batch_size=200, num_conv_layers=5, l1_decay=0,
+                 num_conv=25, conv_height=5, conv_width=10, dropout=0.2,
+                 maxpool_size=25, maxpool_stride=25, gru_size=35, tdd_size=45,
+                 model_type='cnn'):
+        """
+        Base class for Keras model objects.
+        Note: either arrays_shapes or model_fname have to be provided.
+        Parameters
+        ----------
+        num_tasks: int
+            number of tasks or outputs.
+        arrays_shapes : list, optional
+            list of shape tuples for each input array modality.
+        model_fname : keras model, optional
+            can be initialized from keras architecture.
+        stack_arrays : boolean, default: true
+            if true, input arrays are stacked into multi-channel format.
+            if false, each array connected to separate convolutions.
+        target_metric : string, default: 'recall_at_05_fdr'
+            Metric used for model selection.
+            Expects an attribute of ClassificationResult.
+        batch_size : int, default: 200
+        num_conv_layers : int, default: 1
+            Number of convolution layers before pooling.
+        l1_decay : float, default: 0
+            L1 weight decay, applied to all convolutional
+            layers except for the first one.
+        num_conv : int, default: 25
+            Applies same number of convolutions in each layer.
+        conv_height : int, default: 4
+        conv_width : int, default: 8
+        maxpool_size : int, default: 35
+            must be integer multiple of maxpool_stride.
+        maxpool_stride : int, default: 35
+        gru_size: int, default: 35
+        tdd_size: int, default: 45
+        model_type, string, default: 'cnn'
+            Model type. Legal values: 'cnn', 'cnn-rnn'tdd'.
+        """
+        assert model_fname is not None or arrays_shapes is not None, \
+            "Either model_fname or arrays_shapes needed to initialize KerasModel!"
+        self.num_tasks = num_tasks
+        self.stack_arrays = not multi_mode
+        self.batch_size = batch_size
+        self.ambiguous_peak_threshold = None
+        self.target_metric = target_metric
+        # load model if provided, otherwise build model
+        if model_fname is not None:
+            self.model = load_model(model_fname)
+            return
+        # check uniform samples and length dimensions
+        assert all(shape[0] == arrays_shapes[0][0] for shape in arrays_shapes)
+        assert all(shape[-1] == arrays_shapes[0][-1] for shape in arrays_shapes)
+        length = arrays_shapes[0][-1]
+
+        print 'building multitask architecture...'
+        num_conv_outputs = ((length - num_conv_layers*conv_width) + num_conv_layers)
+        num_maxpool_outputs = int(((num_conv_outputs-maxpool_size)/maxpool_stride)+1)
+
+        # this fixes an implementation bug in Keras. If this is not true,
+        # then the code runs much more slowly
+        assert maxpool_size%maxpool_stride == 0
+
+        # Define architecture
+        self.model = Graph()
+        if self.stack_arrays:
+            stacked_height = sum(shape[-2] for shape in arrays_shapes)
+            self.model.add_input(name="input", input_shape=(1, stacked_height, length))
+            self.model.add_node(Convolution2D(
+                num_conv,
+                stacked_height, conv_width,
+                activation="relu", init="he_normal",
+                #input_shape=(1, stacked_height, length)
+            ), name="conv0", input="input")
+            self.model.add_node(Dropout(dropout), name="drop0", input="conv0")
+            for i in xrange(1, num_conv_layers):
+                self.model.add_node(Convolution2D(
+                    num_conv,
+                    1, conv_width,
+                    activation="relu", init="he_normal",
+                    W_regularizer=l1(l1_decay)
+                ), name="conv%s" % (str(i)), input="drop%s" % (str(i-1)))
+                self.model.add_node(Dropout(dropout), name="drop%s" % (str(i)), input="conv%s" % (str(i)))
+        else: #TODO: write multimoding for Graph model
+            raise RuntimeError("Multimoding is not implemented for multitask models!")
+        self.model.add_node(MaxPooling2D(
+                pool_size=(1,maxpool_size),
+                strides=(1,maxpool_stride)
+            ), name="maxpool", input="conv%s" % (str(num_conv_layers-1)))
+        if model_type=='cnn':
+            self.model.add_node(Flatten(), name="flatten", input="maxpool")
+        elif model_type=='cnn-rnn-tdd':
+            raise RuntimeError("cnn-rnn-tdd is implemented for multitask models!")
+        else:
+            raise ValueError('invalid model type! supported choices are cnn,cnn-rnn-tdd')
+        for i in xrange(self.num_tasks):
+            self.model.add_node(Dense(1), name="dense%s" % (str(i)), input="flatten")
+            self.model.add_node(Activation('sigmoid'), name="sigmoid%s" % (str(i)), input="dense%s" % (str(i)))
+            self.model.add_output(name="output%s" % (str(i)), input="sigmoid%s" % (str(i)))
+
+    def compile(self, ofname, loss, optimizer):
+        print "compiling model..."
+        self.model.compile(optimizer, loss)
+        print("Serializing compiled model." )
+        loss_name = loss["output0"] if isinstance(loss["output0"], str) else loss["output0"].__name__
+        fname = "%s.MODEL.%s.json" % (ofname, loss_name)
+        json_string = self.model.to_json()
+        open(fname, 'w').write(json_string)
+
+    def evaluate(self, validation_data_dict):
+        pred_probs = self.model.predict(validation_data_dict)
+        preds = dict(zip([name for name in self.model.output_order],
+                         [(pred_probs[name]>0.5).astype(float) for name in self.model.output_order]))
+        sample_masks = dict(zip([name for name in self.model.output_order],
+                                [sample_weights(validation_data_dict[name]).astype(bool)
+                                 for name in self.model.output_order]))
+        return [ClassificationResult(validation_data_dict[name][sample_masks[name]],
+                                     preds[name][sample_masks[name]],
+                                     pred_probs[name][sample_masks[name]])
+                for name in self.model.output_order]
+
+    def reshape_input_arrays(self, arrays):
+        """
+        convert list of arrays to proper input arrays.
+        """
+        if isinstance(arrays, list) and len(arrays)==1:
+            return arrays[0]
+        elif self.stack_arrays:
+            return np.concatenate(fitting_arrays, axis=2)
+        else:
+            return arrays
+
+    def evaluate_peaks_and_labels(self, X, labels, include_ambiguous_labels=False,
+                                  scores=None, plot_fname=None):
+        """
+        Creates data dictionary and calls evaluate.
+        TODO
+        this is as somewhat unnecessary method with unnecessary kwargs
+        refactor code
+        """
+        assert self.num_tasks==np.shape(labels)[-1]
+        X = self.reshape_input_arrays(X)
+        data_dict = dict(zip(["input"]+["output%s" % (i) for i in xrange(self.num_tasks)],
+                             [X]+[labels[:, i] for i in xrange(self.num_tasks)]))
+        return self.evaluate(data_dict)
+
+
+    def train(self, fitting_arrays, fitting_labels, fitting_scores,
+              stopping_arrays, stopping_labels, stopping_scores, ofname,
+              unbalanced_train_epochs=3):
+        assert self.num_tasks==np.shape(stopping_labels)[-1]
+        # define X and y arrays
+        y_train = fitting_labels
+        y_validation = stopping_labels
+        X_train = self.reshape_input_arrays(fitting_arrays)
+        X_validation = self.reshape_input_arrays(stopping_arrays)
+        # define input_output dictionary
+        train_data_dict = dict(zip(["input"]+["output%s" % (i) for i in xrange(self.num_tasks)],
+                                   [X_train]+[y_train[:, i] for i in xrange(self.num_tasks)]))
+        validation_data_dict = dict(zip(["input"]+["output%s" % (i) for i in xrange(self.num_tasks)],
+                                        [X_validation]+[y_validation[:, i] for i in xrange(self.num_tasks)]))
+        # compute class and sample weights
+        class_weight_dict = dict(zip(["output%s" % (i) for i in xrange(self.num_tasks)],
+                                     [dict(zip([0, 1], class_weights(y_train[:, i])))
+                                      for i in xrange(self.num_tasks)]))
+        sample_weight_dict = dict(zip(["output%s" % (i) for i in xrange(self.num_tasks)],
+                                      [sample_weights(y_train[:, i]) for i in xrange(self.num_tasks)]))
+        # compile and fit
+        weights_ofname = "%s.%s" % (ofname, "fit_weights.hd5")
+        self.model.save_weights(weights_ofname, overwrite=True)
+
+        print("Compiling model with cross entropy loss.")
+        loss_dict = dict(zip(["output%s" % (i) for i in xrange(self.num_tasks)],
+                             ["binary_crossentropy" for i in xrange(self.num_tasks)]))
+        self.compile(ofname, loss_dict, Adam())
+        self.model.load_weights(weights_ofname)
+        res_list = self.evaluate(validation_data_dict)
+        self.best_target_metric = sum(getattr(res, self.target_metric) for res in res_list)
+        epochs_no_imporvement = 0
+
+        while epochs_no_imporvement < unbalanced_train_epochs:
+            self.model.fit(
+                train_data_dict,validation_data=validation_data_dict,
+                class_weight=class_weight_dict, sample_weight=sample_weight_dict,
+                batch_size=self.batch_size, nb_epoch=1)
+            res_list = self.evaluate(validation_data_dict)
+            for res in res_list:
+                print res
+
+            current_target_metric = sum(getattr(res, self.target_metric) for res in res_list)
+            if (current_target_metric > self.best_target_metric):
+                print("highest %s so far. Saving weights." % self.target_metric)
+                self.model.save_weights(weights_ofname, overwrite=True)
+                self.best_target_metric = current_target_metric
+                epochs_no_imporvement = 0
+            else:
+                epochs_no_imporvement += 1
+        # load and return the best model
+        print "Loading best model"
+        self.model.load_weights(weights_ofname)
         return self
