@@ -344,8 +344,7 @@ def main_train(main_args, train_args):
             for res in clean_res:
                 print res
         else:
-            print res
-    #print clean_results
+            print clean_result
     if len(results) > 0:
         print 'FULL VALIDATION RESULTS'
         for res in results:
