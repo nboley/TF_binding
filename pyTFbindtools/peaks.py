@@ -9,8 +9,8 @@ import ntpath
 import numpy as np
 from sklearn.cross_validation import StratifiedKFold
 
-from pysam import TabixFile
-from pybedtools import Interval
+from pysam import TabixFile, tabix_index
+from pybedtools import Interval, BedTool
 
 from grit.lib.multiprocessing_utils import Counter
 
@@ -358,7 +358,6 @@ def merge_peaks(pk_iter):
     """
     uses merge from pybedtools to merge NarrowPeaks
     """
-    from pybedtools import BedTool
     intervals = get_intervals_from_peaks(pk_iter)
     bedtool = BedTool(intervals)
     print "printing bedtool count: ", bedtool.count()
@@ -384,7 +383,8 @@ def load_and_label_peaks_from_beds(
         background_regions_fp, pos_regions_fp_list,
         ambiguous_regions_fp_list=None,
         bin_size=200, flank_size=400,
-        max_num_peaks=None, include_pos_regions=True):
+        max_num_peaks=None, include_pos_regions=True,
+        half_peak_width=None):
     """
     Bins background regions, labels with positive regions, adds flanks.
 
@@ -405,14 +405,14 @@ def load_and_label_peaks_from_beds(
         ambiguous_regions_fname_list = [fp.name for fp in ambiguous_regions_fp_list]
     else: ambiguous_regions_fname_list = None
     sample_name = ntpath.basename(background_regions_fp.name)
+    pk_iter = iter_narrow_peaks(background_regions_fp, max_num_peaks)
+    if half_peak_width is not None:
+        pk_iter = iter_summit_centered_peaks(pk_iter, half_peak_width)
     if include_pos_regions:
-        regions_fp_list = [background_regions_fp] + pos_regions_fp_list
-        pk_iter_list = [iter_narrow_peaks(regions_fp, max_num_peaks)
-                        for regions_fp in regions_fp_list]
+        pk_iter_list = [pk_iter] + [iter_narrow_peaks(regions_fp, max_num_peaks)
+                                    for regions_fp in pos_regions_fp_list]
         concat_pk_iter = chain.from_iterable(pk_iter_list)
         pk_iter = merge_peaks(concat_pk_iter)
-    else:
-        pk_iter = iter_narrow_peaks(background_regions_fp, max_num_peaks)
     def iter_pk_and_label(pk_iter, pos_regions_fname_list, ambiguous_regions_fname_list):
         for pk in pk_iter:
             for pk_bin in pk.bins(bin_size):
@@ -508,7 +508,14 @@ def label_and_score_peak_with_chipseq_peaks(
         try: 
             fp = chipseq_peaks_tabix_file_cache[(pid, fname)]
         except KeyError:
-            fp = TabixFile(fname)
+            try:
+                fp = TabixFile(fname)
+            except IOError:
+                unzipped_fname = '.'.join(
+                    fname.split('.')[:-1]) if fname.endswith('.gz') else fname
+                sorted_bed = BedTool(fname).sort().saveas(unzipped_fname)
+                tabix_fname = tabix_index(fname, preset="bed", force=True)
+                fp = TabixFile(tabix_fname)
             chipseq_peaks_tabix_file_cache[(pid, fname)] = fp
 
         # if the contig isn't in the contig list, then it

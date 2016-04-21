@@ -135,15 +135,14 @@ def parse_args():
     else:
         if args.pos_regions != None:
             if args.neg_regions != None:
-            #assert args.neg_regions != None, \
-            #"--neg-regions must be set"
                 peaks_and_labels = load_labeled_peaks_from_beds(
                     args.pos_regions, args.neg_regions,
                     args.half_peak_width, args.max_num_peaks_per_sample)
             elif args.background_regions:
                 peaks_and_labels = load_and_label_peaks_from_beds(
                     args.background_regions, args.pos_regions, args.ambiguous_regions,
-                    args.bin_size, args.flank_size, args.max_num_peaks_per_sample)
+                    args.bin_size, args.flank_size, args.max_num_peaks_per_sample,
+                    half_peak_width=args.half_peak_width)
             else:
                 raise RuntimeError("--neg-regions or --background-regions must be set when --pos-regions is set")
             if len(np.shape(peaks_and_labels.labels))==1:
