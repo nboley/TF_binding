@@ -1,3 +1,5 @@
+import random
+random.seed(1701)
 import os
 import numpy as np
 from collections import OrderedDict
@@ -26,7 +28,7 @@ from get_signal import (
     get_peaks_signal_arrays, get_peaks_signal_arrays_by_samples,
     merge_sample_specific_bigwigs
 )
-from KerasModel import KerasModel, load_model
+from KerasModel import KerasModel, load_model, KerasModelMultitask
 from grid_search import MOESearch
 
 def parse_args():
@@ -275,7 +277,11 @@ def main_train(main_args, train_args):
                 model = KerasModel(model_fname=model_fname)
                 model.model.load_weights(weights_fname)
             else:
-                model = KerasModel(signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
+                if len(np.shape(fitting_labels))==2 and np.shape(fitting_labels)[-1]>1:
+                    print "instantiating KerasModelMultitask..."
+                    model = KerasModelMultitask(np.shape(fitting_labels)[-1], signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
+                else:
+                    model = KerasModel(signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
             model_ofname_infix = valid.samples[0] if len(peaks_and_labels.samples[0])>0 else str(fold_index+1)
             fit_model = model.train(
                 fitting_signal_arrays, fitting_labels, fitting_scores,
@@ -298,12 +304,19 @@ def main_train(main_args, train_args):
             valid_labels,
             include_ambiguous_labels=False)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
-            clean_res.train_samples = train.sample_ids
-            clean_res.train_chromosomes = train.contigs
-            clean_res.validation_samples = valid.sample_ids
-            clean_res.validation_chromosomes = valid.contigs
+            if isinstance(clean_res, list):
+                for res in clean_res:
+                    res.train_samples = train.sample_ids
+                    res.train_chromosomes = train.contigs
+                    res.validation_samples = valid.sample_ids
+                    res.validation_chromosomes = valid.contigs
+            else:
+                clean_res.train_samples = train.sample_ids
+                clean_res.train_chromosomes = train.contigs
+                clean_res.validation_samples = valid.sample_ids
+                clean_res.validation_chromosomes = valid.contigs
         clean_results.append(clean_res)
-        if any(valid_labels == -1):
+        if (valid_labels == -1).any() and isinstance(fit_model, KerasModel):
             res = fit_model.evaluate_peaks_and_labels(
                 valid_signal_arrays,
                 valid_labels,
@@ -324,9 +337,13 @@ def main_train(main_args, train_args):
                     stopping_scores)
         if only_test_one_fold: break
     print 'CLEAN VALIDATION RESULTS'
-    for res in clean_results:
-        print res
-    print clean_results
+    for clean_result in clean_results:
+        if isinstance(clean_result, list):
+            for res in clean_res:
+                print res
+        else:
+            print res
+    #print clean_results
     if len(results) > 0:
         print 'FULL VALIDATION RESULTS'
         for res in results:
@@ -375,8 +392,15 @@ def main_test(main_args, test_args):
             valid_labels,
             include_ambiguous_labels=False)
         if not isinstance(peaks_and_labels, FastaPeaksAndLabels):
-            clean_res.validation_samples = valid.sample_ids
-            clean_res.validation_chromosomes = valid.contigs
+            if isinstance(clean_res, list):
+                for res in clean_res:
+                    res.train_samples = train.sample_ids
+                    res.train_chromosomes = train.contigs
+                    res.validation_samples = valid.sample_ids
+                    res.validation_chromosomes = valid.contigs
+            else:
+                clean_res.validation_samples = valid.sample_ids
+                clean_res.validation_chromosomes = valid.contigs
         clean_results.append(clean_res)
         if only_test_one_fold: break
     print 'CLEAN VALIDATION RESULTS'
