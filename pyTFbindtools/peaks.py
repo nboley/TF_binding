@@ -701,10 +701,8 @@ def load_DNASE_coverage(sample_id, peaks):
             np.save(ofp, rv)
     return rv[0,:,:]
 
-
-class SamplePeaksAndLabels():
-    @staticmethod
-    def one_hot_code_peaks_sequence(pks, genome_fasta):
+def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_prefix=None):
+    if cache_prefix is not None:
         cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(
             pks.view(np.uint8)).hexdigest()
         try:
@@ -714,24 +712,27 @@ class SamplePeaksAndLabels():
         except IOError:
             pass
 
-        pk_width = pks[0][2] - pks[0][1]
-        rv = 0.25 * np.ones((len(pks), pk_width, 4), dtype='float32')
-        for i, data in enumerate(pks):
-            assert pk_width == data[2] - data[1]
-            seq = genome_fasta.fetch(str(data[0]), data[1], data[2])
-            if len(seq) != pk_width: continue
-            coded_seq = one_hot_encode_sequence(seq)
-            rv[i,:,:] = coded_seq
-        
-        # add the extra dimension for theano
-        rv = np.swapaxes(rv, 1, 2)[:,None,:,:]
-        
+    pk_width = pks[0][2] - pks[0][1]
+    rv = 0.25 * np.ones((len(pks), pk_width, 4), dtype='float32')
+    for i, data in enumerate(pks):
+        assert pk_width == data[2] - data[1]
+        seq = genome_fasta.fetch(str(data[0]), data[1], data[2])
+        if len(seq) != pk_width: continue
+        coded_seq = one_hot_encode_sequence(seq)
+        rv[i,:,:] = coded_seq
+
+    # add the extra dimension for theano
+    rv = np.swapaxes(rv, 1, 2)[:,None,:,:]
+
+    if cache_prefix is not None:
         with open(cached_fname, "w") as ofp:
             print "Saving seqs"
             np.save(ofp, rv)
 
-        return rv
+    return rv
 
+
+class SamplePeaksAndLabels():
     @property
     def factor_names(self):
         from pyTFbindtools.DB import load_tf_names
@@ -1041,8 +1042,7 @@ class PartitionedSamplePeaksAndLabels():
         from pyDNAbinding.DB import load_genome_metadata
         genome_fasta = FastaFile('hg19.genome.fa')
         # load_genome_metadata(annotation_id).filename)
-        fwd_seqs = SamplePeaksAndLabels.one_hot_code_peaks_sequence(
-            pks, genome_fasta)
+        fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
         
         print "Filtering Peaks"
         data = SamplePeaksAndLabels(
@@ -1193,4 +1193,3 @@ class PartitionedSamplePeaksAndLabels():
             self, batch_size, repeat_forever=False, **kwargs):
         return self.iter_batches(
             batch_size, 'validation', repeat_forever, **kwargs)
-
