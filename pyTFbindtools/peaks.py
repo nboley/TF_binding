@@ -999,6 +999,17 @@ class SamplePeaksAndLabels():
             **kwargs
         )
 
+class Data():
+    """Store and iterate through data from a dee learning model.
+
+    """
+    def __init__(self, inputs, outputs):
+        self.inputs = inputs
+        self.outputs = outputs
+
+    def iter_batches():
+        pass
+
 class PartitionedSamplePeaksAndLabels():
     def cache_key(self, sample_id):
         return hashlib.sha1(str((
@@ -1130,7 +1141,8 @@ class PartitionedSamplePeaksAndLabels():
 
         ## find the number of observations to sample from each batch
         # To make this work, I would need to randomly choose the extra observations
-        assert batch_size >= len(data_subset), "Cant have a batch size smaller than the number of samples"
+        assert batch_size >= len(data_subset), \
+            "Cant have a batch size smaller than the number of samples"
         fractions = np.array([x.n_samples for x in data_subset.values()], dtype=float)
         fractions = fractions/fractions.sum()
         inner_batch_sizes = np.array(batch_size*fractions, dtype=int)
