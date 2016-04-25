@@ -64,159 +64,6 @@ class NarrowPeak(NarrowPeakData):
     def pk_width(self):
         return self.stop - self.start
 
-class Peaks(list):
-    pass
-
-class ThreadSafeIterator(object):
-    def __init__(self, peaks_and_labels):
-        self.peaks_and_labels = peaks_and_labels
-        self.i = Counter()
-        self.n = len(peaks_and_labels)
-        self._cur_val = 0
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        assert self.n == len(self.peaks_and_labels)
-        i = self.i.return_and_increment()
-        self._cur_val = i
-        if i < self.n:
-            return self.peaks_and_labels[i]
-        else:
-            raise StopIteration()
-
-class TrainValidationthreadSafeIterator(object):
-    def __init__(self, peaks_and_labels):
-        self.peaks_and_labels = peaks_and_labels
-        tr_valid_indices = list(iter_train_validation_splits(
-                self.sample_ids, self.contigs))
-        self.i = Counter()
-        self.n = len(tr_valid_indices)
-        self._cur_val = 0
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        i = self.i.return_and_increment()
-        self._cur_val = i
-        if i < self.n:
-            train_indices, valid_indices = self.tr_valid_indices[i]
-            return (self.peaks_and_labels.subset_data(*train_indices),
-                    self.peaks_and_labels.subset_data(*valid_indices))
-        else:
-            raise StopIteration()
-
-PeakAndLabel = namedtuple('PeakAndLabel', ['peak', 'sample', 'label', 'score'])
-class PeaksAndLabels():
-    def __getitem__(self, index):
-        return PeakAndLabel(
-            self.peaks[index], 
-            self.samples[index], 
-            self.labels[index], 
-            self.scores[index])
-    
-    def __iter__(self):
-        return (
-            PeakAndLabel(pk, sample, label, score) 
-            for pk, sample, label, score
-            in izip(self.peaks, self.samples, self.labels, self.scores)
-        )
-
-    def thread_safe_iter(self):
-        """Returns an iterator that can safely be used from multiple threads.
-
-        """
-        return PeaksAndLabelsThreadSafeIterator(self)
-
-    def __len__(self):
-        rv = len(self.peaks)
-        assert len(self.samples) == rv
-        assert len(self.labels) == rv
-        return rv
-    
-    @property
-    def max_peak_width(self):
-        return max(self.peak_widths)
-
-    def __init__(self, peaks_and_labels):
-        # split the peaks and labels into separate columns. Also
-        # keep track of the distinct samples and contigs
-        self.peaks = []
-        self.samples = []
-        self.labels = []
-        self.scores = []
-        self.sample_ids = set()
-        self.contigs = set()
-        self.peak_widths = set()
-        for pk, sample, label, score in peaks_and_labels:
-            self.peaks.append(pk)
-            self.peak_widths.add(pk.pk_width)
-            self.samples.append(sample)
-            self.labels.append(label)
-            self.scores.append(score)
-            self.sample_ids.add(sample)
-            self.contigs.add(pk.contig)
-        assert len(self.peak_widths) == 1
-        # turn the list of labels into a numpy array
-        self.labels = np.array(self.labels, dtype='float32')
-        self.labels.flags.writeable = False
-        self.scores = np.array(self.scores, dtype='float32')
-        self.scores.flags.writeable = False
-        
-    def subset_data(self, sample_names, contigs):
-        '''return data covering sample+names and contigs
-        '''
-        return PeaksAndLabels(
-                pk_and_label for pk_and_label in self 
-                if pk_and_label.sample in sample_names
-                and (contigs is None or pk_and_label.peak.contig in contigs)
-            )
-
-    def remove_data(self, sample_names, contigs):
-        '''return data not covering sample_names and contigs
-        '''
-        return PeaksAndLabels(
-                pk_and_label for pk_and_label in self
-                if pk_and_label.sample not in sample_names
-                and pk_and_label.peak.contig not in contigs
-            )
-
-    def remove_ambiguous_labeled_entries(self):
-        '''return subset of data wityh nonzero labels
-        '''
-        return PeaksAndLabels(
-                pk_and_label for pk_and_label in self 
-                if pk_and_label.label != -1
-            )
-
-    def thread_safe_iter_train_validation_subsets(self):
-        return TrainValidationthreadSafeIterator(self)
-
-    def iter_train_validation_subsets(
-            self, validation_contigs=None, single_celltype=False):
-        for train_indices, valid_indices in iter_train_validation_splits(
-                self.sample_ids, self.contigs,
-                validation_contigs, single_celltype):
-            yield (self.subset_data(*train_indices),
-                   self.subset_data(*valid_indices))
-
-class FastaPeaksAndLabels(PeaksAndLabels):
-    @staticmethod
-    def __name__():
-        return 'FastaPeaksAndLabels'
-
-    def subset_data(self, subset_indices):
-        return FastaPeaksAndLabels(
-            self[index] for index in subset_indices)
-
-    def iter_train_validation_subsets(self):
-        skf = StratifiedKFold(self.labels, n_folds=5)
-        for train_indices, valid_indices in skf:
-            yield (self.subset_data(train_indices),
-                   self.subset_data(valid_indices))
-
 def iter_summit_centered_peaks(original_peaks, half_peak_width):
     for peak in original_peaks:
         centered_peak = NarrowPeak(
@@ -381,34 +228,43 @@ def label_and_score_peak_with_chipseq_peaks(
         
         if overlap_frac > min_overlap_frac:
             labels.append(1)
-            scores.append(score) # XXX
+            scores.append(score)
         else:
             labels.append(0)
             scores.append(0)
     return labels, scores
 
-def iter_sample_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-        annotation_id,
-        half_peak_width=None, 
-        max_n_peaks_per_sample=None,
-        include_ambiguous_peaks=False,
-        order_by_accessibility=False):
-    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
-    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
-        annotation_id, tf_id, )
+def build_peaks_and_chipseq_labels_matrix(
+        regions,
+        chipseq_peaks_fnames,
+        labeling_callback=label_and_score_peak_with_chipseq_peaks):
+    print "Building labels - this could take a while"
+    tf_ids = []
+    labels = np.zeros((len(pks), len(peak_fnames)), dtype='float32')
+    for tf_index, (tf_id, factor_peak_filenames) in enumerate(
+            sorted(chipseq_peaks_fnames.iteritems())):
+        tf_ids.append(tf_id)
+        for i, pk in enumerate(pks):
+            pk_labels, pk_scores = label_and_score_peak_with_chipseq_peaks(
+                factor_peak_filenames, pk)
+            try: label = max(pk_labels)
+            except ValueError: label = 0 # if there are no overlapping peaks
+            labels[i, tf_index] = label
+            if i>0 and i%100000 == 0:
+                print "%i/%i peaks, %i/%i samples" % (
+                    i, len(pks), tf_index, len(peak_fnames))
+    return tf_ids, labels
 
-    pass
-
-def build_peaks_label_mat(
+def load_or_build_peaks_and_labels_mat_from_DB(
         annotation_id, roadmap_sample_id, half_peak_width=None):
-    # load all of the peaks
+    # load all of the peak file names from the database
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
         annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
     assert not any(x is None for x in peak_fnames.keys())
-    # extract the accessibility peaks
+
+    # extract the accessibility peak filenames
     dnase_peaks_fnames = peak_fnames['dnase']
-    print annotation_id, roadmap_sample_id
     if len(dnase_peaks_fnames) == 0:
         raise ValueError, "Can not load DNASE peaks for roadmap sample ID '%s'" % roadmap_sample_id
     assert len(dnase_peaks_fnames) == 1
@@ -423,6 +279,8 @@ def build_peaks_label_mat(
         else:
             pks = list(iter_summit_centered_peaks(
                 iter_narrow_peaks(fp), half_peak_width))
+
+    # build label the DNASE peaks
     all_labels = []
     for desired_peak_type in (
             'optimal idr thresholded peaks', 'anshul relaxed peaks'):
@@ -440,25 +298,14 @@ def build_peaks_label_mat(
                 print "Loading labels"
                 labels = np.load(fp)
         except IOError:
-            print "Building labels - this could take a while"
-            labels = np.zeros((len(pks), len(peak_fnames)), dtype='float32')
-            for tf_index, (tf_id, chipseq_peaks_fnames) in enumerate(
-                    sorted(peak_fnames.iteritems())):
-                optimal_chipseq_peaks_fnames = [
-                    fname for pk_type, fname in chipseq_peaks_fnames
-                    if pk_type == desired_peak_type
-                ]
-                for i, pk in enumerate(pks):
-                    pk_labels, pk_scores = label_and_score_peak_with_chipseq_peaks(
-                        optimal_chipseq_peaks_fnames, pk)
-                    try: label = max(pk_labels)
-                    except ValueError: label = 0 # if there are no overlapping peaks
-                    labels[i, tf_index] = label
-                    if i>0 and i%100000 == 0:
-                        print "%i/%i peaks, %i/%i samples" % (
-                            i, len(pks), tf_index, len(peak_fnames))
+            chipseq_peaks_fnames = [
+                fname for pk_type, fname in chipseq_peaks_fnames
+                if pk_type == desired_peak_type
+            ]
+            tf_ids, labels = build_DNASE_peaks_and_labels_matrix_from_DB(
+                annotation_id, roadmap_sample_id, half_peak_width)
             with open(pickle_fname + ".tfnames", "w") as ofp:
-                for tf_name in sorted(list(peak_fnames.keys())):
+                for tf_name in tf_ids:
                     ofp.write("%s\n" % tf_name)
             with open(pickle_fname, "w") as ofp:
                 np.save(ofp, labels)
@@ -731,235 +578,95 @@ def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_prefix=None):
 
     return rv
 
+class Data(object):
+    """Store and iterate through data from a deep learning model.
 
-class SamplePeaksAndLabels():
-    @property
-    def factor_names(self):
-        from pyTFbindtools.DB import load_tf_names
-        if self._factor_names is None:
-            self._factor_names = [
-                x.replace("eGFP-", "") for x in load_tf_names(self.tf_ids)]
-            assert len(self.tf_ids) == len(self._factor_names)
-        return self._factor_names
+    """
+    def save(self):
+        """Save the data into an h5 file.
 
-    def subset_pks(self, pk_indices=slice(None)) :#, factor_indices=slice(None), tfids=None):
-        """Return a copy of self only containing the peaks sepcified by indices
-
-        indices: numpy array of indices to include
         """
-        #if tfids==None:
-        #    if not isinstance(factor_indices, slice) and (factor_indices < -0.5).any() and tfids is None:
-        #        raise ValueError, "Inserting a factor requires specifying the tfids. "
+        raise NotImplementedError, "Not implemented"
 
-        return SamplePeaksAndLabels(
-            self.sample_id,
-            self.tf_ids,
-            self.pks[pk_indices], 
-            self.fwd_seqs[pk_indices],
-            self.idr_optimal_labels[pk_indices, :], 
-            self.relaxed_labels[pk_indices, :]
-        )
-        
-        #return SamplePeaksAndLabels(
-        #    self.sample_id,
-        #    np.array(self.tf_ids)[factor_indices],
-        #    self.pks[pk_indices], 
-        #    self.fwd_seqs[pk_indices],
-        #    self.idr_optimal_labels[pk_indices, factor_indices], 
-        #    self.relaxed_labels[pk_indices, factor_indices]
-        #)
+    @staticmethod
+    def load(fname):
+        """Load data from an h5 file.
 
-    def balance_data(self):
-        labels = self.labels
+        """
+        raise NotImplementedError, "Not implemented"
+
+    def __init__(self, inputs, outputs, task_ids=None):
+        # if inputs is an array, then we assume that this is a sequential model
+        if isinstance(inputs, np.array):
+            if not isinstance(outputs, np.array):
+                raise ValueError, "If the input is a numpy array, then the output is also expected to be a numpy array.\nHint: You can use multiple inputs and outputs by passing a dictionary keyed by the dtaa type name."
+            self._data_type = "sequential"
+            self.num_observations = inputs.shape[0]
+            assert self.num_observations == output.shape[0]
+            # if no task ids are set, set them to indices
+            if task_ids is not None:
+                assert len(task_ids) == outputs.shape[1]
+            else:
+                task_ids = [str(x) for x in xrange(1, outputs.shape[1]+1)]
+        # otherwise assume that this is a graphical type model
+        else:
+            self.num_observations = next(inputs.itervalues()).shape[0]
+            # make sure that all of that data are arrays and have the same
+            # number of observations
+            for val in chain(inputs.itervalues(), outputs.itervalues()):
+                assert isinstance(val, np.array)
+                assert self.num_observations == val.shape[0]
+            # make sure that task id length match up. If a task id key doesnt
+            # exist, then default to sequential numbers
+            for key in outputs.iterkeys():
+                if key in task_ids:
+                    if len(task_ids[key]) != outputs[key].shape[1]:
+                        raise ValueError, "The number of task ids for key '{}' does not match the output shape".format()
+                pass            
+            self._data_type = "graphical"
+
+        self.task_ids = task_ids
+        self.inputs = inputs
+        self.outputs = outputs
+    
+    def build_label_balanced_indices(self, label_key=None, task_id=None):
+        # figure out the labels to sample from
+        if self._data_type == "sequential":
+            assert task_id is None
+            labels = self.outputs
+        else:
+            if label_name is None and len(self.outputs) == 1:
+                label_name = next(self.inputs.iterkeys())
+            else:
+                assert task_id is not None
+                labels = self.inputs[task_id]
+
+        if labels.shape[1] == 1:
+            assert (task_id is None) or (task_id in self.task_ids), \
+                "The specified task_id ({}) does not exist".format(task_id)
+            labels = labels[:,0]
+        else:
+            assert task_id is not None, "Must choose the task id to balance on in the multi-task setting"
+            labels = labels[:,self.task_ids.index(task_id)]
+
         one_indices = np.random.choice(
             np.nonzero(labels == 1)[0], size=len(labels)/2)
         zero_indices = np.random.choice(
             np.nonzero(labels == 0)[0], size=len(labels)/2)
-        indices = np.concatenate((one_indices, zero_indices), axis=0)
-        np.random.shuffle(indices)
-        return self.subset_pks(pk_indices=indices)
-    
-    def subset_tfs(self, desired_factor_names):
-        """Return a copy of self that only contains factor_names.
-
-        """
-        # make chained filtering more convenient by defaulting to 
-        # all tfs if none is passed
-        if desired_factor_names is None:
-            return self
-
-        # find the tfids associated with these factor names
-        from pyTFbindtools.DB import load_tf_ids
-        desired_tf_ids = load_tf_ids(desired_factor_names)
-        
-        tf_indices = []
-        for tf_id in desired_tf_ids:
-            try: tf_indices.append(self.tf_ids.index(tf_id))
-            except ValueError: tf_indices.append(-1)
-        tf_indices = np.array(tf_indices)
-
-        new_idr_optimal_labels = np.insert(
-            self.idr_optimal_labels, 0, -1, axis=1)
-        new_relaxed_labels = np.insert(
-            self.relaxed_labels, 0, -1, axis=1)
-        print new_idr_optimal_labels.shape
-        
-        return SamplePeaksAndLabels(
-            self.sample_id,
-            desired_tf_ids,
-            self.pks, 
-            self.fwd_seqs,
-            new_idr_optimal_labels[:, tf_indices+1], 
-            new_relaxed_labels[:, tf_indices+1]
-        )
-
-    def subset_pks_by_rank(self, max_num_peaks, use_top_accessible, seed=0):
-        """Return a copy of self containing at most max_num_peaks peaks.
-
-        max_num_peaks: the maximum number of peaks to return
-        use_top_accessible: return max_num_peaks most accessible peaks
-        """
-        if max_num_peaks is None:
-            max_num_peaks = len(self.pks)
-        
-        # sort the peaks by accessibility
-        if use_top_accessible:
-            indices = np.lexsort((self.pks['start'], -self.pks['signalValue']))
-        # sort the peaks randomly
-        else:
-            # set a seed so we can use cached peaks between debug rounds
-            np.random.seed(seed)
-            indices = np.argsort(np.random.random(len(self.pks)))
-        return self.subset_pks(pk_indices=indices[:max_num_peaks])
-    
-    def subset_pks_by_contig(
-            self, contigs_to_include=None, contigs_to_exclude=None):
-        assert (contigs_to_include is None) != (contigs_to_exclude is None), \
-            "Either contigs_to_include or contigs_to_exclude must be specified"
-        # case these to sets to speed up the search a little
-        if contigs_to_include is not None:
-            contigs_to_include = set(contigs_to_include)
-        if contigs_to_exclude is not None:
-            contigs_to_exclude = set(contigs_to_exclude)
-        indices = np.array([
-            i for i, pk in enumerate(self.pks) 
-            if (contigs_to_exclude is None or pk[0] not in contigs_to_exclude)
-            and (contigs_to_include is None or pk[0] in contigs_to_include)
-        ])
-        return self.subset_pks(pk_indices=indices)
-
-    def save(self, cached_fname_suffix):
-        print "Saving cached peaks and labels"
-        np.save("pks." + cached_fname_suffix, self.pks)
-        np.save("fwd_seqs." + cached_fname_suffix, self.fwd_seqs)
-        np.save("idr_optimal_labels." + cached_fname_suffix, 
-                self.idr_optimal_labels)
-        np.save("relaxed_labels." + cached_fname_suffix, self.relaxed_labels)
-
-    @staticmethod
-    def load(cached_fname_suffix, sample_id, tf_ids):
-        print "Loading cached peaks and labels"
-        with open("pks.%s.npy"%cached_fname_suffix) as fp: 
-            pks = np.load(fp)
-        with open("fwd_seqs.%s.npy"%cached_fname_suffix) as fp: 
-            fwd_seqs = np.load(fp)
-        with open("idr_optimal_labels.%s.npy"%cached_fname_suffix) as fp: 
-            idr_optimal_labels = np.load(fp)
-        with open("relaxed_labels.%s.npy"%cached_fname_suffix) as fp:
-            relaxed_labels = np.load(fp)
-        print "FINISHED Loading cached peaks and labels"
-        return SamplePeaksAndLabels(
-            sample_id, 
-            tf_ids, 
-            pks, 
-            fwd_seqs, 
-            idr_optimal_labels, 
-            relaxed_labels
-        )
-
-    @property
-    def chipseq_coverage(self):
-        if self._chipseq_coverage is None:
-            self._chipseq_coverage = np.concatenate([
-                load_chipseq_coverage(self.sample_id, tf_id, self.pks)
-                for tf_id in self.tf_ids
-            ], axis=1)
-            # normalize the coverage
-            sums = self._chipseq_coverage.sum(axis=2).sum(axis=1)
-            self._chipseq_coverage[0] = 1e6*self._chipseq_coverage[0]/sums[0]
-            self._chipseq_coverage[1] = 1e6*self._chipseq_coverage[1]/sums[1]
-        return self._chipseq_coverage
-
-    @property
-    def dnase_coverage(self):
-        if self._dnase_coverage is None:
-            self._dnase_coverage = np.concatenate([
-                #load_DNASE_coverage(self.sample_id, self.pks)
-                load_accessibility_data(self.sample_id, self.pks)
-            ], axis=1)
-            print "DNASE SHAPE:", self._dnase_coverage.shape
-            ## normalize the coverage
-            #sums = self._dnase_coverage.sum(axis=1)
-            #self._dnase_coverage[0] = 1e6*self._dnase_coverage[0]/sums[0]
-        return self._dnase_coverage
-
-    @property
-    def n_samples(self):
-        return int(self.clean_labels.shape[0])
-
-    def __init__(self, 
-                 sample_id, tf_ids, 
-                 pks, seqs, 
-                 idr_optimal_labels, relaxed_labels):
-        self.sample_id = sample_id
-        self.tf_ids = tf_ids
-        self._factor_names = None
-
-        self.pks = pks
-        self.fwd_seqs = seqs
-        self.seq_length = self.fwd_seqs.shape[3]
-
-        self._chipseq_coverage = None
-        self._dnase_coverage = None
-        
-        self.idr_optimal_labels = idr_optimal_labels
-        self.relaxed_labels = relaxed_labels
-        
-        # set the ambiguous labels to -1
-        self.ambiguous_pks_mask = (
-            (self.idr_optimal_labels < -0.5)
-            | (self.relaxed_labels < -0.5)
-            | (self.idr_optimal_labels != self.relaxed_labels)
-        )
-        self.clean_labels = self.idr_optimal_labels.copy()
-        self.clean_labels[self.ambiguous_pks_mask] = -1
-
-        self.labels = self.clean_labels # idr_optimal_labels # ambiguous_labels
-        assert self.labels.shape[1] == len(self.tf_ids)
-
-    def build_balanced_indices(self):
-        one_indices = np.random.choice(
-            np.nonzero(self.labels == 1)[0], size=len(self.labels)/2)
-        zero_indices = np.random.choice(
-            np.nonzero(self.labels == 0)[0], size=len(self.labels)/2)
         permutation = np.concatenate((one_indices, zero_indices), axis=0)
         np.random.shuffle(permutation)
         return permutation
 
     def build_shuffled_indices(self):
-        return np.random.permutation(self.labels.shape[0])
+        return np.random.permutation(self.n_observations)
 
     def build_ordered_indices(self):
-        return np.arange(self.labels.shape[0])
+        return np.arange(self.n_observations)
 
-    def iter_batches_from_indices_generator(self, 
-                                  batch_size, 
-                                  repeat_forever, 
-                                  indices_generator, 
-                                  include_chipseq_signal=False, 
-                                  include_dnase_signal=False):
+    def iter_batches_from_indices_generator(
+            self, batch_size, repeat_forever, indices_generator)
         i = 0
-        n = int(math.ceil(self.fwd_seqs.shape[0]/float(batch_size)))
+        n = int(math.ceil(self.n_observations/float(batch_size)))
         permutation = None
         while repeat_forever is True or i<n:
             if i%n == 0:
@@ -967,14 +674,13 @@ class SamplePeaksAndLabels():
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
-            rv =  {'fwd_seqs': self.fwd_seqs[indices], 
-                   'output': self.labels[indices]
-            }
-            if include_dnase_signal:
-                rv['dnase_cov'] = self.dnase_coverage[indices,None,None,:]
-            if include_chipseq_signal:
-                rv['chipseq_cov'] = (
-                    np.swapaxes(self.chipseq_coverage[:,indices], 0, 1))[:,:,None,:]
+            if self._data_type == 'sequential':
+                rv = (self.inputs[indices], self.outputs[indices])
+            #if include_dnase_signal:
+            #    rv['dnase_cov'] = self.dnase_coverage[indices,None,None,:]
+            #if include_chipseq_signal:
+            #    rv['chipseq_cov'] = (
+            #        np.swapaxes(self.chipseq_coverage[:,indices], 0, 1))[:,:,None,:]
             yield rv
             i += 1
         return
@@ -999,18 +705,165 @@ class SamplePeaksAndLabels():
             **kwargs
         )
 
-class Data():
-    """Store and iterate through data from a dee learning model.
+    def subset_observations(self, observation_indices=slice(None)):
+        """Return a copy containing only the observations specified by indices
 
+        indices: numpy array of indices to select
+        """
+        if self._data_type == 'sequential':
+            new_inputs = self.inputs[observation_indices]
+            new_outputs = self.outputs[observation_indices]
+        elif self._data_type == 'graph':
+            new_inputs = {}
+            for key, data in self.inputs.iteritems():
+                new_inputs[key] = data[observation_indices]
+            new_outputs = {}
+            for key, data in self.outputs.iteritems():
+                new_outputs[key] = data[observation_indices]
+        else:
+            assert False,"Unrecognized model type '{}'".format(self._data_type)
+        
+        return Data(new_inputs, new_outputs, self.task_ids)
+    
+    def balance_data(self, task_id=None):
+        indices = self.build_label_balanced_indices(task_id=task_id)
+        return self.subset_observations(indices)
+    
+    def subset_tasks(self, desired_task_ids):
+        """Return a copy of self that only contains desired_task_ids.
+
+        """
+        # make chained filtering more convenient by defaulting to 
+        # all tfs if none is passed
+        if desired_task_ids is None:
+            return self
+        
+        task_indices = []
+        for task_id in desired_task_ids:
+            try: task_indices.append(self.task_ids.index(task_id))
+            except ValueError: task_indices.append(-1)
+        task_indices = np.array(task_indices)
+
+        new_outputs = {}
+        for task_key, data in self.outputs.iteritems():
+            new_data = np.insert(data, 0, -1, axis=1)
+            new_outputs[task_key] = new_data[:, task_indices+1]
+
+        return Data(inputs, new_outputs, task_ids=desired_task_ids)
+
+class GenomicRegionsAndLabels(Data):
+    """Subclass Data to handfle the common case where the input is a set of 
+       genomic regions and the output is a single labels matrix. 
+    
     """
-    def __init__(self, inputs, outputs):
-        self.inputs = inputs
-        self.outputs = outputs
+    
+    @property
+    def label_ids(self):
+        return self.task_ids['labels']
 
-    def iter_batches():
-        pass
+    @property
+    def regions(self):
+        return self.inputs['regions']
 
-class PartitionedSamplePeaksAndLabels():
+    @property
+    def labels(self):
+        return self.outputs['labels']
+
+    def subset_pks_by_rank(self, max_num_peaks, use_top_accessible, seed=0):
+        """Return a copy of self containing at most max_num_peaks peaks.
+
+        max_num_peaks: the maximum number of peaks to return
+        use_top_accessible: return max_num_peaks most accessible peaks
+        """
+        if max_num_peaks is None:
+            max_num_peaks = len(self.pks)
+        
+        # sort the peaks by accessibility
+        if use_top_accessible:
+            indices = np.lexsort(
+                (self.regions['start'], -self.regions['signalValue'])
+            )
+        # sort the peaks randomly
+        else:
+            # set a seed so we can use cached peaks between debug rounds
+            np.random.seed(seed)
+            indices = np.argsort(np.random.random(len(self.regions)))
+        return self.subset_pks(pk_indices=indices[:max_num_peaks])
+    
+    def subset_pks_by_contig(
+            self, contigs_to_include=None, contigs_to_exclude=None):
+        assert (contigs_to_include is None) != (contigs_to_exclude is None), \
+            "Either contigs_to_include or contigs_to_exclude must be specified"
+        # case these to sets to speed up the search a little
+        if contigs_to_include is not None:
+            contigs_to_include = set(contigs_to_include)
+        if contigs_to_exclude is not None:
+            contigs_to_exclude = set(contigs_to_exclude)
+        indices = np.array([
+            i for i, pk in enumerate(self.regions) 
+            if (contigs_to_exclude is None or pk[0] not in contigs_to_exclude)
+            and (contigs_to_include is None or pk[0] in contigs_to_include)
+        ])
+        return self.subset_pks(pk_indices=indices)
+    
+    @property
+    def n_samples(self):
+        return len(self.regions)
+
+    def __init__(self, regions, labels, inputs={}, task_ids=None):
+        # add regions to the input
+        if 'regions' in inputs:
+            raise ValueError, "'regions' input is passed as an argument and also specified in inputs"
+        inputs['regions'] = regions
+        Data.__init__(inputs, {'labels': labels}, {'labels': task_ids})
+
+class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
+    @property
+    def factor_names(self):
+        if self._factor_names is None:
+            from pyTFbindtools.DB import load_tf_names
+            self._factor_names = [
+                x.replace("eGFP-", "") for x in load_tf_names(self.tf_ids)]
+            assert len(self.tf_ids) == len(self._factor_names)
+        return self._factor_names
+
+    @property
+    def tf_ids(self):
+        return self.task_ids
+    
+    def subset_tfs(self, tf_ids):
+        return self.subset_tasks(tf_ids)
+
+def load_chipseq_data(
+        roadmap_sample_id,
+        factor_names,
+        max_n_samples,
+        annotation_id,
+        half_peak_width):
+    # XXX search for cached data
+    (pks, tf_ids, (idr_optimal_labels, relaxed_labels)
+        ) = load_or_build_peaks_and_labels_mat_from_DB(
+            annotation_id, roadmap_sample_id, half_peak_width)
+    print "Coding peaks"
+    from pyDNAbinding.DB import load_genome_metadata
+    load_genome_metadata(annotation_id).filename)
+    fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
+
+    print "Filtering Peaks"
+    labels = idr_optimal_labels+relaxed_labels
+    data = GenomicRegionsAndChIPSeqLabels(
+        regions=pks,
+        labels=labels,
+        inputs={'fwd_seqs': fwd_seqs},
+        task_ids=tf_ids
+    )
+    data = data.subset_pks_by_rank(
+        max_num_peaks=max_n_samples, use_top_accessible=False
+    )
+    data = data.subset_tfs(factor_names)
+    return data
+
+class PartitionedSamplePeaksAndChIPSeqLabels():
     def cache_key(self, sample_id):
         return hashlib.sha1(str((
             sample_id, 
@@ -1020,10 +873,13 @@ class PartitionedSamplePeaksAndLabels():
             self.half_peak_width
         ))).hexdigest()
 
-    def _save_cached(self, sample_id):
-        self.data[sample_id].save(self.cache_key(sample_id) + ".data.obj")
-        self.train[sample_id].save(self.cache_key(sample_id) + ".train.obj")
-        self.validation[sample_id].save(self.cache_key(sample_id) + ".validation.obj")
+    @staticmethod
+    def _load_cached(cached_fname):
+        raise NotImplementedError, "Still ned to do this"
+        pass
+    
+    def _save_cached(self):
+        raise NotImplementedError, "working..."
         return
     
     def _load_cached(self, sample_id):
@@ -1039,33 +895,6 @@ class PartitionedSamplePeaksAndLabels():
                 == self.validation[sample_id].factor_names)
         assert (self.train[sample_id].tf_ids 
                 == self.validation[sample_id].tf_ids)
-
-    @staticmethod
-    def _load_data(roadmap_sample_id, 
-                   factor_names, 
-                   n_samples, 
-                   annotation_id, 
-                   half_peak_width):
-        # XXX search for cached data
-        pks, tf_ids, (idr_optimal_labels, relaxed_labels) = build_peaks_label_mat(
-            annotation_id, roadmap_sample_id, half_peak_width)
-        print "Coding peaks"
-        from pyDNAbinding.DB import load_genome_metadata
-        genome_fasta = FastaFile('hg19.genome.fa')
-        # load_genome_metadata(annotation_id).filename)
-        fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
-        
-        print "Filtering Peaks"
-        data = SamplePeaksAndLabels(
-            roadmap_sample_id, tf_ids, 
-            pks, fwd_seqs, 
-            idr_optimal_labels, relaxed_labels
-        )
-        data = data.subset_pks_by_rank(
-            max_num_peaks=n_samples, use_top_accessible=False
-        )
-        data = data.subset_tfs(factor_names)
-        return data
 
     def __init__(self, 
                  roadmap_sample_ids, 
@@ -1096,49 +925,32 @@ class PartitionedSamplePeaksAndLabels():
         self.validation = {}
         
         for sample_id in self.sample_ids:
-            try: 
-                raise IOError, "TEST"
-                self._load_cached(sample_id)
-            except IOError:
-                self.data[sample_id] = self._load_data(
-                    sample_id, 
-                    self.factor_names, 
-                    self.n_samples, 
-                    self.annotation_id, 
-                    self.half_peak_width)
+            self.data[sample_id] = load_chipseq_data(
+                roadmap_sample_id,
+                factor_names,
+                max_n_samples,
+                annotation_id,
+                half_peak_width)
+                                
+            assert self.data[sample_id].seq_length == self.seq_length
+            print "Splitting out train data"        
+            if ( validation_sample_ids is None 
+                 or sample_id not in validation_sample_ids ):
+                self.train[sample_id] = self.data[
+                    sample_id].subset_pks_by_contig(
+                        contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
+                    )
                 
-                assert self.data[sample_id].seq_length == self.seq_length
-                print "Splitting out train data"        
-                if ( validation_sample_ids is None 
-                     or sample_id not in validation_sample_ids ):
-                    self.train[sample_id] = self.data[
-                        sample_id].subset_pks_by_contig(
-                            contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
-                        )
-                
-                print "Splitting out validation data"        
-                if ( validation_sample_ids is None 
-                     or sample_id in validation_sample_ids ):
-                    self.validation[sample_id] = self.data[
-                        sample_id].subset_pks_by_contig(
-                            contigs_to_include=('chr8', 'chr9')
-                        )
-                #self._save_cached(sample_id)
+            print "Splitting out validation data"        
+            if ( validation_sample_ids is None 
+                 or sample_id in validation_sample_ids ):
+                self.validation[sample_id] = self.data[
+                    sample_id].subset_pks_by_contig(
+                        contigs_to_include=('chr8', 'chr9')
+                    )
 
-            #assert (self.train[sample_id].factor_names 
-            #        == self.validation[sample_id].factor_names)
-            #self.factor_names = self.train.factor_names
-        #assert False
-
-    def iter_batches(self, batch_size, data_subset, repeat_forever, **kwargs):
-        ## determine the batch sizes
-        if data_subset == 'train':
-            data_subset = self.train
-        elif data_subset == 'validation':
-            data_subset = self.validation
-        else:
-            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
-
+    def iter_sample_balanced_batches(
+            self, batch_size, repeat_forever, **kwargs):
         ## find the number of observations to sample from each batch
         # To make this work, I would need to randomly choose the extra observations
         assert batch_size >= len(data_subset), \
@@ -1155,7 +967,7 @@ class PartitionedSamplePeaksAndLabels():
              data.iter_batches(
                  i_batch_size, repeat_forever, **kwargs) )
             for i_batch_size, (sample_id, data) in zip(
-                    inner_batch_sizes, data_subset.iteritems())
+                    inner_batch_sizes, self.data.iteritems())
         )
 
         def f():
@@ -1196,6 +1008,7 @@ class PartitionedSamplePeaksAndLabels():
             return
         
         return f()
+
 
     def iter_train_data(
             self, batch_size, repeat_forever=False, **kwargs):
