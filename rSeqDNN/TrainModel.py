@@ -366,7 +366,10 @@ def main_test(main_args, test_args):
     np.random.seed(random_seed) # fix random seed
     clean_results = ClassificationResults()
     validation_data = OrderedDict()
-    fit_model = KerasModel(model_fname=model_fname)
+    if len(np.shape(peaks_and_labels.labels))==2 and np.shape(peaks_and_labels.labels)[-1]>1:
+        fit_model = KerasModelMultitask(np.shape(peaks_and_labels.labels)[-1], model_fname=model_fname)
+    else:
+        fit_model = KerasModel(model_fname=model_fname)
     fit_model.model.load_weights(weights_fname)
     if isinstance(peaks_and_labels, FastaPeaksAndLabels):
         train_validation_subsets = list(peaks_and_labels.iter_train_validation_subsets())
@@ -404,10 +407,12 @@ def main_test(main_args, test_args):
                 clean_res.validation_chromosomes = valid.contigs
         clean_results.append(clean_res)
         if only_test_one_fold: break
-    print 'CLEAN VALIDATION RESULTS'
-    for res in clean_results:
-        print res
-    print clean_results
+    for clean_result in clean_results:
+        if isinstance(clean_result, list):
+            for res in clean_res:
+                print res
+        else:
+            print clean_result
 
 if __name__ == '__main__':
     main_args, command_args, command  = parse_args()
