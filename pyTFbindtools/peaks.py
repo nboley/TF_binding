@@ -61,11 +61,11 @@ class NarrowPeak(NarrowPeakData):
         Bins NarrowPeak, generates binned NarrowPeaks
         Note: peak sequence is removed
         """
-        for bin_center in xrange(self.start, self.stop, bin_size):
-            if bin_center-bin_size/2 >= 0:
+        for bin_start in xrange(self.start, self.stop-bin_size/2, bin_size):
+            if bin_start-bin_size >= 0:
                 yield NarrowPeak(
-                    self.contig, bin_center-bin_size/2, bin_center+bin_size/2,
-                    bin_size/2, self.score, self.signalValue, self.pValue, self.qValue,
+                    self.contig, bin_start, bin_start+bin_size,
+                    bin_size, self.score, self.signalValue, self.pValue, self.qValue,
                     self.idrValue, None)
 
     def slop(self, flank_size):
