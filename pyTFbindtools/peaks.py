@@ -2,7 +2,7 @@ import os
 import math
 import gzip
 from collections import namedtuple, defaultdict, OrderedDict
-from itertools import izip
+from itertools import izip, chain
 import random
 import cPickle as pickle
 import hashlib
@@ -548,8 +548,8 @@ def load_DNASE_coverage(sample_id, peaks):
             np.save(ofp, rv)
     return rv[0,:,:]
 
-def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_prefix=None):
-    if cache_prefix is not None:
+def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_seqs=True):
+    if cache_seqs is True:
         cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(
             pks.view(np.uint8)).hexdigest()
         try:
@@ -571,7 +571,7 @@ def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_prefix=None):
     # add the extra dimension for theano
     rv = np.swapaxes(rv, 1, 2)[:,None,:,:]
 
-    if cache_prefix is not None:
+    if cache_seqs is True:
         with open(cached_fname, "w") as ofp:
             print "Saving seqs"
             np.save(ofp, rv)
@@ -597,8 +597,8 @@ class Data(object):
 
     def __init__(self, inputs, outputs, task_ids=None):
         # if inputs is an array, then we assume that this is a sequential model
-        if isinstance(inputs, np.array):
-            if not isinstance(outputs, np.array):
+        if isinstance(inputs, np.ndarray):
+            if not isinstance(outputs, np.ndarray):
                 raise ValueError, "If the input is a numpy array, then the output is also expected to be a numpy array.\nHint: You can use multiple inputs and outputs by passing a dictionary keyed by the dtaa type name."
             self._data_type = "sequential"
             self.num_observations = inputs.shape[0]
@@ -608,14 +608,17 @@ class Data(object):
                 assert len(task_ids) == outputs.shape[1]
             else:
                 task_ids = [str(x) for x in xrange(1, outputs.shape[1]+1)]
-        # otherwise assume that this is a graphical type model
+        # otherwise assume that this is a graph type model
         else:
-            self.num_observations = next(inputs.itervalues()).shape[0]
+            print inputs.keys()
+            self.num_observations = inputs.values()[0].shape[0]
             # make sure that all of that data are arrays and have the same
             # number of observations
-            for val in chain(inputs.itervalues(), outputs.itervalues()):
-                assert isinstance(val, np.array)
-                assert self.num_observations == val.shape[0]
+            for key, val in chain(inputs.iteritems(), outputs.iteritems()):
+                assert isinstance(val, np.ndarray)
+                assert self.num_observations == val.shape[0], \
+                    "The number of observations ({}) is not equal to the first shape dimension of {} ({})".format(
+                        self.num_observations, key, val.shape[0])
             # make sure that task id length match up. If a task id key doesnt
             # exist, then default to sequential numbers
             for key in outputs.iterkeys():
@@ -623,7 +626,7 @@ class Data(object):
                     if len(task_ids[key]) != outputs[key].shape[1]:
                         raise ValueError, "The number of task ids for key '{}' does not match the output shape".format()
                 pass            
-            self._data_type = "graphical"
+            self._data_type = "graph"
 
         self.task_ids = task_ids
         self.inputs = inputs
@@ -664,7 +667,7 @@ class Data(object):
         return np.arange(self.n_observations)
 
     def iter_batches_from_indices_generator(
-            self, batch_size, repeat_forever, indices_generator)
+            self, batch_size, repeat_forever, indices_generator):
         i = 0
         n = int(math.ceil(self.n_observations/float(batch_size)))
         permutation = None
@@ -723,7 +726,7 @@ class Data(object):
         else:
             assert False,"Unrecognized model type '{}'".format(self._data_type)
         
-        return Data(new_inputs, new_outputs, self.task_ids)
+        return type(self)(new_inputs, new_outputs, self.task_ids)
     
     def balance_data(self, task_id=None):
         indices = self.build_label_balanced_indices(task_id=task_id)
@@ -749,7 +752,7 @@ class Data(object):
             new_data = np.insert(data, 0, -1, axis=1)
             new_outputs[task_key] = new_data[:, task_indices+1]
 
-        return Data(inputs, new_outputs, task_ids=desired_task_ids)
+        return type(self)(inputs, new_outputs, task_ids=desired_task_ids)
 
 class GenomicRegionsAndLabels(Data):
     """Subclass Data to handfle the common case where the input is a set of 
@@ -788,7 +791,7 @@ class GenomicRegionsAndLabels(Data):
             # set a seed so we can use cached peaks between debug rounds
             np.random.seed(seed)
             indices = np.argsort(np.random.random(len(self.regions)))
-        return self.subset_pks(pk_indices=indices[:max_num_peaks])
+        return self.subset_observations(indices[:max_num_peaks])
     
     def subset_pks_by_contig(
             self, contigs_to_include=None, contigs_to_exclude=None):
@@ -804,7 +807,7 @@ class GenomicRegionsAndLabels(Data):
             if (contigs_to_exclude is None or pk[0] not in contigs_to_exclude)
             and (contigs_to_include is None or pk[0] in contigs_to_include)
         ])
-        return self.subset_pks(pk_indices=indices)
+        return self.subset_observations(indices)
     
     @property
     def n_samples(self):
@@ -815,7 +818,8 @@ class GenomicRegionsAndLabels(Data):
         if 'regions' in inputs:
             raise ValueError, "'regions' input is passed as an argument and also specified in inputs"
         inputs['regions'] = regions
-        Data.__init__(inputs, {'labels': labels}, {'labels': task_ids})
+        print inputs.keys()
+        Data.__init__(self, inputs, {'labels': labels}, {'labels': task_ids})
 
 class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     @property
@@ -846,7 +850,8 @@ def load_chipseq_data(
             annotation_id, roadmap_sample_id, half_peak_width)
     print "Coding peaks"
     from pyDNAbinding.DB import load_genome_metadata
-    load_genome_metadata(annotation_id).filename)
+    genome_fasta = FastaFile("hg19.genome.fa")
+    #load_genome_metadata(annotation_id).filename)
     fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
 
     print "Filtering Peaks"
@@ -899,7 +904,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
     def __init__(self, 
                  roadmap_sample_ids, 
                  factor_names, 
-                 n_samples=None,
+                 max_n_samples=None,
                  validation_sample_ids=None,
                  annotation_id=1, 
                  half_peak_width=500):
@@ -915,7 +920,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
             for x in map(load_tf_names_for_sample, roadmap_sample_ids):
                 factor_names.update(x)
         self.factor_names = sorted(factor_names)
-        self.n_samples = n_samples
+        self.n_samples = max_n_samples
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
         self.seq_length = 2*half_peak_width
@@ -926,7 +931,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         
         for sample_id in self.sample_ids:
             self.data[sample_id] = load_chipseq_data(
-                roadmap_sample_id,
+                sample_id,
                 factor_names,
                 max_n_samples,
                 annotation_id,

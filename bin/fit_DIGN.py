@@ -36,7 +36,7 @@ from theano.tensor.signal.pool import Pool
 from theano.tensor.nnet import sigmoid, binary_crossentropy, softplus
 from theano.tensor.extra_ops import to_one_hot
 
-from pyTFbindtools.peaks import PartitionedSamplePeaksAndLabels
+from pyTFbindtools.peaks import PartitionedSamplePeaksAndChIPSeqLabels
 from pyTFbindtools.selex.invivo import SelexData
 
 from lasagne.layers import (
@@ -807,10 +807,10 @@ class JointBindingModel():
         if len(invivo_factor_names) > 0:
             self._chipseq_regularization_penalty = create_param(
                 lambda x: 2.0, (), 'chipseq_penalty')
-            pks = PartitionedSamplePeaksAndLabels(
+            pks = PartitionedSamplePeaksAndChIPSeqLabels(
                 sample_ids, 
                 factor_names=invivo_factor_names, 
-                n_samples=n_samples, 
+                max_n_samples=n_samples, 
                 validation_sample_ids=validation_sample_ids)
             #self.add_DIGN_chipseq_samples(pks)
             self.add_chipseq_samples(pks)
@@ -1282,7 +1282,10 @@ def parse_args():
 
     args = parser.parse_args()
     args.roadmap_sample_ids = sorted(
-        set(args.roadmap_sample_ids + args.validation_roadmap_sample_ids))
+        set(args.roadmap_sample_ids + (
+            args.validation_roadmap_sample_ids 
+            if args.validation_roadmap_sample_ids is not None else []
+        )))
     return args
     
 
@@ -1291,17 +1294,18 @@ def chipseq_main():
 
     # This is code that loads a small batch to catch errors 
     # early during debugging
-    if False:
-        pks = PartitionedSamplePeaksAndLabels(
+    if True:
+        pks = PartitionedSamplePeaksAndChIPSeqLabels(
             args.roadmap_sample_ids, 
             factor_names=args.tf_names, 
-            n_samples=5000, 
+            max_n_samples=5000, 
             validation_sample_ids=args.validation_roadmap_sample_ids
         ) 
         for batch in pks.iter_train_data(10):
+            print batch
             break
         tf_names = pks.factor_names
-    
+    assert False
     model = JointBindingModel(
         args.n_peaks, 
         args.tf_names, 
