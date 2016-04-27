@@ -489,8 +489,8 @@ class JointBindingModel():
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.output')
-        self._target_vars[name + '.output'] = target_var
+        target_var = TT.matrix(name + '.labels')
+        self._target_vars[name + '.labels'] = target_var
         
         network = InputLayer(
             shape=(None, 1, 4, seq_length), input_var=input_var)
@@ -514,7 +514,7 @@ class JointBindingModel():
         network = OccupancyLayer(network, -2.0)
         network = FlattenLayer(network)
         
-        self._networks[name + ".output"] = network
+        self._networks[name + ".labels"] = network
         self._data_iterators[name] = selex_experiment.iter_batches
 
         prediction = lasagne.layers.get_output(network)
@@ -531,9 +531,9 @@ class JointBindingModel():
 
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.output')
-        self._target_vars[name + '.output'] = target_var
-        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
+        target_var = TT.matrix(name + '.labels')
+        self._target_vars[name + '.labels'] = target_var
+        self._multitask_labels[name + '.labels'] = pks_and_labels.factor_names
         
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
@@ -553,7 +553,7 @@ class JointBindingModel():
         network = OccMaxPool(network, 1, 'full')
         network = FlattenLayer(network)
 
-        self._networks[name + ".output"] = network
+        self._networks[name + ".labels"] = network
 
         prediction = lasagne.layers.get_output(network) 
         loss = TT.mean(global_loss_fn(target_var, prediction))
@@ -580,9 +580,9 @@ class JointBindingModel():
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.output')
-        self._target_vars[name + '.output'] = target_var
-        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
+        target_var = TT.matrix(name + '.labels')
+        self._target_vars[name + '.labels'] = target_var
+        self._multitask_labels[name + '.labels'] = pks_and_labels.factor_names
 
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
@@ -642,7 +642,7 @@ class JointBindingModel():
         #network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         
         network = FlattenLayer(network)
-        self._networks[name + ".output"] = network
+        self._networks[name + ".labels"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
@@ -657,9 +657,9 @@ class JointBindingModel():
         
         input_var = TT.tensor4(name + '.fwd_seqs')
         self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.output')
-        self._target_vars[name + '.output'] = target_var
-        self._multitask_labels[name + '.output'] = pks_and_labels.factor_names
+        target_var = TT.matrix(name + '.labels')
+        self._target_vars[name + '.labels'] = target_var
+        self._multitask_labels[name + '.labels'] = pks_and_labels.factor_names
 
         n_convs = int(25*(1+np.log2(len(self.factor_names))))
         
@@ -709,7 +709,7 @@ class JointBindingModel():
             len(pks_and_labels.factor_names), 
             nonlinearity=lasagne.nonlinearities.sigmoid)
 
-        self._networks[name + ".output"] = network
+        self._networks[name + ".labels"] = network
         self._data_iterators[name] = pks_and_labels.iter_batches
 
         prediction = lasagne.layers.get_output(network)
@@ -934,7 +934,6 @@ class JointBindingModel():
             repeat_forever=False,
             balanced=False,
             shuffled=False,
-            include_dnase_signal=True
         )
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
@@ -990,8 +989,7 @@ class JointBindingModel():
             repeat_forever=False, 
             balanced=False, 
             shuffled=False, 
-            include_chipseq_signal=True, 
-            include_dnase_signal=True))
+            include_chipseq_signal=True))
         res = self.predict_occupancies_on_batch(input_data)
         pred_occs = [
             data for key, data in res.iteritems() 
@@ -1087,7 +1085,6 @@ class JointBindingModel():
                 for data in self.iter_data(
                         100, data_subset_name, 
                         repeat_forever=False, 
-                        include_dnase_signal=True, 
                         include_chipseq_signal=True):
                     for key, values in data.iteritems():
                         all_data[key].append(values)
@@ -1180,7 +1177,6 @@ class JointBindingModel():
                     repeat_forever=True, 
                     shuffled=True,
                     balanced=balanced,
-                    include_dnase_signal=True
             )):
                 if nb_train_batches_observed*batch_size > samples_per_epoch: 
                     break
@@ -1206,8 +1202,7 @@ class JointBindingModel():
                     'validation', # XXX 
                     repeat_forever=False, 
                     balanced=False, 
-                    shuffled=False,
-                    include_dnase_signal=True):
+                    shuffled=False):
                 # we can use the values attriburte because iter_data  
                 # returns an ordered dict
                 filtered_data = [
@@ -1294,18 +1289,20 @@ def chipseq_main():
 
     # This is code that loads a small batch to catch errors 
     # early during debugging
-    if True:
+    if False:
         pks = PartitionedSamplePeaksAndChIPSeqLabels(
             args.roadmap_sample_ids, 
             factor_names=args.tf_names, 
-            max_n_samples=5000, 
+            max_n_samples=500, 
             validation_sample_ids=args.validation_roadmap_sample_ids
         ) 
         for batch in pks.iter_train_data(10):
-            print batch
+            print batch.keys()
+            for key in batch.keys():
+                print key, batch[key].shape
             break
         tf_names = pks.factor_names
-    assert False
+    #assert False
     model = JointBindingModel(
         args.n_peaks, 
         args.tf_names, 

@@ -610,7 +610,6 @@ class Data(object):
                 task_ids = [str(x) for x in xrange(1, outputs.shape[1]+1)]
         # otherwise assume that this is a graph type model
         else:
-            print inputs.keys()
             self.num_observations = inputs.values()[0].shape[0]
             # make sure that all of that data are arrays and have the same
             # number of observations
@@ -661,15 +660,15 @@ class Data(object):
         return permutation
 
     def build_shuffled_indices(self):
-        return np.random.permutation(self.n_observations)
+        return np.random.permutation(self.num_observations)
 
     def build_ordered_indices(self):
-        return np.arange(self.n_observations)
+        return np.arange(self.num_observations)
 
     def iter_batches_from_indices_generator(
             self, batch_size, repeat_forever, indices_generator):
         i = 0
-        n = int(math.ceil(self.n_observations/float(batch_size)))
+        n = int(math.ceil(self.num_observations/float(batch_size)))
         permutation = None
         while repeat_forever is True or i<n:
             if i%n == 0:
@@ -679,11 +678,12 @@ class Data(object):
             indices = permutation[subset]
             if self._data_type == 'sequential':
                 rv = (self.inputs[indices], self.outputs[indices])
-            #if include_dnase_signal:
-            #    rv['dnase_cov'] = self.dnase_coverage[indices,None,None,:]
-            #if include_chipseq_signal:
-            #    rv['chipseq_cov'] = (
-            #        np.swapaxes(self.chipseq_coverage[:,indices], 0, 1))[:,:,None,:]
+            else:
+                rv = {}
+                for key, val in self.inputs.iteritems():
+                    rv[key] = val
+                for key, val in self.outputs.iteritems():
+                    rv[key] = val                
             yield rv
             i += 1
         return
@@ -703,7 +703,7 @@ class Data(object):
         
         return self.iter_batches_from_indices_generator(
             batch_size, 
-            repeat_forever, 
+             repeat_forever, 
             indices_generator,
             **kwargs
         )
@@ -714,19 +714,25 @@ class Data(object):
         indices: numpy array of indices to select
         """
         if self._data_type == 'sequential':
+            assert isinstance,(self.inputs, np.ndarray)
             new_inputs = self.inputs[observation_indices]
+            assert isinstance,(self.outputs, np.ndarray)
             new_outputs = self.outputs[observation_indices]
         elif self._data_type == 'graph':
             new_inputs = {}
             for key, data in self.inputs.iteritems():
+                assert isinstance(data, np.ndarray)
                 new_inputs[key] = data[observation_indices]
             new_outputs = {}
             for key, data in self.outputs.iteritems():
+                assert isinstance(data, np.ndarray)
                 new_outputs[key] = data[observation_indices]
         else:
             assert False,"Unrecognized model type '{}'".format(self._data_type)
-        
-        return type(self)(new_inputs, new_outputs, self.task_ids)
+
+        rv = Data(new_inputs, new_outputs, self.task_ids)
+        rv.__class__ = self.__class__
+        return rv
     
     def balance_data(self, task_id=None):
         indices = self.build_label_balanced_indices(task_id=task_id)
@@ -741,18 +747,20 @@ class Data(object):
         if desired_task_ids is None:
             return self
         
-        task_indices = []
-        for task_id in desired_task_ids:
-            try: task_indices.append(self.task_ids.index(task_id))
-            except ValueError: task_indices.append(-1)
-        task_indices = np.array(task_indices)
-
         new_outputs = {}
         for task_key, data in self.outputs.iteritems():
+            task_indices = []
+            for task_id in desired_task_ids[task_key]:
+                try: task_indices.append(self.task_ids[task_key].index(task_id))
+                except ValueError: task_indices.append(-1)
+            task_indices = np.array(task_indices)
+
             new_data = np.insert(data, 0, -1, axis=1)
             new_outputs[task_key] = new_data[:, task_indices+1]
 
-        return type(self)(inputs, new_outputs, task_ids=desired_task_ids)
+        rv = Data(self.inputs, new_outputs, task_ids=desired_task_ids)
+        rv.__class__ = self.__class__
+        return rv
 
 class GenomicRegionsAndLabels(Data):
     """Subclass Data to handfle the common case where the input is a set of 
@@ -779,7 +787,7 @@ class GenomicRegionsAndLabels(Data):
         use_top_accessible: return max_num_peaks most accessible peaks
         """
         if max_num_peaks is None:
-            max_num_peaks = len(self.pks)
+            max_num_peaks = len(self.regions)
         
         # sort the peaks by accessibility
         if use_top_accessible:
@@ -818,7 +826,6 @@ class GenomicRegionsAndLabels(Data):
         if 'regions' in inputs:
             raise ValueError, "'regions' input is passed as an argument and also specified in inputs"
         inputs['regions'] = regions
-        print inputs.keys()
         Data.__init__(self, inputs, {'labels': labels}, {'labels': task_ids})
 
 class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
@@ -835,8 +842,12 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     def tf_ids(self):
         return self.task_ids
     
+    @property
+    def seq_length(self):
+        return self.inputs['regions'][0][2] - self.inputs['regions'][0][1]
+    
     def subset_tfs(self, tf_ids):
-        return self.subset_tasks(tf_ids)
+        return self.subset_tasks({'labels': tf_ids})
 
 def load_chipseq_data(
         roadmap_sample_id,
@@ -853,13 +864,22 @@ def load_chipseq_data(
     genome_fasta = FastaFile("hg19.genome.fa")
     #load_genome_metadata(annotation_id).filename)
     fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
+    dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
 
-    print "Filtering Peaks"
-    labels = idr_optimal_labels+relaxed_labels
+    # set the ambiguous labels to -1
+    ambiguous_pks_mask = (
+        (idr_optimal_labels < -0.5)
+        | (relaxed_labels < -0.5)
+        | (idr_optimal_labels != relaxed_labels)
+    )
+    idr_optimal_labels[ambiguous_pks_mask] = -1
+    labels = idr_optimal_labels
+
+    print "Filtering Peaks"    
     data = GenomicRegionsAndChIPSeqLabels(
         regions=pks,
         labels=labels,
-        inputs={'fwd_seqs': fwd_seqs},
+        inputs={'fwd_seqs': fwd_seqs, 'dnase_cov': dnase_cov[:,None,None,:]},
         task_ids=tf_ids
     )
     data = data.subset_pks_by_rank(
@@ -954,8 +974,15 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                         contigs_to_include=('chr8', 'chr9')
                     )
 
-    def iter_sample_balanced_batches(
-            self, batch_size, repeat_forever, **kwargs):
+    def iter_batches( # sample_balanced
+            self, batch_size, data_subset, repeat_forever, **kwargs):
+        if data_subset == 'train':
+            data_subset = self.train
+        elif data_subset == 'validation':
+            data_subset = self.validation
+        else:
+            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
+
         ## find the number of observations to sample from each batch
         # To make this work, I would need to randomly choose the extra observations
         assert batch_size >= len(data_subset), \
@@ -972,7 +999,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
              data.iter_batches(
                  i_batch_size, repeat_forever, **kwargs) )
             for i_batch_size, (sample_id, data) in zip(
-                    inner_batch_sizes, self.data.iteritems())
+                    inner_batch_sizes, data_subset.iteritems())
         )
 
         def f():
