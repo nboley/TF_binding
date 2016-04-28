@@ -6,9 +6,9 @@ from itertools import izip, chain
 import random
 import cPickle as pickle
 import hashlib
+import h5py
 
 import numpy as np
-
 
 from sklearn.cross_validation import StratifiedKFold
 
@@ -583,8 +583,7 @@ class Data(object):
 
     """
     def _save_sequential(self, f):
-        raise NotImplementedError
-        assert self._data_type = 'sequential'
+        assert self._data_type == 'sequential'
         f.attrs['data_type'] = self._data_type
         inputs = f.create_dataset("inputs", data=self.inputs)
         outputs = f.create_dataset("outputs", data=self.outputs)
@@ -592,7 +591,7 @@ class Data(object):
         return
 
     def _save_graph(self, f):
-        assert self._data_type = 'graph'
+        assert self._data_type == 'graph'
         f.attrs['data_type'] = self._data_type
         inputs = f.create_group("inputs")
         for key, val in self.inputs.iteritems():
@@ -618,21 +617,47 @@ class Data(object):
                 raise ValueError, "Unrecognized data type '{}'".format(
                     self._data_type)
     
-    @staticmethod
-    def load(fname):
+
+    @classmethod
+    def _load_sequential(cls, f):
+        assert f.attrs['data_type'] == 'sequential'
+        inputs = f['inputs']
+        outputs = f['outputs']
+        task_ids = f['task_ids']
+        return cls(inputs, outputs, task_ids)
+    
+    @classmethod
+    def _load_graph(cls, f):
+        assert f.attrs['data_type'] == 'graph'
+        inputs = f['inputs']
+        outputs = f['outputs']
+        task_ids = f['task_ids']
+        return cls(inputs, outputs, task_ids)
+
+    @classmethod
+    def load(cls, fname):
         """Load data from an h5 file.
 
         """
-        raise NotImplementedError, "Not implemented"
-
+        f = h5py.File(fname)
+        # This should probably also add a close method, but I there
+        # would be very little purpose
+        data_type = f.attrs['data_type']
+        if data_type == 'sequential':
+            return cls._load_sequential(f)
+        elif data_type == 'graph':
+            return cls._load_graph(f)
+        else:
+            raise ValueError,"Unrecognized data type '{}'".format(data_type)
+    
     def __init__(self, inputs, outputs, task_ids=None):
         # if inputs is an array, then we assume that this is a sequential model
-        if isinstance(inputs, np.ndarray):
-            if not isinstance(outputs, np.ndarray):
+        if isinstance(inputs, (np.ndarray, h5py._hl.dataset.Dataset)):
+            if not isinstance(outputs, (np.ndarray, h5py._hl.dataset.Dataset)):
                 raise ValueError, "If the input is a numpy array, then the output is also expected to be a numpy array.\nHint: You can use multiple inputs and outputs by passing a dictionary keyed by the dtaa type name."
             self._data_type = "sequential"
             self.num_observations = inputs.shape[0]
-            assert self.num_observations == output.shape[0]
+            assert self.num_observations == outputs.shape[0]
             # if no task ids are set, set them to indices
             if task_ids is not None:
                 assert len(task_ids) == outputs.shape[1]
@@ -644,17 +669,21 @@ class Data(object):
             # make sure that all of that data are arrays and have the same
             # number of observations
             for key, val in chain(inputs.iteritems(), outputs.iteritems()):
-                assert isinstance(val, np.ndarray)
+                assert isinstance(val, (np.ndarray, h5py._hl.dataset.Dataset))
                 assert self.num_observations == val.shape[0], \
                     "The number of observations ({}) is not equal to the first shape dimension of {} ({})".format(
                         self.num_observations, key, val.shape[0])
             # make sure that task id length match up. If a task id key doesnt
             # exist, then default to sequential numbers
+            if task_ids is None:
+                task_ids = {}
             for key in outputs.iterkeys():
                 if key in task_ids:
                     if len(task_ids[key]) != outputs[key].shape[1]:
                         raise ValueError, "The number of task ids for key '{}' does not match the output shape".format()
-                pass            
+                else:
+                    task_ids[key] = [
+                        str(x) for x in xrange(1, outputs[key].shape[1]+1)]
             self._data_type = "graph"
 
         self.task_ids = task_ids
@@ -707,20 +736,20 @@ class Data(object):
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
             if self._data_type == 'sequential':
-                rv = (self.inputs[indices], self.outputs[indices])
+                rv = (self.inputs[indices.tolist()], self.outputs[indices.tolist()])
             else:
                 rv = {}
                 for key, val in self.inputs.iteritems():
-                    rv[key] = val
+                    rv[key] = val[indices.tolist()]
                 for key, val in self.outputs.iteritems():
-                    rv[key] = val                
+                    rv[key] = val[indices.tolist()]
             yield rv
             i += 1
         return
     
     def iter_batches(self, 
                      batch_size, 
-                     repeat_forever, 
+                     repeat_forever=False,
                      balanced=False, 
                      shuffled=False, 
                      **kwargs):
@@ -733,7 +762,7 @@ class Data(object):
         
         return self.iter_batches_from_indices_generator(
             batch_size, 
-             repeat_forever, 
+            repeat_forever, 
             indices_generator,
             **kwargs
         )
@@ -744,18 +773,18 @@ class Data(object):
         indices: numpy array of indices to select
         """
         if self._data_type == 'sequential':
-            assert isinstance,(self.inputs, np.ndarray)
+            assert isinstance(inputs, (np.ndarray, h5py._hl.dataset.Dataset))
             new_inputs = self.inputs[observation_indices]
-            assert isinstance,(self.outputs, np.ndarray)
+            assert isinstance(outputs, (np.ndarray, h5py._hl.dataset.Dataset))
             new_outputs = self.outputs[observation_indices]
         elif self._data_type == 'graph':
             new_inputs = {}
             for key, data in self.inputs.iteritems():
-                assert isinstance(data, np.ndarray)
+                assert isinstance(val, (np.ndarray, h5py._hl.dataset.Dataset))
                 new_inputs[key] = data[observation_indices]
             new_outputs = {}
             for key, data in self.outputs.iteritems():
-                assert isinstance(data, np.ndarray)
+                assert isinstance(val, (np.ndarray, h5py._hl.dataset.Dataset))
                 new_outputs[key] = data[observation_indices]
         else:
             assert False,"Unrecognized model type '{}'".format(self._data_type)
@@ -1080,3 +1109,16 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
             self, batch_size, repeat_forever=False, **kwargs):
         return self.iter_batches(
             batch_size, 'validation', repeat_forever, **kwargs)
+
+def test_load_and_save(inputs, outputs):
+    data = Data(inputs, outputs)
+    data.save("tmp.h5")    
+    data2 = Data.load("tmp.h5")
+    for x in data2.iter_batches(10):
+        break
+    return
+
+def test():
+    test_load_and_save(np.zeros((10000, 50)), np.zeros((10000, 1)))
+    test_load_and_save(
+        {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
