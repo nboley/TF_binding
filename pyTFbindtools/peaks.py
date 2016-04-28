@@ -360,11 +360,19 @@ def merge_peaks(pk_iter):
     """
     intervals = get_intervals_from_peaks(pk_iter)
     bedtool = BedTool(intervals)
-    print "printing bedtool count: ", bedtool.count()
     merged_bedtool = bedtool.sort().merge()
-    print "count after merge: ", merged_bedtool.count()
 
     return iter_bedtool_peaks(merged_bedtool)
+
+def save_peaks_bedfile(pk_iter, ofname):
+    """
+    Saves bedfile with peak coordinates.
+    """
+    intervals = get_intervals_from_peaks(pk_iter)
+    bedtool = BedTool(intervals)
+    result = bedtool.saveas(ofname)
+
+    return
 
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
