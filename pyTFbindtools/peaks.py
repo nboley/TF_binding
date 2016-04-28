@@ -582,12 +582,42 @@ class Data(object):
     """Store and iterate through data from a deep learning model.
 
     """
-    def save(self):
+    def _save_sequential(self, f):
+        raise NotImplementedError
+        assert self._data_type = 'sequential'
+        f.attrs['data_type'] = self._data_type
+        inputs = f.create_dataset("inputs", data=self.inputs)
+        outputs = f.create_dataset("outputs", data=self.outputs)
+        task_ids = f.create_dataset("task_ids", data=self.task_ids)
+        return
+
+    def _save_graph(self, f):
+        assert self._data_type = 'graph'
+        f.attrs['data_type'] = self._data_type
+        inputs = f.create_group("inputs")
+        for key, val in self.inputs.iteritems():
+            inputs.create_dataset(key, data=val)        
+        outputs = f.create_group("outputs")
+        for key, val in self.outputs.iteritems():
+            outputs.create_dataset(key, data=val)
+        task_ids = f.create_group("task_ids")
+        for key, val in self.task_ids.iteritems():
+            task_ids.create_dataset(key, data=val)
+        return
+    
+    def save(self, fname):
         """Save the data into an h5 file.
 
         """
-        raise NotImplementedError, "Not implemented"
-
+        with h5py.File(fname, "w") as f:
+            if self._data_type == 'sequential':
+                self._save_sequential(f)
+            elif self._data_type == 'graph':
+                self._save_graph(f)
+            else:
+                raise ValueError, "Unrecognized data type '{}'".format(
+                    self._data_type)
+    
     @staticmethod
     def load(fname):
         """Load data from an h5 file.
