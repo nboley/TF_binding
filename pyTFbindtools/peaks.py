@@ -602,20 +602,35 @@ class Data(object):
             task_ids.create_dataset(key, data=val)
         return
 
-    def hash(self):
+    def __hash__(self):
+        if self._cached_hash is not None:
+            return self._cached_hash
+        hashes = []
         if self._data_type == 'sequential':
-            pass
-        elif self._data_type == 'graph   ':
-            pass
+            hashes.append(hashlib.sha1(self.input).hexdigest())
+            hashes.append(hashlib.sha1(self.output).hexdigest())
+            hashes.append(hash(self.task_ids))
+        elif self._data_type == 'graph':
+            hashes.append(hash(tuple(self.inputs.keys())))
+            hashes.append(hash(tuple(self.outputs.keys())))
+            hashes.append(hash(tuple(self.task_ids)))
+            for val in self.inputs.values():
+                hashes.append(hashlib.sha1(val).hexdigest())
+            for val in self.outputs.values():
+                hashes.append(hashlib.sha1(val).hexdigest())
         else:
             assert False, "Unrecognized data type '{}'".format(self._data_type)
-        pass
+        self._cached_hash = abs(hash(tuple(hashes)))
+        return self._cached_hash
     
-    def cache(self):
+    def cache_to_disk(self):
         """Save self to $HASH.h5.
 
         """
-        pass
+        fname = "%s.cached.%i.obj" % (type(self), hash(self))
+        if not os.path.isfile(fname):
+            self.save(fname)
+        return fname
     
     def save(self, fname):
         """Save the data into an h5 file.
@@ -663,10 +678,12 @@ class Data(object):
             raise ValueError,"Unrecognized data type '{}'".format(data_type)
     
     def __init__(self, inputs, outputs, task_ids=None):
+        self._cached_hash = None
         # if inputs is an array, then we assume that this is a sequential model
         if isinstance(inputs, (np.ndarray, h5py._hl.dataset.Dataset)):
             if not isinstance(outputs, (np.ndarray, h5py._hl.dataset.Dataset)):
-                raise ValueError, "If the input is a numpy array, then the output is also expected to be a numpy array.\nHint: You can use multiple inputs and outputs by passing a dictionary keyed by the dtaa type name."
+                raise ValueError, "If the input is a numpy array, then the output is also expected to be a numpy array.\n" \
+                    + "Hint: You can use multiple inputs and outputs by passing a dictionary keyed by the data type name."
             self._data_type = "sequential"
             self.num_observations = inputs.shape[0]
             assert self.num_observations == outputs.shape[0]
@@ -888,10 +905,6 @@ class GenomicRegionsAndLabels(Data):
         ])
         return self.subset_observations(indices)
     
-    #@property
-    #def n_samples(self):
-    #    return len(self.regions)
-
     def __init__(self, regions, labels, inputs={}, task_ids=None):
         # add regions to the input
         if 'regions' in inputs:
@@ -966,12 +979,26 @@ class SamplePartitionedData():
     @property
     def sample_ids(self):
         return self._data.keys()
+
+    def __hash__(self):
+        if self._cached_hash is not None:
+            return self._cached_hash
+        hashes = [hash(tuple(sorted(self._data.keys()))),
+        ] + [hash(val) for val in self._data.values()]
+        self._cached_hash = abs(hash(tuple(hashes)))
+        return self._cached_hash
+
+    def cache_to_disk(self):
+        fname = "%s.cached.%i.obj" % (type(self), hash(self))
+        if not os.path.isfile(fname):
+            self.save(fname)
+        return fname
     
     def save(self, fname):
         with h5py.File(fname, "w") as f:
             for key, data in self._data.iteritems():
-                print data
-                f[key] = h5py.ExternalLink(data.filename, "/")
+                sample_fname = data.cache_to_disk()
+                f[key] = h5py.ExternalLink(sample_fname, "/")
         return
 
     @classmethod
@@ -979,7 +1006,7 @@ class SamplePartitionedData():
         rv  = {}
         with h5py.File(fname) as f:
             for key, data in f.iteritems():
-                rv[key] = data
+                rv[key] = Data(**data)
         return cls(rv)
 
     def iter_batches(
@@ -1042,6 +1069,7 @@ class SamplePartitionedData():
         return f()
 
     def __init__(self, samples_and_data):
+        self._cached_hash = None
         try: 
             self._data = OrderedDict(samples_and_data.iteritems())
         except AttributeError:
@@ -1157,12 +1185,17 @@ def test_load_and_save(inputs, outputs):
         break
     return
 
+def test_hash():
+    s1 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+    s2 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+    assert hash(s1) == hash(s2)
+
+
 def test_read_data():
     data = load_chipseq_data('E123', ['CTCF',], 5000, 1, 500)
-    data.save("tmp.h5")
-    data2 = Data.load("tmp.h5")
+    fname = data.cache_to_disk()
+    data2 = Data.load(fname)
     for x in data2.iter_batches(10):
-        print x
         break
 
 def test_rec_array():
@@ -1185,10 +1218,9 @@ def test_sample_partitioned_data():
     s1 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     s2 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     s = SamplePartitionedData({'s1': s1, 's2': s2})
-    s.save("tmp.h5")
-    s2 = SamplePartitionedData.load("tmp.h5")
+    fname = s.cache_to_disk()
+    s2 = SamplePartitionedData.load(fname)
     for x in s2.iter_batches(50):
-        print x.keys()
         for key, val in x.iteritems():
             print key, val.shape
         break
@@ -1201,6 +1233,8 @@ def test():
     #test_load_and_save(
     #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     test_sample_partitioned_data()
+    #test_hash()
+    pass
 
 if __name__ == '__main__':
     test()
