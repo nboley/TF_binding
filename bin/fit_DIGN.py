@@ -1302,7 +1302,6 @@ def chipseq_main():
                 print key, batch[key].shape
             break
         tf_names = pks.factor_names
-    assert False
     model = JointBindingModel(
         args.n_peaks, 
         args.tf_names, 

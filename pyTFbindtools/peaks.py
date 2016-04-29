@@ -312,7 +312,7 @@ def load_or_build_peaks_and_labels_mat_from_DB(
         all_labels.append(labels)
 
     pk_record_type = type(pks[0])
-    pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
+    pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S64')
     pks = np.array(pks, dtype=zip(pks[0]._fields, pk_types))
 
     return pks, sorted(peak_fnames.keys()), all_labels
@@ -780,11 +780,11 @@ class Data(object):
         elif self._data_type == 'graph':
             new_inputs = {}
             for key, data in self.inputs.iteritems():
-                assert isinstance(val, (np.ndarray, h5py._hl.dataset.Dataset))
+                assert isinstance(data, (np.ndarray, h5py._hl.dataset.Dataset))
                 new_inputs[key] = data[observation_indices]
             new_outputs = {}
             for key, data in self.outputs.iteritems():
-                assert isinstance(val, (np.ndarray, h5py._hl.dataset.Dataset))
+                assert isinstance(data, (np.ndarray, h5py._hl.dataset.Dataset))
                 new_outputs[key] = data[observation_indices]
         else:
             assert False,"Unrecognized model type '{}'".format(self._data_type)
@@ -1118,7 +1118,36 @@ def test_load_and_save(inputs, outputs):
         break
     return
 
+def test_read_data():
+    data = load_chipseq_data('E123', ['CTCF',], 5000, 1, 500)
+    data.save("tmp.h5")    
+    data2 = Data.load("tmp.h5")
+    for x in data2.iter_batches(10):
+        print x
+        break
+
+def test_rec_array():
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        1, roadmap_sample_id='E114')['E114']
+    fname = next(iter(peak_fnames.values()[0]))[1]
+    with optional_gzip_open(fname) as fp:
+        pks = list(iter_summit_centered_peaks(
+            iter_narrow_peaks(fp), 500))
+        pk_record_type = type(pks[0])
+        pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S64')
+        pks = np.array(pks, dtype=zip(pks[0]._fields, pk_types))
+    with h5py.File('tmp.h5', "w") as f:
+        f.create_dataset('test', data=pks)
+        print f['test'][1]
+    print fname
+
 def test():
-    test_load_and_save(np.zeros((10000, 50)), np.zeros((10000, 1)))
-    test_load_and_save(
-        {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+    #test_rec_array()
+    test_read_data()
+    #test_load_and_save(np.zeros((10000, 50)), np.zeros((10000, 1)))
+    #test_load_and_save(
+    #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+
+if __name__ == '__main__':
+    test()
