@@ -24,8 +24,6 @@ from cross_validation import iter_train_validation_splits
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 
-from pyTFbindtools.DB import load_tf_ids, load_tf_names_for_sample
-
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
         if (mode=="r"):
@@ -967,6 +965,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         return
     
     def _load_cached(self, sample_id):
+        from pyTFbindtools.DB import load_tf_ids
         self.tf_ids = load_tf_ids(self.factor_names)
         self.data[sample_id] = None
         #SamplePeaksAndLabels.load(
@@ -987,6 +986,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                  validation_sample_ids=None,
                  annotation_id=1, 
                  half_peak_width=500):
+        from pyTFbindtools.DB import load_tf_names_for_sample
         # make sure that validation sample id is loaded
         if validation_sample_ids is not None:
             for sample_id in validation_sample_ids: 
@@ -1144,7 +1144,7 @@ def test_rec_array():
 
 def test():
     #test_rec_array()
-    test_read_data()
+    #test_read_data()
     #test_load_and_save(np.zeros((10000, 50)), np.zeros((10000, 1)))
     #test_load_and_save(
     #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
