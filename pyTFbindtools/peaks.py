@@ -906,7 +906,7 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     def subset_tfs(self, tf_ids):
         return self.subset_tasks({'labels': tf_ids})
 
-def load_chipseq_data(
+def load_chipseq_data_from_DB(
         roadmap_sample_id,
         factor_names,
         max_n_samples,
@@ -918,8 +918,8 @@ def load_chipseq_data(
             annotation_id, roadmap_sample_id, half_peak_width)
     print "Coding peaks"
     from pyDNAbinding.DB import load_genome_metadata
-    genome_fasta = FastaFile("hg19.genome.fa")
-    #load_genome_metadata(annotation_id).filename)
+    genome_fasta = FastaFile(
+        load_genome_metadata(annotation_id).filename)
     fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
     dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
 
@@ -944,6 +944,92 @@ def load_chipseq_data(
     )
     data = data.subset_tfs(factor_names)
     return data
+
+class SamplePartitionedData():
+    """Store data partitioned by sample id.
+
+    """
+    def save(self, ofname):
+        with h5py.File(fname, "w") as f:
+            for key, data in self.inputs.iteritems():
+                f[key] = h5py.ExternalLink(data.filename, "/")
+        return
+
+    @classmethod
+    def load(cls, fname):
+        rv  = {}
+        with h5py.File(fname) as f:
+            for key, data in f.iteritems():
+                rv[key] = data
+        return cls(rv)
+
+    def iter_batches(
+            self, batch_size, repeat_forever=False, **kwargs):
+        ## find the number of observations to sample from each batch
+        # To make this work, I would need to randomly choose the extra observations
+        fractions = np.array([
+            x.n_samples for x in self._data.values()], dtype=float)
+        fractions = fractions/fractions.sum()
+        inner_batch_sizes = np.array(batch_size*fractions, dtype=int)
+        # accounting for any rounding from the previous step 
+        for i in xrange(batch_size - inner_batch_sizes.sum()):
+            inner_batch_sizes[i] += 1
+
+        iterators = OrderedDict(
+            (sample_id, 
+             data.iter_batches(
+                 i_batch_size, repeat_forever, **kwargs) )
+            for i_batch_size, (sample_id, data) in zip(
+                    inner_batch_sizes, self._data.iteritems())
+        )
+
+        def f():
+            while True:
+                grpd_res = defaultdict(list)
+                cnts = []
+                for sample_id in self.sample_ids:
+                    if sample_id not in iterators:
+                        cnts.append(0)
+                    elif sample_id in iterators:
+                        iterator = iterators[sample_id]
+                        data = next(iterator)
+                        cnt = None
+                        for key, vals in data.iteritems():
+                            grpd_res[key].append(vals)
+                            if cnt == None: cnt = vals.shape[0]
+                            assert cnt == vals.shape[0]
+                        cnts.append(cnt)
+                    else:
+                        assert False
+                
+                for key, vals in grpd_res.iteritems():
+                    grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
+                    
+                # build the sample labels
+                cnts = np.array(cnts)
+                sample_labels = np.zeros(
+                    (cnts.sum(), len(self.sample_ids)), dtype='float32')
+                for i in xrange(len(cnts)):
+                    start_index = (0 if i == 0 else np.cumsum(cnts)[i-1])
+                    stop_index = np.cumsum(cnts)[i]
+                    sample_labels[start_index:stop_index,i] = 1                
+                assert 'sample_ids' not in grpd_res
+                grpd_res['sample_ids'] = sample_labels
+                
+                # cast this to a normal dict (rather than a default dict)
+                yield dict(grpd_res)
+            return
+        
+        return f()
+
+    def __init__(self, samples_and_data):
+        try: 
+            self._data = OrderedDict(samples_and_data.iteritems())
+        except AttributeError:
+            self._data = OrderedDict(samples_and_data)
+        for val in self._data.itervalues():
+            assert isinstance(val, Data)
+        return
 
 class PartitionedSamplePeaksAndChIPSeqLabels():
     def cache_key(self, sample_id):
@@ -1009,7 +1095,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         self.validation = {}
         
         for sample_id in self.sample_ids:
-            self.data[sample_id] = load_chipseq_data(
+            self.data[sample_id] = load_chipseq_data_from_DB(
                 sample_id,
                 factor_names,
                 max_n_samples,
@@ -1017,7 +1103,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                 half_peak_width)
                                 
             assert self.data[sample_id].seq_length == self.seq_length
-            print "Splitting out train data"        
+            print "Splitting out train data"
             if ( validation_sample_ids is None 
                  or sample_id not in validation_sample_ids ):
                 self.train[sample_id] = self.data[
@@ -1033,72 +1119,6 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                         contigs_to_include=('chr8', 'chr9')
                     )
 
-    def iter_batches( # sample_balanced
-            self, batch_size, data_subset, repeat_forever, **kwargs):
-        if data_subset == 'train':
-            data_subset = self.train
-        elif data_subset == 'validation':
-            data_subset = self.validation
-        else:
-            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
-
-        ## find the number of observations to sample from each batch
-        # To make this work, I would need to randomly choose the extra observations
-        assert batch_size >= len(data_subset), \
-            "Cant have a batch size smaller than the number of samples"
-        fractions = np.array([x.n_samples for x in data_subset.values()], dtype=float)
-        fractions = fractions/fractions.sum()
-        inner_batch_sizes = np.array(batch_size*fractions, dtype=int)
-        # accounting for any rounding from the previous step 
-        for i in xrange(batch_size - inner_batch_sizes.sum()):
-            inner_batch_sizes[i] += 1
-
-        iterators = OrderedDict(
-            (sample_id, 
-             data.iter_batches(
-                 i_batch_size, repeat_forever, **kwargs) )
-            for i_batch_size, (sample_id, data) in zip(
-                    inner_batch_sizes, data_subset.iteritems())
-        )
-
-        def f():
-            while True:
-                grpd_res = defaultdict(list)
-                cnts = []
-                for sample_id in self.sample_ids:
-                    if sample_id not in iterators:
-                        cnts.append(0)
-                    elif sample_id in iterators:
-                        iterator = iterators[sample_id]
-                        data = next(iterator)
-                        cnt = None
-                        for key, vals in data.iteritems():
-                            grpd_res[key].append(vals)
-                            if cnt == None: cnt = vals.shape[0]
-                            assert cnt == vals.shape[0]
-                        cnts.append(cnt)
-                    else:
-                        assert False
-                
-                for key, vals in grpd_res.iteritems():
-                    grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
-                    
-                # build the sample labels
-                cnts = np.array(cnts)
-                sample_labels = np.zeros(
-                    (cnts.sum(), len(self.sample_ids)), dtype='float32')
-                for i in xrange(len(cnts)):
-                    start_index = (0 if i == 0 else np.cumsum(cnts)[i-1])
-                    stop_index = np.cumsum(cnts)[i]
-                    sample_labels[start_index:stop_index,i] = 1                
-                assert 'sample_ids' not in grpd_res
-                grpd_res['sample_ids'] = sample_labels
-                
-                # cast thios to a normal dict (rather than a default dict)
-                yield dict(grpd_res)
-            return
-        
-        return f()
 
 
     def iter_train_data(
@@ -1142,12 +1162,21 @@ def test_rec_array():
         print f['test'][1]
     print fname
 
+def test_sample_partitioned_data():
+    s1 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+    s2 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+    s = SamplePartitionedData({'s1': s1, 's2': s2})
+    for x in s.iter_batches(50):
+        print x.keys()
+        break
+    return
+
 def test():
     #test_rec_array()
     #test_read_data()
     #test_load_and_save(np.zeros((10000, 50)), np.zeros((10000, 1)))
     #test_load_and_save(
     #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
-
+    test_sample_partitioned_data()
 if __name__ == '__main__':
     test()
