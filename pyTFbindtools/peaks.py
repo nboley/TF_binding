@@ -601,6 +601,21 @@ class Data(object):
         for key, val in self.task_ids.iteritems():
             task_ids.create_dataset(key, data=val)
         return
+
+    def hash(self):
+        if self._data_type == 'sequential':
+            pass
+        elif self._data_type == 'graph   ':
+            pass
+        else:
+            assert False, "Unrecognized data type '{}'".format(self._data_type)
+        pass
+    
+    def cache(self):
+        """Save self to $HASH.h5.
+
+        """
+        pass
     
     def save(self, fname):
         """Save the data into an h5 file.
@@ -615,7 +630,6 @@ class Data(object):
                 raise ValueError, "Unrecognized data type '{}'".format(
                     self._data_type)
     
-
     @classmethod
     def _load_sequential(cls, f):
         assert f.attrs['data_type'] == 'sequential'
@@ -874,9 +888,9 @@ class GenomicRegionsAndLabels(Data):
         ])
         return self.subset_observations(indices)
     
-    @property
-    def n_samples(self):
-        return len(self.regions)
+    #@property
+    #def n_samples(self):
+    #    return len(self.regions)
 
     def __init__(self, regions, labels, inputs={}, task_ids=None):
         # add regions to the input
@@ -949,9 +963,14 @@ class SamplePartitionedData():
     """Store data partitioned by sample id.
 
     """
-    def save(self, ofname):
+    @property
+    def sample_ids(self):
+        return self._data.keys()
+    
+    def save(self, fname):
         with h5py.File(fname, "w") as f:
-            for key, data in self.inputs.iteritems():
+            for key, data in self._data.iteritems():
+                print data
                 f[key] = h5py.ExternalLink(data.filename, "/")
         return
 
@@ -968,7 +987,7 @@ class SamplePartitionedData():
         ## find the number of observations to sample from each batch
         # To make this work, I would need to randomly choose the extra observations
         fractions = np.array([
-            x.n_samples for x in self._data.values()], dtype=float)
+            x.num_observations for x in self._data.values()], dtype=float)
         fractions = fractions/fractions.sum()
         inner_batch_sizes = np.array(batch_size*fractions, dtype=int)
         # accounting for any rounding from the previous step 
@@ -1140,7 +1159,7 @@ def test_load_and_save(inputs, outputs):
 
 def test_read_data():
     data = load_chipseq_data('E123', ['CTCF',], 5000, 1, 500)
-    data.save("tmp.h5")    
+    data.save("tmp.h5")
     data2 = Data.load("tmp.h5")
     for x in data2.iter_batches(10):
         print x
@@ -1166,8 +1185,12 @@ def test_sample_partitioned_data():
     s1 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     s2 = Data({'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     s = SamplePartitionedData({'s1': s1, 's2': s2})
-    for x in s.iter_batches(50):
+    s.save("tmp.h5")
+    s2 = SamplePartitionedData.load("tmp.h5")
+    for x in s2.iter_batches(50):
         print x.keys()
+        for key, val in x.iteritems():
+            print key, val.shape
         break
     return
 
@@ -1178,5 +1201,6 @@ def test():
     #test_load_and_save(
     #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     test_sample_partitioned_data()
+
 if __name__ == '__main__':
     test()
