@@ -1311,7 +1311,7 @@ def chipseq_main():
 
     model.train(
         args.n_peaks if args.n_peaks is not None else 300000, 
-        100, 
+        500, 
         25, 
         balanced=False)
     model.save('Multitest.h5')
