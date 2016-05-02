@@ -24,6 +24,8 @@ from cross_validation import iter_train_validation_splits
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 
+H5DRIVER = None
+
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
         if (mode=="r"):
@@ -636,7 +638,7 @@ class Data(object):
         """Save the data into an h5 file.
 
         """
-        with h5py.File(fname, "w") as f:
+        with h5py.File(fname, "w", driver=H5DRIVER) as f:
             if self._data_type == 'sequential':
                 self._save_sequential(f)
             elif self._data_type == 'graph':
@@ -666,7 +668,7 @@ class Data(object):
         """Load data from an h5 file.
 
         """
-        f = h5py.File(fname)
+        f = h5py.File(fname, driver=H5DRIVER)
         # This should probably also add a close method, but I there
         # would be very little purpose
         data_type = f.attrs['data_type']
@@ -764,14 +766,19 @@ class Data(object):
             # yield a subset of the data
             subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
             indices = permutation[subset]
+            # sort the indices because h5 indexing requires it
+            indices.sort()
             if self._data_type == 'sequential':
-                rv = (self.inputs[indices.tolist()], self.outputs[indices.tolist()])
+                rv = (
+                    self.inputs[indices.tolist()], 
+                    self.outputs[indices.tolist()]
+                )
             else:
                 rv = {}
                 for key, val in self.inputs.iteritems():
-                    rv[key] = val[sorted(indices.tolist())]
+                    rv[key] = val[indices.tolist()]
                 for key, val in self.outputs.iteritems():
-                    rv[key] = val[sorted(indices.tolist())]
+                    rv[key] = val[indices.tolist()]
             yield rv
             i += 1
         return
@@ -998,7 +1005,7 @@ class SamplePartitionedData():
         return fname
     
     def save(self, fname):
-        with h5py.File(fname, "w") as f:
+        with h5py.File(fname, "w", driver=H5DRIVER) as f:
             for key, data in self._data.iteritems():
                 sample_fname = data.cache_to_disk()
                 f[key] = h5py.ExternalLink(sample_fname, "/")
@@ -1007,7 +1014,7 @@ class SamplePartitionedData():
     @classmethod
     def load(cls, fname):
         rv  = {}
-        with h5py.File(fname) as f:
+        with h5py.File(fname, driver=H5DRIVER) as f:
             for key, data in f.iteritems():
                 rv[key] = Data(**data)
         return cls(rv)
@@ -1100,7 +1107,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
     
     @classmethod
     def load(cls, fname):
-        f = h5py.File(fname, 'r')
+        f = h5py.File(fname, 'r', driver=H5DRIVER)
         print f.attrs
         print sorted(f.attrs.items())
         return cls(**f.attrs)
@@ -1117,7 +1124,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
     def _load_cached_data(self, f=None):
         print "Loading cached data from '%s'" % self.cache_fname
         if f is None:
-            f = h5py.File(self.cache_fname, 'r')
+            f = h5py.File(self.cache_fname, 'r', driver=H5DRIVER)
         train_data = {}
         for key, val in f['train'].items():
             train_data[key] = Data(*val.values())
@@ -1130,7 +1137,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         return
     
     def cache_to_disk(self):
-        with h5py.File(self.cache_fname, "w") as f:
+        with h5py.File(self.cache_fname, "w", driver=H5DRIVER) as f:
             # save the attributes
             f.attrs['sample_ids'] = sorted(self.sample_ids)
             f.attrs['validation_sample_ids'] = (
