@@ -943,12 +943,6 @@ def load_chipseq_data_from_DB(
     (pks, tf_ids, (idr_optimal_labels, relaxed_labels)
         ) = load_or_build_peaks_and_labels_mat_from_DB(
             annotation_id, roadmap_sample_id, half_peak_width)
-    print "Coding peaks"
-    from pyDNAbinding.DB import load_genome_metadata
-    genome_fasta = FastaFile(
-        load_genome_metadata(annotation_id).filename)
-    fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
-    dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
 
     # set the ambiguous labels to -1
     ambiguous_pks_mask = (
@@ -956,8 +950,15 @@ def load_chipseq_data_from_DB(
         | (relaxed_labels < -0.5)
         | (idr_optimal_labels != relaxed_labels)
     )
-    idr_optimal_labels[ambiguous_pks_mask] = -1
-    labels = idr_optimal_labels
+    labels = np.copy(idr_optimal_labels)
+    labels[ambiguous_pks_mask] = -1
+
+    print "Coding peaks"
+    from pyDNAbinding.DB import load_genome_metadata
+    genome_fasta = FastaFile("hg19.genome.fa")
+    #    load_genome_metadata(annotation_id).filename)
+    fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
+    dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
 
     print "Filtering Peaks"    
     data = GenomicRegionsAndChIPSeqLabels(
@@ -969,7 +970,9 @@ def load_chipseq_data_from_DB(
     data = data.subset_pks_by_rank(
         max_num_peaks=max_n_samples, use_top_accessible=False
     )
-    data = data.subset_tfs(factor_names)
+    from DB import load_tf_ids
+    data = data.subset_tfs(load_tf_ids(factor_names))
+
     return data
 
 class SamplePartitionedData():
@@ -1112,6 +1115,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         #f['validation'] = h5py.ExternalLink(self.validation.cache_to_disk(), "/")
 
     def _load_cached_data(self, f=None):
+        print "Loading cached data from '%s'" % self.cache_fname
         if f is None:
             f = h5py.File(self.cache_fname, 'r')
         train_data = {}
@@ -1288,6 +1292,7 @@ def test_load_data_from_db():
     for x in rv.iter_train_data(10):
         for k, v in x.iteritems():
             print k, v.shape
+            print v
         break
     return
 
@@ -1299,7 +1304,7 @@ def test():
     #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     #test_sample_partitioned_data()
     #test_hash()
-    test_load_data_from_db()
+    #test_load_data_from_db()
     pass
 
 if __name__ == '__main__':

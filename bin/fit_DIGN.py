@@ -1276,11 +1276,10 @@ def parse_args():
         help='Maximum number of peaks to user per sample.')
 
     args = parser.parse_args()
-    args.roadmap_sample_ids = sorted(
-        set(args.roadmap_sample_ids + (
-            args.validation_roadmap_sample_ids 
-            if args.validation_roadmap_sample_ids is not None else []
-        )))
+    args.roadmap_sample_ids = sorted(args.roadmap_sample_ids)
+    if args.validation_roadmap_sample_ids is not None:
+        args.roadmap_sample_ids = sorted(
+            set(args.roadmap_sample_ids + args.validation_roadmap_sample_ids))
     return args
     
 
@@ -1297,11 +1296,9 @@ def chipseq_main():
             validation_sample_ids=args.validation_roadmap_sample_ids
         ) 
         for batch in pks.iter_train_data(10):
-            print batch.keys()
-            for key in batch.keys():
-                print key, batch[key].shape
             break
         tf_names = pks.factor_names
+    
     model = JointBindingModel(
         args.n_peaks, 
         args.tf_names, 
