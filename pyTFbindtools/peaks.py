@@ -1078,6 +1078,63 @@ class SamplePartitionedData():
             assert isinstance(val, Data)
         return
 
+def load_and_partition_chipseq_data_from_database(
+        roadmap_sample_ids, 
+        factor_names, 
+        validation_sample_ids=None,
+        half_peak_width=500,
+        max_n_samples=None,
+        annotation_id=1):
+    from pyTFbindtools.DB import load_tf_names_for_sample
+
+    # make sure that validation sample id is loaded
+    if validation_sample_ids is not None:
+        for sample_id in validation_sample_ids: 
+            assert sample_id in roadmap_sample_ids
+
+    self.sample_ids = roadmap_sample_ids
+    self.validation_sample_ids = validation_sample_ids
+    if factor_names is None:
+        factor_names = set()
+        for x in map(load_tf_names_for_sample, roadmap_sample_ids):
+            factor_names.update(x)
+    self.factor_names = sorted(factor_names)
+    self.n_samples = max_n_samples
+    self.annotation_id = annotation_id
+    self.half_peak_width = half_peak_width
+    self.seq_length = 2*half_peak_width
+
+    self.data = {}
+    self.train = {}
+    self.validation = {}
+
+    for sample_id in self.sample_ids:
+        self.data[sample_id] = load_chipseq_data_from_DB(
+            sample_id,
+            factor_names,
+            max_n_samples,
+            annotation_id,
+            half_peak_width)
+
+        assert self.data[sample_id].seq_length == self.seq_length
+        print "Splitting out train data"
+        if ( validation_sample_ids is None 
+             or sample_id not in validation_sample_ids ):
+            self.train[sample_id] = self.data[
+                sample_id].subset_pks_by_contig(
+                    contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
+                )
+
+        print "Splitting out validation data"        
+        if ( validation_sample_ids is None 
+             or sample_id in validation_sample_ids ):
+            self.validation[sample_id] = self.data[
+                sample_id].subset_pks_by_contig(
+                    contigs_to_include=('chr8', 'chr9')
+                )
+
+    pass
+
 class PartitionedSamplePeaksAndChIPSeqLabels():
     def cache_key(self, sample_id):
         return hashlib.sha1(str((
