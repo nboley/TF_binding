@@ -1281,8 +1281,10 @@ def parse_args():
         help='Maximum number of peaks to user per sample.')
 
     args = parser.parse_args()
-    args.roadmap_sample_ids = sorted(
-        set(args.roadmap_sample_ids + args.validation_roadmap_sample_ids))
+    args.roadmap_sample_ids = sorted(args.roadmap_sample_ids)
+    if args.validation_roadmap_sample_ids is not None:
+        args.roadmap_sample_ids = sorted(
+            set(args.roadmap_sample_ids + args.validation_roadmap_sample_ids))
     return args
     
 
