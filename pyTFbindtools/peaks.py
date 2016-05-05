@@ -24,6 +24,7 @@ from cross_validation import iter_train_validation_splits
 
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
+from pyDNAbinding.deeplearning import Data, SamplePartitionedData
 
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
@@ -604,6 +605,17 @@ def load_chipseq_data_from_DB(
         max_n_samples,
         annotation_id,
         half_peak_width):
+    cached_fname = "cachedDBchipseq.%i.h5" % abs(hash((
+        roadmap_sample_id, 
+        tuple(factor_names), 
+        max_n_samples, 
+        annotation_id, 
+        half_peak_width)))
+    try:
+        return GenomicRegionsAndChIPSeqLabels.load(cached_fname)
+    except IOError:
+        print "Building data"
+    
     # XXX search for cached data
     (pks, tf_ids, (idr_optimal_labels, relaxed_labels)
         ) = load_or_build_peaks_and_labels_mat_from_DB(
@@ -637,7 +649,7 @@ def load_chipseq_data_from_DB(
     )
     from DB import load_tf_ids
     data = data.subset_tfs(load_tf_ids(factor_names))
-
+    data.save(cached_fname)
     return data
 
 class PartitionedSamplePeaksAndChIPSeqLabels():
@@ -659,19 +671,22 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
     
     @classmethod
     def load(cls, fname):
-        f = h5py.File(fname, 'r')
-        print f.attrs
-        print sorted(f.attrs.items())
-        return cls(**f.attrs)
-        #sample_ids = sorted(f.attrs['sample_ids'])
-        #validation_sample_ids = sorted(f.attrs['validation_sample_ids'])
-        #factor_names = sorted(f.attrs['factor_names'])
-        #n_samples = f.attrs['n_samples']
-        #annotation_id = f.attrs['annotation_id']
-        #half_peak_width = f.attrs['half_peak_width']
-        # link to the data 
-        #f['train'] = h5py.ExternalLink(self.train.cache_to_disk(), "/")
-        #f['validation'] = h5py.ExternalLink(self.validation.cache_to_disk(), "/")
+        with h5py.File(fname, 'r') as f:
+            roadmap_sample_ids = f.attrs['roadmap_sample_ids']
+            factor_names = f.attrs['factor_names']
+            max_n_samples = f.attrs['max_n_samples']
+            if max_n_samples == 'NONE': max_n_samples = None
+            validation_sample_ids = f.attrs['validation_sample_ids']
+            if validation_sample_ids == 'NONE': validation_sample_ids = None
+            annotation_id = f.attrs['annotation_id']
+            half_peak_width = f.attrs['half_peak_width']
+
+        return cls(roadmap_sample_ids, 
+                   factor_names, 
+                   max_n_samples, 
+                   validation_sample_ids, 
+                   annotation_id, 
+                   half_peak_width)
 
     def _load_cached_data(self, f=None):
         print "Loading cached data from '%s'" % self.cache_fname
@@ -688,19 +703,19 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
             validation_data[key] = Data(*val.values())
         self.validation = SamplePartitionedData(validation_data)
         return
-    
-    def cache_to_disk(self):
-        with h5py.File(self.cache_fname, "w") as f:
+        
+    def save(self, fname):
+        with h5py.File(fname, "w") as f:
             # save the attributes
-            f.attrs['sample_ids'] = sorted(self.sample_ids)
-            f.attrs['validation_sample_ids'] = (
-                'NONE' if self.validation_sample_ids is None else 
-                sorted(self.validation_sample_ids)
-            )
+            f.attrs['roadmap_sample_ids'] = sorted(self.sample_ids)
             f.attrs['factor_names'] = sorted(self.factor_names)
             f.attrs['max_n_samples'] = (
                 'NONE' if self.max_n_samples is None 
                 else self.max_n_samples )
+            f.attrs['validation_sample_ids'] = (
+                'NONE' if self.validation_sample_ids is None else 
+                sorted(self.validation_sample_ids)
+            )
             f.attrs['annotation_id'] = self.annotation_id
             f.attrs['half_peak_width'] = self.half_peak_width
             
@@ -708,7 +723,10 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
             f['train'] = h5py.ExternalLink(self.train.cache_to_disk(), "/")
             f['validation'] = h5py.ExternalLink(self.validation.cache_to_disk(), "/")
 
-        return self.cache_fname
+        return fname
+
+    def cache_to_disk(self):
+        return self.save(self.cache_fname)
     
     def __init__(self, 
                  roadmap_sample_ids, 
@@ -742,6 +760,7 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         self.seq_length = 2*half_peak_width
 
         try:
+            raise IOError, "TEST"
             self._load_cached_data()
             return
         except IOError:
@@ -757,7 +776,8 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                 max_n_samples,
                 annotation_id,
                 half_peak_width)
-                                
+            fname = data.cache_to_disk()
+            
             assert data.seq_length == self.seq_length
             print "Splitting out train data"
             if ( validation_sample_ids is None 

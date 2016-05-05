@@ -343,6 +343,7 @@ class OccupancyLayer(Layer):
             n_samples = 1
             self.sample_ids = TT.ones((1,1), dtype='float32')
         else:
+            assert False
             n_samples, self.sample_ids = nsamples_and_sample_ids
         
         self.chem_affinity = self.add_param(
@@ -630,7 +631,7 @@ class JointBindingModel():
         network = OccupancyLayer(
             network, 
             init_chem_affinity=-10,
-            nsamples_and_sample_ids=(len(self.sample_ids), sample_ids_var),
+            #nsamples_and_sample_ids=(len(self.sample_ids), sample_ids_var),
             dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
         self._occupancy_layers[name + ".occupancy"] = network
@@ -773,7 +774,9 @@ class JointBindingModel():
         
         # make sure the factor names are unique
         assert len(self.factor_names) == len(set(self.factor_names))
-        self.sample_ids = sample_ids
+        if validation_sample_ids is not None:
+            self.sample_ids = sorted(
+                set(sample_ids) - set(validation_sample_ids))
         self._use_three_base_encoding = use_three_base_encoding
         
         self._multitask_labels = {}
@@ -1288,7 +1291,7 @@ def chipseq_main():
 
     # This is code that loads a small batch to catch errors 
     # early during debugging
-    if False:
+    if True:
         pks = PartitionedSamplePeaksAndChIPSeqLabels(
             args.roadmap_sample_ids, 
             factor_names=args.tf_names, 
@@ -1296,9 +1299,17 @@ def chipseq_main():
             validation_sample_ids=args.validation_roadmap_sample_ids
         ) 
         for batch in pks.iter_train_data(10):
+            for key, val in batch.iteritems():
+                print key, val.shape
+                print val
+            break
+        for batch in pks.iter_validation_data(10):
+            for key, val in batch.iteritems():
+                print key, val.shape
+                print val
             break
         tf_names = pks.factor_names
-    
+    #assert False
     model = JointBindingModel(
         args.n_peaks, 
         args.tf_names, 
