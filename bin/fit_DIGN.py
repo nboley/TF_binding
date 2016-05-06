@@ -515,7 +515,7 @@ class JointBindingModel():
         network = OccupancyLayer(network, -2.0)
         network = FlattenLayer(network)
         
-        self._networks[name + ".labels"] = network
+        self._networks[name_prefix + 'labels'] = network
         self._data_iterators[name] = selex_experiment.iter_batches
 
         prediction = lasagne.layers.get_output(network)
@@ -526,15 +526,16 @@ class JointBindingModel():
         for exp in selex_experiments:
             self.add_selex_experiment(exp)
     
-    def add_simple_chipseq_model(self, pks_and_labels):
+    def add_simple_chipseq_model(self, pks_and_labels, task_name):
         print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
-        name = 'invivo_%s_sequence' % "-".join(pks_and_labels.sample_ids) 
+        if task_name is None: name_prefix = ''
+        else: name_prefix = task_name + "."
 
-        input_var = TT.tensor4(name + '.fwd_seqs')
-        self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.labels')
-        self._target_vars[name + '.labels'] = target_var
-        self._multitask_labels[name + '.labels'] = pks_and_labels.factor_names
+        input_var = TT.tensor4(name_prefix + 'fwd_seqs')
+        self._input_vars[name_prefix + 'fwd_seqs'] = input_var
+        target_var = TT.matrix(name_prefix + 'labels')
+        self._target_vars[name_prefix + 'labels'] = target_var
+        self._multitask_labels[name_prefix + 'labels'] = pks_and_labels.factor_names
         
         network = InputLayer(
             shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
@@ -549,17 +550,17 @@ class JointBindingModel():
         network = StackStrands(network)
         network = OccMaxPool(network, 2*self.num_tf_specific_convs, 16)
         network = OccupancyLayer(network, -6.0)
-        self._occupancy_layers[name + ".occupancy"] = network
+        self._occupancy_layers[name_prefix + "occupancy"] = network
         network = AnyBoundOcc(network)
         network = OccMaxPool(network, 1, 'full')
         network = FlattenLayer(network)
 
-        self._networks[name + ".labels"] = network
+        self._networks[name_prefix + "labels"] = network
 
         prediction = lasagne.layers.get_output(network) 
         loss = TT.mean(global_loss_fn(target_var, prediction))
-        self._data_iterators[name] = pks_and_labels.iter_batches
-        self._losses[name] = loss
+        assert task_name not in self._losses
+        self._losses[task_name] = loss
 
         return
 
@@ -575,18 +576,24 @@ class JointBindingModel():
         self._losses[str(target_var) + ".chipseqreg"] = (
             self._chipseq_regularization_penalty*loss)
 
-    def add_chipseq_samples(self, pks_and_labels, include_dnase=True): 
-        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
-        name = 'invivo_%s_sequence' % "-".join(pks_and_labels.sample_ids) 
+    def add_chipseq_samples(
+            self, 
+            seq_length, 
+            include_dnase=True, 
+            task_name=None):
+        print "Building ChIP-seq model for factors: %s" \
+            % self.invivo_factor_names
+        if task_name is None: name_prefix = ''
+        else: name_prefix = task_name + "."
         
-        input_var = TT.tensor4(name + '.fwd_seqs')
-        self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.labels')
-        self._target_vars[name + '.labels'] = target_var
-        self._multitask_labels[name + '.labels'] = pks_and_labels.factor_names
+        input_var = TT.tensor4(name_prefix + 'fwd_seqs')
+        self._input_vars[name_prefix + 'fwd_seqs'] = input_var
+        target_var = TT.matrix(name_prefix + 'labels')
+        self._target_vars[name_prefix + 'labels'] = target_var
+        self._multitask_labels[name_prefix+'labels'] = self.invivo_factor_names
 
         network = InputLayer(
-            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
+            shape=(None, 1, 4, seq_length), input_var=input_var)
 
         network = ConvolutionDNASequenceBinding(
             network, 
@@ -602,10 +609,10 @@ class JointBindingModel():
         #self._add_chipseq_regularization(single_tf_affinities, target_var)
 
         if include_dnase is True:
-            access_input_var = TT.tensor4(name + '.dnase_cov')
-            self._input_vars[name + '.dnase_cov'] = access_input_var
+            access_input_var = TT.tensor4(name_prefix + 'dnase_cov')
+            self._input_vars[name_prefix + 'dnase_cov'] = access_input_var
             dnase = InputLayer(
-                shape=(None, 1, 1, pks_and_labels.seq_length), 
+                shape=(None, 1, 1, seq_length), 
                 input_var=access_input_var
             )
             network = ConvolveDNASELayer(single_tf_affinities, dnase)
@@ -625,8 +632,8 @@ class JointBindingModel():
             grpd_dnase = OccMaxPool(dnase, 1, 92, 4) # try average pool XXX
             network = ConvolveDNASELayer(network, grpd_dnase)
         
-        sample_ids_var = TT.matrix(name + '.sample_ids')
-        self._input_vars[name + '.sample_ids'] = sample_ids_var
+        #sample_ids_var = TT.matrix('sample_ids')
+        #self._input_vars['sample_ids'] = sample_ids_var
 
         network = OccupancyLayer(
             network, 
@@ -634,7 +641,7 @@ class JointBindingModel():
             #nsamples_and_sample_ids=(len(self.sample_ids), sample_ids_var),
             dnase_signal=TT.log(1+TT.max(access_input_var, axis=-1)).flatten()
         )
-        self._occupancy_layers[name + ".occupancy"] = network
+        self._occupancy_layers[name_prefix + 'occupancy'] = network
         network = OccMaxPool(network, 1, 4)
         
         network = AnyBoundOcc(network)
@@ -643,35 +650,40 @@ class JointBindingModel():
         #network = OccMaxPool(network, 2*self.num_tf_specific_convs, 'full')
         
         network = FlattenLayer(network)
-        self._networks[name + ".labels"] = network
-        self._data_iterators[name] = pks_and_labels.iter_batches
+        self._networks[name_prefix + 'labels'] = network
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(global_loss_fn(target_var, prediction)) + cobinding_penalty
-        self._losses[name] = loss
+        assert task_name not in self._losses
+        self._losses[task_name] = loss
         return
 
 
-    def add_DIGN_chipseq_samples(self, pks_and_labels, include_DNASE=True): 
-        print "Adding ChIP-seq data for sample ID %s" % pks_and_labels.sample_ids
-        name = 'invivo_%s_DIGN_sequence' % "-".join(pks_and_labels.sample_ids) 
+    def add_DIGN_chipseq_samples(
+            self, 
+            seq_length,
+            include_DNASE=True,
+            task_name=None): 
+        if task_name is None: name_prefix = ''
+        else: name_prefix = task_name + "."
         
-        input_var = TT.tensor4(name + '.fwd_seqs')
-        self._input_vars[name + '.fwd_seqs'] = input_var
-        target_var = TT.matrix(name + '.labels')
-        self._target_vars[name + '.labels'] = target_var
-        self._multitask_labels[name + '.labels'] = pks_and_labels.factor_names
+        input_var = TT.tensor4(name_prefix + 'fwd_seqs')
+        self._input_vars[name_prefix + 'fwd_seqs'] = input_var
+        target_var = TT.matrix(name_prefix + 'labels')
+        self._target_vars[name_prefix + 'labels'] = target_var
+        self._multitask_labels[
+            name_prefix + 'labels'] = self.invivo_factor_names
 
-        n_convs = int(25*(1+np.log2(len(self.factor_names))))
+        n_convs = int(25*(1+np.log2(len(self.invivo_factor_names))))
         
         network = InputLayer(
-            shape=(None, 1, 4, pks_and_labels.seq_length), input_var=input_var)
+            shape=(None, 1, 4, seq_length), input_var=input_var)
 
         if include_DNASE:
-            access_input_var = TT.tensor4(name + '.dnase_cov')
-            self._input_vars[name + '.dnase_cov'] = access_input_var
+            access_input_var = TT.tensor4(name_prefix + 'dnase_cov')
+            self._input_vars[name_prefix + 'dnase_cov'] = access_input_var
             access = InputLayer(
-                shape=(None, 1, 1, pks_and_labels.seq_length),
+                shape=(None, 1, 1, seq_length),
                 input_var=access_input_var
             )
             #access = ExpressionLayer(access, lambda x: TT.log(
@@ -707,15 +719,15 @@ class JointBindingModel():
         network = MaxPool2DLayer(network, (1, 35))
         network = DenseLayer(
             network, 
-            len(pks_and_labels.factor_names), 
+            len(self.invivo_factor_names), 
             nonlinearity=lasagne.nonlinearities.sigmoid)
 
-        self._networks[name + ".labels"] = network
-        self._data_iterators[name] = pks_and_labels.iter_batches
+        self._networks[name_prefix + 'labels'] = network
 
         prediction = lasagne.layers.get_output(network)
         loss = TT.mean(global_loss_fn(target_var, prediction))
-        self._losses[name] = loss
+        assert task_name not in self._losses
+        self._losses[task_name] = loss
         return
 
     def set_all_params(self, values):
@@ -761,10 +773,8 @@ class JointBindingModel():
         
 
     def __init__(self, 
-                 n_samples, 
+                 seq_length,
                  invivo_factor_names, 
-                 sample_ids, 
-                 validation_sample_ids=None,
                  invitro_factor_names=[],
                  use_three_base_encoding=False):
         self.factor_names = invivo_factor_names + [
@@ -774,9 +784,6 @@ class JointBindingModel():
         
         # make sure the factor names are unique
         assert len(self.factor_names) == len(set(self.factor_names))
-        if validation_sample_ids is not None:
-            self.sample_ids = sorted(
-                set(sample_ids) - set(validation_sample_ids))
         self._use_three_base_encoding = use_three_base_encoding
         
         self._multitask_labels = {}
@@ -787,7 +794,6 @@ class JointBindingModel():
         self._input_vars = OrderedDict()
         self._target_vars = OrderedDict()
         self._networks = OrderedDict()
-        self._data_iterators = OrderedDict()
         self._occupancies_fns = None
         self._occupancy_layers = OrderedDict()
         self._deep_lifft_fns = None
@@ -798,6 +804,7 @@ class JointBindingModel():
         
         self._init_shared_affinity_params(self._use_three_base_encoding)
 
+        """
         init_sp = 2.0*len(invivo_factor_names)/(len(invitro_factor_names)+1e-6)
         self._selex_penalty = create_param(
             lambda x: init_sp, (), 'selex_penalty')
@@ -806,35 +813,37 @@ class JointBindingModel():
             selex_experiments.add_all_selex_experiments_for_factor(
                 factor_name)
         self.add_selex_experiments(selex_experiments)
-
+        """
+        
         if len(invivo_factor_names) > 0:
             self._chipseq_regularization_penalty = create_param(
                 lambda x: 2.0, (), 'chipseq_penalty')
-            pks = PartitionedSamplePeaksAndChIPSeqLabels(
-                sample_ids, 
-                factor_names=invivo_factor_names, 
-                max_n_samples=n_samples, 
-                validation_sample_ids=validation_sample_ids)
-            #self.add_DIGN_chipseq_samples(pks)
-            self.add_chipseq_samples(pks)
-            #self.add_simple_chipseq_model(pks)
+            #self.add_DIGN_chipseq_samples(seq_length)
+            self.add_chipseq_samples(seq_length)
+            #self.add_simple_chipseq_model()
 
         self._build()
     
-    def iter_data(self, *args, **kwargs_args):
+    def iter_correctly_ordered_data(self, data):
         iterators = OrderedDict()
-        for key, iter_inst in self._data_iterators.iteritems():
-            iterators[key] = iter_inst(*args, **kwargs_args)
+        if isinstance(data, dict):
+            for key, iter_inst in data.iteritems():
+                iterators[key] = iter_inst
+        else:
+            assert len(self._losses) == 1
+            iterators[self._losses.keys()[0]] = data
         assert len(iterators) > 0, 'No data iterators provided'
         
         def iter_data():
             while True:
                 merged_output = {}
-                for name_prefix, iterator in iterators.iteritems():
+                for task_name, iterator in iterators.iteritems():
+                    if task_name is None: name_prefix = ''
+                    else: name_prefix = task_name + "."
                     data_dict = next(iterator)
                     for key, data in data_dict.iteritems():
-                        assert name_prefix + "." + key not in merged_output
-                        merged_output[name_prefix + "." + key] = data
+                        assert name_prefix + key not in merged_output
+                        merged_output[name_prefix + key] = data
                 ordered_merged_output = OrderedDict()
                 for key in chain(
                         self._input_vars.iterkeys(), 
@@ -846,7 +855,6 @@ class JointBindingModel():
                 yield ordered_merged_output
         
         return iter_data()
-        #return iter_weighted_batch_samples(self, iter_data(), num_oversamples)
 
     def get_all_params(self):
         return lasagne.layers.get_all_params(
@@ -930,14 +938,8 @@ class JointBindingModel():
                 *[data[input_key] for input_key in self._input_vars.keys()])
         return predictions
               
-    def predict(self, batch_size):
-        data_iterator = self.iter_data(
-            batch_size, 
-            'validation', 
-            repeat_forever=False,
-            balanced=False,
-            shuffled=False,
-        )
+    def predict(self, data_iterators):
+        data_iterator = self.iter_correctly_ordered_data(data_iterators)
         pred_prbs = defaultdict(list)
         labels = defaultdict(list)
         sample_ids = defaultdict(list)
@@ -986,7 +988,8 @@ class JointBindingModel():
                 pyplot.close("all")
 
     def predict_occupancies(self, batch_size):
-        input_data =  next(self.iter_data(
+        raise NotImplementedError, "Need to fix this after the refactor.x"
+        input_data =  next(self.iter_correctly_ordered_data(
             batch_size, 
             'train', 
             repeat_forever=False, 
@@ -1071,52 +1074,6 @@ class JointBindingModel():
                 for (i, name), param in params.iteritems():
                     dset = epoch_parameters_grp.create_dataset(str(i), data=param)
                     dset.attrs['name'] = name
-            
-            # add all of the data
-            data_grp = f.create_group("data")
-            pred_labels_grp = f.create_group("pred_labels")
-            pred_occs_grp = f.create_group("pred_occs")
-            pred_deep_lifft_scores_grp = f.create_group("deep_lifft_scores")
-            for data_subset_name in ['train', 'validation']:
-                if data_subset_name == 'train' and not save_train_data: 
-                    continue
-                print "Saving %s data" % data_subset_name
-                all_data = defaultdict(list)
-                all_pred_labels = defaultdict(list)
-                all_pred_occs = defaultdict(list)
-                all_deep_lifft_scores = defaultdict(list)
-                for data in self.iter_data(
-                        100, data_subset_name, 
-                        repeat_forever=False, 
-                        include_chipseq_signal=True):
-                    for key, values in data.iteritems():
-                        all_data[key].append(values)
-                    for key, values in self.predict_on_batch(data).iteritems():
-                        all_pred_labels[key].append(values)
-                    for key, values in self.predict_occupancies_on_batch(
-                            data).iteritems():
-                        all_pred_occs[key].append(values)
-                    for key, values in self.predict_deeplifft_scores_on_batch(
-                            data).iteritems():
-                        all_deep_lifft_scores[key].append(values)
-
-                data_subgrp = data_grp.create_group(data_subset_name)
-                for key, values in all_data.iteritems():
-                    values = np.concatenate(values, axis=0)
-                    dset = data_subgrp.create_dataset(str(key), data=values)
-                data_subgrp = pred_labels_grp.create_group(data_subset_name)
-                for key, values in all_pred_labels.iteritems():
-                    values = np.concatenate(values, axis=0)
-                    dset = data_subgrp.create_dataset(str(key), data=values)
-                data_subgrp = pred_occs_grp.create_group(data_subset_name)
-                for key, values in all_pred_occs.iteritems():
-                    values = np.concatenate(values, axis=0)
-                    dset = data_subgrp.create_dataset(str(key), data=values)
-                data_subgrp = pred_deep_lifft_scores_grp.create_group(data_subset_name)
-                for key, values in all_deep_lifft_scores.iteritems():
-                    values = np.concatenate(values, axis=0)
-                    dset = data_subgrp.create_dataset(str(key), data=values)
-        
         return 
         # code to pickle the actual model
         model._data_iterators = None
@@ -1126,10 +1083,10 @@ class JointBindingModel():
         print rv[:10]
         assert False
 
-    def evaluate(self, batch_size):
+    def evaluate(self, data_iterators):
         # Print the validation results for this epoch:
         classification_results  = {}
-        pred_prbs, labels, sample_ids = self.predict(batch_size)
+        pred_prbs, labels, sample_ids = self.predict(data_iterators)
         for key in pred_prbs.keys():
             for sample_index in xrange(sample_ids[key].shape[1]):
                 sample_indices = np.array(
@@ -1147,8 +1104,9 @@ class JointBindingModel():
                         pred_prbs[key][sample_indices,index] > 0.5, 
                         pred_prbs[key][sample_indices,index]
                     )
-                    try: sample_id = "sample%s-" % self.sample_ids[sample_index]
-                    except IndexError: sample_id = ""
+                    sample_id = ""
+                    if sample_ids is not None:
+                        sample_id = "sample%s-" % sample_ids[sample_index]
                     classification_results[
                         ("%s%s" % (
                             sample_id, key.split("_")[-1]), 
@@ -1156,7 +1114,53 @@ class JointBindingModel():
                     ] = res
         return classification_results
 
-    def train(self, samples_per_epoch, batch_size, nb_epoch, balanced=False):
+    def train_epoch(self, train_data_iterators, max_nb_batches=None):
+        #self._selex_penalty.set_value( 
+        #    round(self._selex_penalty.get_value()/1.20, 6) )
+        #self._chipseq_regularization_penalty.set_value( 
+        #    round(self._chipseq_regularization_penalty.get_value()/1.20, 6))
+
+        # In each epoch, we do a full pass over the training data:
+        train_err = np.zeros(len(self._losses), dtype=float)
+        progbar = Progbar(max_nb_batches)
+        for batch_i, data in enumerate(
+                self.iter_correctly_ordered_data(
+                    train_data_iterators
+                )):
+            if (max_nb_batches is not None and batch_i > max_nb_batches): 
+                break
+            
+            # we can use the values attriburte because iter_data  
+            # returns an ordered dict
+            filtered_data = [
+                data[key] for key in 
+                self._input_vars.keys() + self._target_vars.keys()
+            ]
+            err = self.train_fn(*filtered_data)
+            if VERBOSE:
+                progbar.update(batch_i, [('train_err', err.sum()),])
+            train_err += err
+        print
+        return train_err
+
+    def calc_loss(self, data_iterators):
+        loss = np.zeros(len(self._losses), dtype=float)
+        for data in self.iter_correctly_ordered_data(data_iterators):
+            # we can use the keys attriburte because _input_vars and 
+            # _target_vars are ordered dicts
+            filtered_data = [
+                data[key] for key in 
+                self._input_vars.keys() + self._target_vars.keys()
+            ]
+            loss += self.test_fn(*filtered_data)
+        return loss
+
+    def train(self, 
+              train_data, 
+              batch_size,
+              nb_batches_per_epoch, 
+              nb_epoch,
+              validation_data=None):
         # Finally, launch the training loop.
         if VERBOSE: print("\n\n\n\n\nStarting training...")
         auPRCs = [0.0,]
@@ -1165,86 +1169,31 @@ class JointBindingModel():
             print 'auPRCs', epoch, auPRCs[-6:], max(auPRCs[-6:]), max(auPRCs)
             if max(auPRCs[-6:]) + 1e-6 < max(auPRCs):
                 break
+            train_err = self.train_epoch(
+                train_data.iter_batches(batch_size), 
+                nb_batches_per_epoch)
             
-            #self._selex_penalty.set_value( 
-            #    round(self._selex_penalty.get_value()/1.20, 6) )
-            #self._chipseq_regularization_penalty.set_value( 
-            #    round(self._chipseq_regularization_penalty.get_value()/1.20, 6))
-            
-            # In each epoch, we do a full pass over the training data:
-            train_err = np.zeros(len(self._losses), dtype=float)
-            progbar = Progbar(samples_per_epoch)
-            for nb_train_batches_observed, data in enumerate(self.iter_data(
-                    batch_size, 
-                    'train', 
-                    repeat_forever=True, 
-                    shuffled=True,
-                    balanced=balanced,
-            )):
-                if nb_train_batches_observed*batch_size > samples_per_epoch: 
-                    break
-                # we can use the values attriburte because iter_data  
-                # returns an ordered dict
-                filtered_data = [
-                    data[key] for key in 
-                    self._input_vars.keys() + self._target_vars.keys()
-                ]
-                err = self.train_fn(*filtered_data)
-                if VERBOSE:
-                    progbar.update(
-                        nb_train_batches_observed*batch_size, 
-                        [('train_err', err.sum()),]
-                    )
-                train_err += err
-                        
-            # calculate the test error
-            validation_err = np.zeros(len(self._losses), dtype=float)
-            validation_batches = 0
-            for data in self.iter_data(
-                    batch_size, 
-                    'validation', # XXX 
-                    repeat_forever=False, 
-                    balanced=False, 
-                    shuffled=False):
-                # we can use the values attriburte because iter_data  
-                # returns an ordered dict
-                filtered_data = [
-                    data[key] for key in 
-                    self._input_vars.keys() + self._target_vars.keys()
-                ]
-                err = self.test_fn(*filtered_data)
-                validation_err += err
-                validation_batches += 1
-            real_task_key = [
-                key for key in self._losses.keys() 
-                if key.startswith('invivo') and key.endswith('sequence')
-            ]
-            #assert len(real_task_key) == 1
-            #self.validation_losses.append(
-            #    dict(zip(
-            #        self._losses.keys(), (validation_err/validation_batches))
-            #     )[real_task_key[0]]
-            #)
+            # test the model on the validation data
+            if validation_data is not None:
+                validation_err = self.calc_loss(
+                    validation_data.iter_batches(batch_size))
+                classification_results  = self.evaluate(
+                    validation_data.iter_batches(batch_size))
+                auPRC = 0.0
+                for key, vals in sorted(classification_results.iteritems()):
+                    if not math.isnan(vals.auPRC):
+                        auPRC += vals.auPRC
+                print( 'val_err: %s' % zip(self._losses.keys(), validation_err))
+                print( 'mean auPRC: %.4f' % (auPRC/len(classification_results)))
+                for key, vals in sorted(classification_results.iteritems()):
+                    print "-".join(key).ljust(40), vals
+                self.validation_results.append(classification_results)
+                auPRCs.append(auPRC/len(classification_results))
 
-            # Print the validation results for this epoch:
-            classification_results  = self.evaluate(batch_size)
-            auPRC = 0.0
-            for key, vals in sorted(classification_results.iteritems()):
-                if not math.isnan(vals.auPRC):
-                    auPRC += vals.auPRC
-            print( 'val_err: %s' % zip(
-                self._losses.keys(), (validation_err/validation_batches) ))
-            print( 'mean auPRC: %.4f' % (auPRC/len(classification_results)))
-            for key, vals in sorted(classification_results.iteritems()):
-                print "-".join(key).ljust(40), vals
-            self.validation_results.append(classification_results)
-            auPRCs.append(auPRC/len(classification_results))
-            
+            # print out a few interesting parameters
             params = OrderedDict()
             for i, param in enumerate(self.get_all_params()):
                 params[(i, str(param))] = param.get_value().copy()
-                #if str(param) == 'dnase_weights':
-                #    print param, param.get_value()
                 if str(param) == 'chem_affinity':
                     print param, param.get_value()
                 if str(param) == 'dnase_weight':
@@ -1291,7 +1240,7 @@ def chipseq_main():
 
     # This is code that loads a small batch to catch errors 
     # early during debugging
-    if True:
+    if False:
         pks = PartitionedSamplePeaksAndChIPSeqLabels(
             args.roadmap_sample_ids, 
             factor_names=args.tf_names, 
@@ -1309,19 +1258,26 @@ def chipseq_main():
                 print val
             break
         tf_names = pks.factor_names
-    #assert False
-    model = JointBindingModel(
-        args.n_peaks, 
-        args.tf_names, 
-        args.roadmap_sample_ids, 
-        validation_sample_ids=args.validation_roadmap_sample_ids
-    )
+        assert False
 
+    pks = PartitionedSamplePeaksAndChIPSeqLabels(
+        args.roadmap_sample_ids, 
+        factor_names=args.tf_names, 
+        max_n_samples=args.n_peaks, 
+        validation_sample_ids=args.validation_roadmap_sample_ids)
+
+    model = JointBindingModel(
+        pks.seq_length,
+        args.tf_names 
+    )
+    batch_size = 500
     model.train(
-        args.n_peaks if args.n_peaks is not None else 300000, 
-        500, 
-        25, 
-        balanced=False)
+        pks.train,
+        batch_size,
+        len(pks.train)/batch_size,
+        25,
+        pks.validation
+    )
     model.save('Multitest.h5')
     return
 

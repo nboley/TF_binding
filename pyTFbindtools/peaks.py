@@ -599,6 +599,30 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     def subset_tfs(self, tf_ids):
         return self.subset_tasks({'labels': tf_ids})
 
+def build_chipseq_data_for_sample(
+        genome_fasta_fname,
+        chipseq_peak_fnames, # indexed by tf name
+        pks, # if set to None then run genome wide
+        dnase_signal_fname=None,
+        chipseq_relaxed_peaks=None # indexed by tf name
+    ):
+    """Build a GenomicRegionsAndChIPSeqLabels data object. 
+
+    - one hot encodes sequence
+    - extracts DNASE signal for region
+    - labels peaks
+    """
+    # one hot encode sequences
+    
+    # merge regions with bed multi intersect
+    
+    # extract DNASE signal
+    
+    # return the object
+    
+    pass
+
+
 def load_chipseq_data_from_DB(
         roadmap_sample_id,
         factor_names,
@@ -632,8 +656,8 @@ def load_chipseq_data_from_DB(
 
     print "Coding peaks"
     from pyDNAbinding.DB import load_genome_metadata
-    genome_fasta = FastaFile("hg19.genome.fa")
-    #    load_genome_metadata(annotation_id).filename)
+    genome_fasta = FastaFile(
+        load_genome_metadata(annotation_id).filename)
     fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
     dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
 
@@ -760,7 +784,6 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
         self.seq_length = 2*half_peak_width
 
         try:
-            raise IOError, "TEST"
             self._load_cached_data()
             return
         except IOError:
