@@ -1083,7 +1083,7 @@ class JointBindingModel():
         print rv[:10]
         assert False
 
-    def evaluate(self, data_iterators):
+    def classification_results(self, data_iterators):
         # Print the validation results for this epoch:
         classification_results  = {}
         pred_prbs, labels, sample_ids = self.predict(data_iterators)
@@ -1143,7 +1143,7 @@ class JointBindingModel():
         print
         return train_err
 
-    def calc_loss(self, data_iterators):
+    def evaluate(self, data_iterators):
         loss = np.zeros(len(self._losses), dtype=float)
         for data in self.iter_correctly_ordered_data(data_iterators):
             # we can use the keys attriburte because _input_vars and 
@@ -1175,9 +1175,9 @@ class JointBindingModel():
             
             # test the model on the validation data
             if validation_data is not None:
-                validation_err = self.calc_loss(
+                validation_err = self.evaluate(
                     validation_data.iter_batches(batch_size))
-                classification_results  = self.evaluate(
+                classification_results  = self.classification_results(
                     validation_data.iter_batches(batch_size))
                 auPRC = 0.0
                 for key, vals in sorted(classification_results.iteritems()):
@@ -1260,25 +1260,27 @@ def chipseq_main():
         tf_names = pks.factor_names
         assert False
 
-    pks = PartitionedSamplePeaksAndChIPSeqLabels(
+    data = PartitionedSamplePeaksAndChIPSeqLabels(
         args.roadmap_sample_ids, 
         factor_names=args.tf_names, 
         max_n_samples=args.n_peaks, 
         validation_sample_ids=args.validation_roadmap_sample_ids)
 
     model = JointBindingModel(
-        pks.seq_length,
+        data.seq_length,
         args.tf_names 
     )
     batch_size = 500
     model.train(
-        pks.train,
+        data.train,
         batch_size,
-        len(pks.train)/batch_size,
+        len(data.train)/batch_size,
         25,
-        pks.validation
+        data.validation
     )
     model.save('Multitest.h5')
+    # add an h5 link to the data
+    # model.add_data(model)
     return
 
 def selex_main(n_samples, tf_name):

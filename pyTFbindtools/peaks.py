@@ -599,12 +599,27 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     def subset_tfs(self, tf_ids):
         return self.subset_tasks({'labels': tf_ids})
 
+def build_chipseq_labels(regions, peak_fnames):
+    pass
+
+def load_regions_from_bed(bed_fname):
+    """Returns regions record array.
+
+    """
+    pass
+
+def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
+    """Returns regions record array.
+
+    """
+    pass
+
 def build_chipseq_data_for_sample(
+        regions, 
         genome_fasta_fname,
-        chipseq_peak_fnames, # indexed by tf name
-        pks, # if set to None then run genome wide
+        chipseq_peaks_fnames, # indexed by tf name
         dnase_signal_fname=None,
-        chipseq_relaxed_peaks=None # indexed by tf name
+        chipseq_relaxed_peaks_fnames=None # indexed by tf name
     ):
     """Build a GenomicRegionsAndChIPSeqLabels data object. 
 
@@ -613,14 +628,58 @@ def build_chipseq_data_for_sample(
     - labels peaks
     """
     # one hot encode sequences
+    genome_fasta = FastaFile(genome_fasta_fname)
+    fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
     
-    # merge regions with bed multi intersect
+    # build the optimal labels
+    optimal_labels = build_chipseq_labels(pks, chipseq_peaks_fnames) 
+    labels = np.copy(idr_optimal_labels)
+    # build the relaxed labels
+    if chipseq_relaxed_peaks_fnames is not None:
+        relaxed_labels = build_chipseq_labels(pks, chipseq_relaxed_peaks_fnames) 
+        ambiguous_pks_mask = (
+            (optimal_labels < -0.5)
+            | (relaxed_labels < -0.5)
+            | (optimal_labels != relaxed_labels)
+        )
+        labels[ambiguous_pks_mask] = -1
     
     # extract DNASE signal
+    dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
     
     # return the object
     
     pass
+
+def load_chipseq_data_for_samples(
+        # if regions is a dictionary, then we assume that keys are sample_ids
+        # and we match regions with sample ids. Otherwise, we use the same
+        # regions for all samples
+        regions, 
+        # fasta fname
+        genome_fasta_fname,
+        # dictionary of dictionaries indexed by sample_id, then tf_name
+        chipseq_peaks_fnames,
+        # dictionary indexed by sample_id 
+        dnase_signal_fnames=None,
+        # dictionary of dictionaries indexed by sample_id, then tf_name
+        chipseq_relaxed_peaks_fnames=None
+    ):
+    # find the sample ids
+    # assert that there the same
+    data = {}
+    # fix regions to make it accept and index if it's not a dict
+    for sample_id in sample_ids:
+        data[sample_id] = build_chipseq_data_for_sample(
+            regions[], 
+            genome_fasta_fname, 
+            chipseq_peaks_fnames[sample_id], 
+            (None if dnase_signal_fnames 
+             is None else dnase_signal_fname[sample_id]),
+            (None if chipseq_relaxed_peaks_fnames is None 
+             else chipseq_relaxed_peaks_fnames[sample_id]),
+        )
+    return SamplePartitionedData(data)
 
 
 def load_chipseq_data_from_DB(
@@ -756,8 +815,10 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                  roadmap_sample_ids, 
                  factor_names, 
                  max_n_samples=None,
+                 validation_contig_ids=['chr8', 'chr9']
                  validation_sample_ids=None,
-                 annotation_id=1, 
+                 test_contig_ids=['chr1', 'chr2']
+                 annotation_id=1,
                  half_peak_width=500):
         # make sure that validation sample id is loaded
         if validation_sample_ids is not None:
@@ -806,39 +867,21 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
             if ( validation_sample_ids is None 
                  or sample_id not in validation_sample_ids ):
                 self.train[sample_id] = data.subset_pks_by_contig(
-                        contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
+                        contigs_to_exclude=(
+                            list(test_contig_ids) + list(validation_contig_ids))
                     )
                 
             print "Splitting out validation data"        
             if ( validation_sample_ids is None 
                  or sample_id in validation_sample_ids ):
                 self.validation[sample_id] = data.subset_pks_by_contig(
-                        contigs_to_include=('chr8', 'chr9')
+                        contigs_to_include=validation_contig_ids
                     )
 
         self.train = SamplePartitionedData(self.train)
         self.validation = SamplePartitionedData(self.validation)
         
         self.fname = self.cache_to_disk()
-
-    def iter_batches(
-            self, batch_size, data_type, repeat_forever=False, **kwargs):
-        if data_type == 'train':
-            return self.train.iter_batches(batch_size, repeat_forever, **kwargs)
-        elif data_type == 'validation':
-            return self.validation.iter_batches(batch_size, repeat_forever, **kwargs)
-        else:
-            raise ValueError, "Unrecognized data type '%s'" % data_type
-    
-    def iter_train_data(
-            self, batch_size, repeat_forever=False, **kwargs):
-        return self.train.iter_batches(batch_size, repeat_forever, **kwargs)
-
-    def iter_validation_data(
-            self, batch_size, repeat_forever=False, **kwargs):
-        return self.validation.iter_batches(
-            batch_size, repeat_forever, **kwargs)
-
 
 def test_read_data():
     data = load_chipseq_data('E123', ['CTCF',], 5000, 1, 500)
