@@ -14,6 +14,8 @@ from sklearn.cross_validation import StratifiedKFold
 
 from pysam import Tabixfile, FastaFile
 
+import pybedtools
+
 from pyDNAbinding.sequence import one_hot_encode_sequence
 from pyDNAbinding.deeplearning import GenomicRegionsAndLabels
 
@@ -82,6 +84,82 @@ def iter_summit_centered_peaks(original_peaks, half_peak_width):
 
     return
 
+def iter_expanded_regions(regions, min_size):
+    """Expand regions to cover at least min_size bases.
+
+    """
+    for region in regions:
+        start, stop = region.start, region.stop
+        pk_width = stop-start
+        if pk_width < min_size:
+            start = max(0, start-(pk_width-min_size)/2)
+            stop = start+min_size
+        yield NarrowPeak(region[0], start, stop)
+    return
+
+def iter_rounded_regions(regions, min_block_size):
+    """Expand regions so that region_size.(start/stop)%block_size == 0.
+
+    This is used to ensure that tiled regions dont intersect. 
+    """
+    for region in regions:
+        start, stop = region.start, region.stop
+        start = min_block_size*(start//min_block_size)
+        if stop%min_block_size > 0:
+            stop += (min_block_size - stop%min_block_size)
+        yield NarrowPeak(region[0], start, stop)
+    return
+
+def build_genomic_regions_array(regions):
+    interval_types = ('S64', 'i4', 'i4')
+    return np.array(
+        [x[:3] for x in regions], 
+        dtype=zip(('contig', 'start', 'stop'), interval_types)
+    )
+
+def build_tiled_regions(regions, core_size, flank_size, offset_size):
+    """Expand and iterate tiled regions.
+    
+    """
+    assert core_size%offset_size == 0
+    new_region_size = core_size + 2*flank_size
+    assert new_region_size%offset_size == 0
+    regions_str = "\n".join(
+        "\t".join(map(str, x[:3])) 
+        for x in iter_rounded_regions(
+            iter_expanded_regions(regions, new_region_size),
+            offset_size
+        )
+    )
+    regions_bed = pybedtools.BedTool(regions_str, from_string=True)
+    regions_bed = regions_bed.sort()
+    regions_bed = regions_bed.merge()
+    tiled_regions = []
+    tiled_regions_with_flank = []
+    for region in regions_bed:
+        region_size = region.stop-region.start
+        assert region_size%offset_size == 0
+        num_offsets = region_size//offset_size
+        for i in xrange(num_offsets):
+            start = region.start-flank_size+i*offset_size
+            if start < 0: continue
+            stop = region.start+core_size+flank_size+i*offset_size
+            tiled_regions_with_flank.append(NarrowPeak(region[0], start, stop))
+            tiled_regions.append(
+                NarrowPeak(region[0], start+flank_size, stop-flank_size))
+
+    regions_str = "\n".join(
+        "\t".join(map(str, x[:3])) for x in tiled_regions)
+    regions_bed = pybedtools.BedTool(regions_str, from_string=True)
+    regions_bed = regions_bed.sort()
+
+    regions_w_flank_str = "\n".join(
+        "\t".join(map(str, x[:3])) for x in tiled_regions_with_flank)
+    regions_w_flank_bed = pybedtools.BedTool(regions_w_flank_str, from_string=True)
+    regions_w_flank_bed = regions_w_flank_bed.sort()
+
+    return regions_bed, regions_w_flank_bed
+
 def iter_narrow_peaks(fp, max_n_peaks=None):
     if isinstance(fp, str):
         raise ValueError, "Expecting filepointer"
@@ -115,6 +193,13 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
             score, signalValue, pValue, qValue, idrValue, seq)
 
     return
+
+def iter_bed_regions(fp, max_n_regions=None):
+    for pk in iter_narrow_peaks(fp, max_n_regions):
+        yield pk
+
+def load_bed_regions(fp, max_n_regions=None):
+    return list(iter_bed_regions(fp, max_n_regions))
 
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
@@ -599,13 +684,79 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     def subset_tfs(self, tf_ids):
         return self.subset_tasks({'labels': tf_ids})
 
-def build_chipseq_labels(regions, peak_fnames):
+def _build_regions_labels(regions_bed, regions_w_flank_bed, feature_bed):
+    # we assume that regions_bed and regions_w_flank_bed are sorted
+    #feature_bed = feature_bed.sort()
+    print "Feature bed", feature_bed.fn
+    print feature_bed.head()
+    print "Regions bed", regions_bed.fn
+    print regions_bed.head()
+    core_overlap = regions_bed.intersect(feature_bed)
+    print core_overlap.head()
+    assert False
     pass
 
-def load_regions_from_bed(bed_fname):
-    """Returns regions record array.
+def load_cached_or_build_genomic_regions_bed(
+        regions, core_size, flank_size, offset_size):
+    regions_array = build_genomic_regions_array(regions)
+    regions_sha1_key = hashlib.sha1(regions_array.view(np.uint8)).hexdigest()
+    regions_w_flank_cache_fname = "cachedregions.%s.%i.%i.%i.w_flanks.bed" % (
+        regions_sha1_key, core_size, flank_size, offset_size)
+    regions_wo_flank_cache_fname = "cachedregions.%s.%i.%i.%i.wo_flanks.bed" % (
+        regions_sha1_key, core_size, flank_size, offset_size)
+    try:
+        regions_w_flank_bed = pybedtools.BedTool(regions_w_flank_cache_fname)
+        regions_bed = pybedtools.BedTool(regions_wo_flank_cache_fname)
+    except ValueError:
+        # Build a bed tools with the sorted regions
+        regions_bed, regions_w_flank_bed = build_tiled_regions(
+            regions, core_size, flank_size, offset_size)
+        regions_bed.saveas(regions_wo_flank_cache_fname)
+        regions_w_flank_bed.saveas(regions_w_flank_cache_fname)
+    
+    return regions_bed, regions_w_flank_bed
 
-    """
+def build_chipseq_labels(regions=None, peak_fnames=None, tf_id='T153674_1.02'):
+    ### Start debugging code
+    annotation_id = 1
+    roadmap_sample_id='E123'
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
+    dnase_peaks_fname = list(peak_fnames['dnase'])[0]
+    with optional_gzip_open(dnase_peaks_fname) as fp:
+        regions = load_bed_regions(fp)
+    ### END debugging code
+    
+    regions_bed, regions_w_flank_bed = load_cached_or_build_genomic_regions_bed(
+        regions, 400, 800, 50)
+
+    # ensure that the beds are sorted
+    bed_track_names = ['regions',]
+    bed_fps = [regions_bed,]
+    for tf_id, fname in sorted(peak_fnames.iteritems()):
+        print tf_id
+        print fname
+        fp = pybedtools.BedTool(fname)
+        labels = _build_regions_labels(regions_bed, regions_w_flank_bed, fp)
+        assert False
+    
+    res = pybedtools.BedTool().multi_intersect(i=[x.fn for x in bed_fps])
+    print res
+    assert False
+    # use multi bed intersect to label each region
+    
+    print regions_bed
+    assert False
+    chipseq_fnames = [fname for pk_type, fname in peak_fnames[tf_id] 
+                      if pk_type == 'optimal idr thresholded peaks']
+    print chipseq_fnames
+    assert False
+    # build a bed filename with all of the regions
+    
+    # use bedtools to intersect
+    
+    # build the labels matrix from the overlapping regions set
     pass
 
 def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
@@ -671,7 +822,7 @@ def load_chipseq_data_for_samples(
     # fix regions to make it accept and index if it's not a dict
     for sample_id in sample_ids:
         data[sample_id] = build_chipseq_data_for_sample(
-            regions[], 
+            regions, 
             genome_fasta_fname, 
             chipseq_peaks_fnames[sample_id], 
             (None if dnase_signal_fnames 
@@ -815,9 +966,9 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
                  roadmap_sample_ids, 
                  factor_names, 
                  max_n_samples=None,
-                 validation_contig_ids=['chr8', 'chr9']
+                 validation_contig_ids=['chr8', 'chr9'],
                  validation_sample_ids=None,
-                 test_contig_ids=['chr1', 'chr2']
+                 test_contig_ids=['chr1', 'chr2'],
                  annotation_id=1,
                  half_peak_width=500):
         # make sure that validation sample id is loaded
@@ -926,6 +1077,7 @@ def test():
     #test_sample_partitioned_data()
     #test_hash()
     #test_load_data_from_db()
+    build_chipseq_labels()
     pass
 
 if __name__ == '__main__':
