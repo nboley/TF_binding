@@ -28,6 +28,19 @@ from pyDNAbinding.misc import optional_gzip_open, load_fastq
 from pyDNAbinding.binding_model import FixedLengthDNASequences
 from pyDNAbinding.deeplearning import Data, SamplePartitionedData
 
+import hashlib
+def hashfile(afile, hasher=None, blocksize=65536):
+    if hasher is None: hasher = hashlib.md5()
+    buf = afile.read(blocksize)
+    while len(buf) > 0:
+        hasher.update(buf)
+        buf = afile.read(blocksize)
+    return hasher.hexdigest()
+
+def hash_bed_file(bed_fp):
+    with open(bed_fp.fn) as fp:
+        return hashfile(fp)
+
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
         if (mode=="r"):
@@ -525,14 +538,16 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
 
 def load_accessibility_data(sample_id, pks):
+    
+
+def load_accessibility_data(fname, regions):
     import sys
     sys.path.insert(0, "/users/nboley/src/bigWigFeaturize/")
     import bigWigFeaturize
     Region = namedtuple('Region', ['chrom', 'start', 'stop'])
-    fname = '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(sample_id)
-    pk_width = pks[0]['stop'] - pks[0]['start']
+    pk_width = regions[0]['stop'] - regions[0]['start']
     cached_fname = "cachedaccessibility.%s.%s.obj" % (
-        hashlib.sha1(pks.view(np.uint8)).hexdigest(),
+        hashlib.sha1(regions.view(np.uint8)).hexdigest(),
         hash(tuple(fname))
      )
     try:
@@ -545,7 +560,7 @@ def load_accessibility_data(sample_id, pks):
             [fname,],
             pk_width, 
             intervals=[
-                Region(pk['contig'], pk['start'], pk['stop']) for pk in pks
+                Region(pk['contig'], pk['start'], pk['stop']) for pk in regions
             ]
         )[:,0,0,:]
 
@@ -686,15 +701,26 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
 
 def _build_regions_labels(regions_bed, regions_w_flank_bed, feature_bed):
     # we assume that regions_bed and regions_w_flank_bed are sorted
-    #feature_bed = feature_bed.sort()
+    feature_bed = feature_bed.sort()
     print "Feature bed", feature_bed.fn
-    print feature_bed.head()
+    #print feature_bed.head()
     print "Regions bed", regions_bed.fn
-    print regions_bed.head()
-    core_overlap = regions_bed.intersect(feature_bed)
-    print core_overlap.head()
-    assert False
-    pass
+    #print regions_bed.head()
+    core_labels = []
+    for item in regions_bed.intersect(
+            b=feature_bed, c=True, f=0.5, F=0.5, e=True):
+        core_labels.append(int(item[3]))
+    core_labels = np.array(core_labels)
+
+    flank_labels = []
+    for item in regions_w_flank_bed.intersect(
+            b=feature_bed, c=True, f=1e-12, F=1e-12, e=True):
+        flank_labels.append(int(item[3]))
+    flank_labels = np.array(flank_labels)
+
+    labels = core_labels.copy()
+    labels[np.abs(core_labels - flank_labels) < 1e-6] = -1
+    return labels
 
 def load_cached_or_build_genomic_regions_bed(
         regions, core_size, flank_size, offset_size):
@@ -716,48 +742,22 @@ def load_cached_or_build_genomic_regions_bed(
     
     return regions_bed, regions_w_flank_bed
 
-def build_chipseq_labels(regions=None, peak_fnames=None, tf_id='T153674_1.02'):
-    ### Start debugging code
-    annotation_id = 1
-    roadmap_sample_id='E123'
-    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
-    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
-        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
-    dnase_peaks_fname = list(peak_fnames['dnase'])[0]
-    with optional_gzip_open(dnase_peaks_fname) as fp:
-        regions = load_bed_regions(fp)
-    ### END debugging code
-    
+def load_cached_or_build_chipseq_labels(
+        regions, peak_fname, bin_size, flank_size, offset_size):
     regions_bed, regions_w_flank_bed = load_cached_or_build_genomic_regions_bed(
-        regions, 400, 800, 50)
-
-    # ensure that the beds are sorted
-    bed_track_names = ['regions',]
-    bed_fps = [regions_bed,]
-    for tf_id, fname in sorted(peak_fnames.iteritems()):
-        print tf_id
-        print fname
-        fp = pybedtools.BedTool(fname)
+        regions, bin_size, flank_size, offset_size)
+    fp = pybedtools.BedTool(peak_fname)
+    data_hash = abs(hash((hash_bed_file(fp), 
+                          hash_bed_file(regions_bed), 
+                          hash_bed_file(regions_w_flank_bed))))
+    cached_fname = "cachedlabels.%s.npy" % data_hash
+    try:
+        return np.load(cached_fname)
+    except IOError:
         labels = _build_regions_labels(regions_bed, regions_w_flank_bed, fp)
-        assert False
-    
-    res = pybedtools.BedTool().multi_intersect(i=[x.fn for x in bed_fps])
-    print res
-    assert False
-    # use multi bed intersect to label each region
-    
-    print regions_bed
-    assert False
-    chipseq_fnames = [fname for pk_type, fname in peak_fnames[tf_id] 
-                      if pk_type == 'optimal idr thresholded peaks']
-    print chipseq_fnames
-    assert False
-    # build a bed filename with all of the regions
-    
-    # use bedtools to intersect
-    
-    # build the labels matrix from the overlapping regions set
-    pass
+        with open(cached_fname, "w") as ofp: 
+            np.save(ofp, labels)
+        return labels
 
 def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
     """Returns regions record array.
@@ -770,7 +770,10 @@ def build_chipseq_data_for_sample(
         genome_fasta_fname,
         chipseq_peaks_fnames, # indexed by tf name
         dnase_signal_fname=None,
-        chipseq_relaxed_peaks_fnames=None # indexed by tf name
+        chipseq_relaxed_peaks_fnames=None, # indexed by tf name
+        bin_size=400, 
+        flank_size=800, 
+        offset_size=50
     ):
     """Build a GenomicRegionsAndChIPSeqLabels data object. 
 
@@ -778,29 +781,42 @@ def build_chipseq_data_for_sample(
     - extracts DNASE signal for region
     - labels peaks
     """
+    tf_ids = sorted(chipseq_peaks_fnames)
+    if (chipseq_relaxed_peaks_fnames is not None and
+        sorted(chipseq_relaxed_peaks_fnames.iterkeys() != tf_ids):
+        raise ValueError, "The relaxed and optimal peak ids are different."
+
     # one hot encode sequences
     genome_fasta = FastaFile(genome_fasta_fname)
     fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
     
-    # build the optimal labels
-    optimal_labels = build_chipseq_labels(pks, chipseq_peaks_fnames) 
-    labels = np.copy(idr_optimal_labels)
-    # build the relaxed labels
-    if chipseq_relaxed_peaks_fnames is not None:
-        relaxed_labels = build_chipseq_labels(pks, chipseq_relaxed_peaks_fnames) 
-        ambiguous_pks_mask = (
-            (optimal_labels < -0.5)
-            | (relaxed_labels < -0.5)
-            | (optimal_labels != relaxed_labels)
-        )
-        labels[ambiguous_pks_mask] = -1
-    
+    # build the chipseq labels
+    labels = {}
+    for tf_id, fname in chipseq_peaks_fnames.iteritems():
+        labels[tf_id] = load_cached_or_build_chipseq_labels(pks, fname)
+        # we've already tested to make sure that the tf ids match
+        if chipseq_relaxed_peaks_fnames is not None:
+            relaxed_labels = load_cached_or_build_chipseq_labels(
+                pks, chipseq_relaxed_peaks_fnames[tf_id])
+            ambiguous_pks_mask = (
+                (labels[tf_id] < -0.5)
+                | (relaxed_labels < -0.5)
+                | (labels[tf_id] != relaxed_labels)
+            )
+            labels[tf_id][ambiguous_pks_mask] = -1
+    # concatanate the tf label arrays into a matrix
+    labels = np.concatanate([labels[tf_id] for tf_id in tf_ids], axis=0)
+
     # extract DNASE signal
     dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
     
     # return the object
-    
-    pass
+    return GenomicRegionsAndChIPSeqLabels(
+        regions=pks,
+        labels=labels,
+        inputs={'fwd_seqs': fwd_seqs, 'dnase_cov': dnase_cov[:,None,None,:]},
+        task_ids=tf_ids
+    )
 
 def load_chipseq_data_for_samples(
         # if regions is a dictionary, then we assume that keys are sample_ids
@@ -832,23 +848,63 @@ def load_chipseq_data_for_samples(
         )
     return SamplePartitionedData(data)
 
-
 def load_chipseq_data_from_DB(
         roadmap_sample_id,
         factor_names,
         max_n_samples,
         annotation_id,
-        half_peak_width):
+        bin_size=400,
+        flank_size=800,
+        offset_size=50):
     cached_fname = "cachedDBchipseq.%i.h5" % abs(hash((
         roadmap_sample_id, 
         tuple(factor_names), 
         max_n_samples, 
-        annotation_id, 
-        half_peak_width)))
+        annotation_id,
+        bin_size,
+        flank_size,
+        offset_size)))
     try:
         return GenomicRegionsAndChIPSeqLabels.load(cached_fname)
     except IOError:
         print "Building data"
+
+    # load the DNASE regions and ChIP-seq peak filenames
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
+    dnase_peaks_fname = list(peak_fnames['dnase'])[0]
+    del peak_fnames['dnase']
+    with optional_gzip_open(dnase_peaks_fname) as fp:
+        regions = load_bed_regions(fp)
+    
+    optimal_peak_fnames = defaultdict(list)
+    relaxed_peak_fnames = defaultdict(list)
+    for tf_id, labels_and_fnames in peak_fnames.iteritems():
+        for label, fname in labels_and_fnames:
+            pass
+
+    # load the genome fasta filename
+    from pyDNAbinding.DB import load_genome_metadata
+    genome_fasta_fname = load_genome_metadata(annotation_id).filename
+
+    # load the DNASE signal fname
+    dnase_fname = \
+        '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(
+            sample_id)
+
+    # load the chipseq peak fname
+    data = build_chipseq_data_for_sample(
+        regions, 
+        genome_fasta_fname,
+        chipseq_peaks_fnames, # indexed by tf name
+        dnase_signal_fname=None,
+        chipseq_relaxed_peaks_fnames=None, # indexed by tf name
+        bin_size=400, 
+        flank_size=800, 
+        offset_size=50
+    )
+
     
     # XXX search for cached data
     (pks, tf_ids, (idr_optimal_labels, relaxed_labels)
@@ -869,7 +925,8 @@ def load_chipseq_data_from_DB(
     genome_fasta = FastaFile(
         load_genome_metadata(annotation_id).filename)
     fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
-    dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
+    fname = '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(sample_id)
+    dnase_cov = load_accessibility_data(fname, pks)
 
     print "Filtering Peaks"    
     data = GenomicRegionsAndChIPSeqLabels(
@@ -1068,6 +1125,24 @@ def test_load_data_from_db():
         break
     return
 
+def test_build_chipseq_labels():
+    annotation_id = 1
+    roadmap_sample_id='E123'
+    tf_id='T153674_1.02'
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
+    dnase_peaks_fname = list(peak_fnames['dnase'])[0]
+    peak_fnames = [fname for pk_type, fname in peak_fnames[tf_id] 
+                      if pk_type == 'optimal idr thresholded peaks']
+    with optional_gzip_open(dnase_peaks_fname) as fp:
+        regions = load_bed_regions(fp)
+
+    bin_size, flank_size, offset_size = 400, 800, 50
+    labels = load_cached_or_build_chipseq_labels(
+        regions, peak_fnames[0], bin_size, flank_size, offset_size)
+    return
+
 def test():
     #test_rec_array()
     #test_read_data()
@@ -1077,7 +1152,7 @@ def test():
     #test_sample_partitioned_data()
     #test_hash()
     #test_load_data_from_db()
-    build_chipseq_labels()
+    test_build_chipseq_labels()
     pass
 
 if __name__ == '__main__':
