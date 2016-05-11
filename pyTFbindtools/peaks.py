@@ -5,6 +5,7 @@ from itertools import izip, chain
 import random
 import cPickle as pickle
 import ntpath
+import multiprocessing
 
 import numpy as np
 from sklearn.cross_validation import StratifiedKFold
@@ -12,7 +13,7 @@ from sklearn.cross_validation import StratifiedKFold
 from pysam import TabixFile, tabix_index
 from pybedtools import Interval, BedTool
 
-from grit.lib.multiprocessing_utils import Counter
+
 
 from cross_validation import iter_train_validation_splits
 
@@ -29,6 +30,17 @@ def getFileHandle(filename, mode="r"):
         return [getHandle(fname) for fname in fnames]
     else:
         return getHandle(filename)
+
+class Counter(object):
+    def __init__(self, initval=0):
+        self.val = multiprocessing.Value('i', initval)
+        self.lock = multiprocessing.Lock()
+
+    def return_and_increment(self):
+        with self.lock:
+            rv = self.val.value
+            self.val.value += 1
+        return rv
 
 NarrowPeakData = namedtuple(
     'NarrowPeak', ['contig', 'start', 'stop', 'summit', 
