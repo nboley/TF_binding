@@ -666,28 +666,25 @@ def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_seqs=True):
     pk_width = pks[0][2] - pks[0][1]
     shape = (len(pks), 1, 4, pk_width)
     if cache_seqs is True:
-        cached_fname = "memmappedseqs.%s.obj" % hashlib.sha1(
+        cached_fname = "cachedseqs.%s.h5" % hashlib.sha1(
             pks[:].view(np.uint8)).hexdigest()
         try:
-            return np.memmap(
-                cached_fname, dtype='float32', mode='r', shape=shape)
+            fp = h5py.File(cached_fname, 'r')
+            return fp['seqs']
         except IOError:
             pass
 
-    rv = np.memmap(cached_fname, dtype='float32', mode='w+', shape=shape)
+    fp = h5py.File(cached_fname, "w")
+    rv = fp.create_dataset("seqs", shape, dtype='float32', fillvalue=0.25)
     for i, data in enumerate(pks):
-        if i%100000 == 0: print "Coded %/%i peaks" % (i, len(pks))
+        if i%100000 == 0: print "Coded %i/%i peaks" % (i, len(pks))
         assert pk_width == data[2] - data[1], str((pk_width, data))
         seq = genome_fasta.fetch(str(data[0]), data[1], data[2])
         if len(seq) != pk_width: continue
         coded_seq = one_hot_encode_sequence(seq)
         rv[i,0,:,:] = coded_seq.swapaxes(0,1)
     # flush and close the mmapped file, and then re-open
-    rv.flush()
-    del rv
-
-    return np.memmap(
-        cached_fname, dtype='float32', mode='r', shape=shape)
+    return rv
 
 class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     @property
@@ -771,10 +768,10 @@ def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
     raise NotImplementedError
 
 def save_regions_array_to_bedtool(regions):
-    bed_fp = tempfile.NamedTemporaryFile("w+")
-    np.savetxt(bed_fp, regions, fmt="%s %i %i")
-    bed_fp.seek(0)
-    return pybedtools.BedTool(bed_fp)
+    bed_fp = tempfile.NamedTemporaryFile("w", dir="./", delete=False, suffix=".bed")
+    np.savetxt(bed_fp, regions, fmt="%s %i %i", delimiter="\t")
+    bed_fp.flush()
+    return pybedtools.BedTool(bed_fp.name)
 
 class Regions(object):
     def save(self, ofname):        
