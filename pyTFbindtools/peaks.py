@@ -7,6 +7,7 @@ import random
 import cPickle as pickle
 import hashlib
 import h5py
+import tempfile
 
 import numpy as np
 
@@ -662,34 +663,31 @@ def load_DNASE_coverage(sample_id, peaks):
     return rv[0,:,:]
 
 def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_seqs=True):
+    pk_width = pks[0][2] - pks[0][1]
+    shape = (len(pks), 1, 4, pk_width)
     if cache_seqs is True:
-        cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(
-            pks.view(np.uint8)).hexdigest()
+        cached_fname = "memmappedseqs.%s.obj" % hashlib.sha1(
+            pks[:].view(np.uint8)).hexdigest()
         try:
-            with open(cached_fname) as fp:
-                print "Loading cached seqs", cached_fname
-                return np.load(fp)
+            return np.memmap(
+                cached_fname, dtype='float32', mode='r', shape=shape)
         except IOError:
             pass
 
-    pk_width = pks[0][2] - pks[0][1]
-    rv = 0.25 * np.ones((len(pks), pk_width, 4), dtype='float32')
+    rv = np.memmap(cached_fname, dtype='float32', mode='w+', shape=shape)
     for i, data in enumerate(pks):
+        if i%100000 == 0: print "Coded %/%i peaks" % (i, len(pks))
         assert pk_width == data[2] - data[1], str((pk_width, data))
         seq = genome_fasta.fetch(str(data[0]), data[1], data[2])
         if len(seq) != pk_width: continue
         coded_seq = one_hot_encode_sequence(seq)
-        rv[i,:,:] = coded_seq
+        rv[i,0,:,:] = coded_seq.swapaxes(0,1)
+    # flush and close the mmapped file, and then re-open
+    rv.flush()
+    del rv
 
-    # add the extra dimension for theano
-    rv = np.swapaxes(rv, 1, 2)[:,None,:,:]
-
-    if cache_seqs is True:
-        with open(cached_fname, "w") as ofp:
-            print "Saving seqs"
-            np.save(ofp, rv)
-
-    return rv
+    return np.memmap(
+        cached_fname, dtype='float32', mode='r', shape=shape)
 
 class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     @property
@@ -772,9 +770,15 @@ def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
     """
     raise NotImplementedError
 
+def save_regions_array_to_bedtool(regions):
+    bed_fp = tempfile.NamedTemporaryFile("w+")
+    np.savetxt(bed_fp, regions, fmt="%s %i %i")
+    bed_fp.seek(0)
+    return pybedtools.BedTool(bed_fp)
+
 class Regions(object):
     def save(self, ofname):        
-        with h5py.File(fname, "w") as f:
+        with h5py.File(ofname, "w") as f:
             f['regions'] = self.regions
             f['regions_with_flank'] = self.regions_with_flank
         return
@@ -785,12 +789,10 @@ class Regions(object):
         return cls(f['regions'], f['regions_with_flank'])
 
     def __init__(self, regions, regions_with_flank=None):
-        assert isinstance(regions, np.ndarray)
+        assert isinstance(regions, (np.ndarray, h5py._hl.dataset.Dataset))
         self.regions = regions
         # build a bedtool corresponding to these regions 
-        regions_str = "\n".join("%s\t%i\t%i"%(x[0], x[1], x[2]) for x in regions)
-        self.regions_bed = pybedtools.BedTool(regions_str, from_string=True)
-        
+        self.regions_bed = save_regions_array_to_bedtool(self.regions)
         # if regions with flanks aren't specified, then set them to the 
         # full region set
         if regions_with_flank is None:
@@ -798,10 +800,8 @@ class Regions(object):
             self.regions_with_flank_bed = self.regions_bed
         else:
             self.regions_with_flank = regions_with_flank
-            regions_with_flank_str = "\n".join(
-                "%s\t%i\t%i"%(x[0], x[1], x[2]) for x in regions)
-            self.regions_with_flank_bed = pybedtools.BedTool(
-                regions_with_flank_str, from_string=True)
+            self.regions_with_flank_bed = save_regions_array_to_bedtool(
+                self.regions_with_flank)
         return
 
 def build_chipseq_data_for_sample(
@@ -820,7 +820,18 @@ def build_chipseq_data_for_sample(
     - extracts DNASE signal for region
     - labels peaks
     """
-    regions = build_tiled_regions(regions, bin_size, flank_size, offset_size)
+    tiled_regions_cached_fname = "cachedtiledregions.%s.h5" % (
+        hashlib.sha1(regions.view(np.uint8)).hexdigest())
+    try: 
+        print "Loading cached classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})".format(
+            bin_size, flank_size, offset_size)
+        regions = Regions.load(tiled_regions_cached_fname)
+    except IOError:
+        print "Loading cached regions failed... ",
+        print "Building classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})".format(
+            bin_size, flank_size, offset_size)
+        regions = build_tiled_regions(regions, bin_size, flank_size,offset_size)
+        regions.save(tiled_regions_cached_fname)
     
     tf_ids = sorted(chipseq_peaks_fnames)
     if (chipseq_relaxed_peaks_fnames is not None and
@@ -876,11 +887,13 @@ def load_chipseq_data_for_samples(
         # dictionary of dictionaries indexed by sample_id, then tf_name
         chipseq_relaxed_peaks_fnames=None
     ):
+    raise NotImplementedError
     # find the sample ids
     # assert that there the same
     assert isinstance(regions, Regions)
 
     data = {}
+    print "Building tiled regions"
     regions = build_tiled_regions(
         regions, core_size=400, flank_size=800, offset_size=50)
     # fix regions to make it accept and index if it's not a dict
@@ -915,16 +928,18 @@ def load_chipseq_data_from_DB(
     try:
         return GenomicRegionsAndChIPSeqLabels.load(cached_fname)
     except IOError:
-        print "Building data"
+        print "Loading cached file failed... building data set"
 
     # load the DNASE regions and ChIP-seq peak filenames
+    print "Loading peak filenames"
     from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db, load_tf_ids
     peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
         annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
     dnase_peaks_fname = list(peak_fnames['dnase'])[0]
+    print "Loading base regions"
     with optional_gzip_open(dnase_peaks_fname) as fp:
+        # XXXX
         regions = build_genomic_regions_array(load_bed_regions(fp))
-
     # for each tf_id in the desired list, find the peak fnames and then 
     # segregate into relaxed and optimal sets 
     optimal_peaks_fnames = defaultdict(list)
@@ -935,7 +950,8 @@ def load_chipseq_data_from_DB(
                 optimal_peaks_fnames[tf_id].append(fname)
             else:
                 relaxed_peaks_fnames[tf_id].append(fname)
-    
+
+    print "Organizing ChIP-seq peak files"
     # make sure there is only one unique optimal peak per tf_id. If there
     # are multiple, we take the peak file with the most peaks
     for key, fnames in optimal_peaks_fnames.items():
@@ -949,7 +965,6 @@ def load_chipseq_data_from_DB(
         optimal_peaks_fnames[key] = fname
     # convert the default dict into a standard dict
     optimal_peaks_fnames = dict(optimal_peaks_fnames)
-
     # merge all of the relaxed peaks into a single peak file
     for key, fnames in relaxed_peaks_fnames.items():
         if len(fnames) == 1:
