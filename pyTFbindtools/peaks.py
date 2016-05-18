@@ -67,23 +67,6 @@ def count_num_lines(filename):
 
     return n_lines
 
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
-    for i, pk in enumerate(peaks):
-        if pk.seq is not None:
-            seq = pk.seq
-        else:
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-        # skip sequences overrunning the contig boundary
-        if len(seq) != pk_width: continue
-        coded_seq = one_hot_encode_sequence(seq)
-        data[i,:,:] = coded_seq
-    return data
-
 class NarrowPeak(NarrowPeakData):
     @property
     def identifier(self):
@@ -561,14 +544,12 @@ def load_accessibility_data(fname, regions):
     Region = namedtuple('Region', ['chrom', 'start', 'stop'])
     pk_width = regions[0]['stop'] - regions[0]['start']
     cached_fname = "cachedaccessibility.%s.%s.obj" % (
-        hashlib.sha1(regions.view(np.uint8)).hexdigest(),
+        hashlib.sha1(regions[:].view(np.uint8)).hexdigest(),
         hash(tuple(fname))
      )
     try:
-        raise IOError, 'DONT CACHE'
-        with open(cached_fname) as fp:
-            print "Loading cached accessibility data"
-            rv = np.load(fp)
+        fp = h5py.File(cached_fname, 'r')
+        return fp['data']
     except IOError:
         rv = bigWigFeaturize.new(
             [fname,],
@@ -577,11 +558,8 @@ def load_accessibility_data(fname, regions):
                 Region(pk['contig'], pk['start'], pk['stop']) for pk in regions
             ]
         )[:,0,0,:]
-
-        with open(cached_fname, "w") as ofp:
-            print "Saving accessibility data"
-            np.save(ofp, rv)
-    
+        fp = h5py.File(cached_fname, "w")
+        rv = fp.create_dataset("data", rv.shape, dtype='float32')    
     return rv
 
 def load_chipseq_coverage(sample_id, tf_id, peaks):
@@ -666,12 +644,15 @@ def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_seqs=True):
     pk_width = pks[0][2] - pks[0][1]
     shape = (len(pks), 1, 4, pk_width)
     if cache_seqs is True:
+        print "Loading cached one-hot encoded sequences...",
         cached_fname = "cachedseqs.%s.h5" % hashlib.sha1(
             pks[:].view(np.uint8)).hexdigest()
         try:
             fp = h5py.File(cached_fname, 'r')
+            print "SUCEEDED"
             return fp['seqs']
         except IOError:
+            print "FAILED"
             pass
 
     fp = h5py.File(cached_fname, "w")
@@ -683,6 +664,7 @@ def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_seqs=True):
         if len(seq) != pk_width: continue
         coded_seq = one_hot_encode_sequence(seq)
         rv[i,0,:,:] = coded_seq.swapaxes(0,1)
+    fp.flush()
     # flush and close the mmapped file, and then re-open
     return rv
 
@@ -712,9 +694,8 @@ def _build_regions_labels_from_beds(
     # we assume that regions_bed and regions_w_flank_bed are sorted
     feature_bed = feature_bed.sort()
     print "Feature bed", feature_bed.fn
-    #print feature_bed.head()
     print "Regions bed", regions_bed.fn
-    #print regions_bed.head()
+    print "Building labels ...",
     core_labels = []
     for item in regions_bed.intersect(
             b=feature_bed, c=True, f=0.5, F=0.5, e=True):
@@ -729,6 +710,7 @@ def _build_regions_labels_from_beds(
 
     labels = core_labels.copy()
     labels[np.abs(core_labels - flank_labels) < 1e-6] = -1
+    print "FINISHED Building labels"
     return labels
 
 def load_cached_or_build_tiled_genomic_regions(
@@ -769,7 +751,7 @@ def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
 
 def save_regions_array_to_bedtool(regions):
     bed_fp = tempfile.NamedTemporaryFile("w", dir="./", delete=False, suffix=".bed")
-    np.savetxt(bed_fp, regions, fmt="%s %i %i", delimiter="\t")
+    np.savetxt(bed_fp, regions, fmt="%s\t%i\t%i")
     bed_fp.flush()
     return pybedtools.BedTool(bed_fp.name)
 
@@ -820,15 +802,17 @@ def build_chipseq_data_for_sample(
     tiled_regions_cached_fname = "cachedtiledregions.%s.h5" % (
         hashlib.sha1(regions.view(np.uint8)).hexdigest())
     try: 
-        print "Loading cached classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})".format(
-            bin_size, flank_size, offset_size)
+        print "Loading cached classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})... ".format(
+            bin_size, flank_size, offset_size),
         regions = Regions.load(tiled_regions_cached_fname)
     except IOError:
-        print "Loading cached regions failed... ",
+        print " FAILED",
         print "Building classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})".format(
-            bin_size, flank_size, offset_size)
+            bin_size, flank_size, offset_size),
         regions = build_tiled_regions(regions, bin_size, flank_size,offset_size)
         regions.save(tiled_regions_cached_fname)
+    else:
+        print " SUCCEEDED"
     
     tf_ids = sorted(chipseq_peaks_fnames)
     if (chipseq_relaxed_peaks_fnames is not None and
@@ -836,10 +820,12 @@ def build_chipseq_data_for_sample(
         raise ValueError, "The relaxed and optimal peak ids are different."
 
     # one hot encode sequences
+    print "Encoding sequence" 
     genome_fasta = FastaFile(genome_fasta_fname)
     fwd_seqs = one_hot_encode_peaks_sequence(
         regions.regions_with_flank, genome_fasta)
-    
+
+    print "Building ChIP-seq labels"     
     # build the chipseq labels
     labels = {}
     for tf_id, fname in chipseq_peaks_fnames.iteritems():
@@ -859,6 +845,7 @@ def build_chipseq_data_for_sample(
     if len(labels.shape) == 1: labels = labels[:,None]
 
     # extract DNASE signal
+    print "Loading accessibility data"
     dnase_cov = load_accessibility_data(
         dnase_signal_fname, regions.regions_with_flank)
     
@@ -866,7 +853,7 @@ def build_chipseq_data_for_sample(
     return GenomicRegionsAndChIPSeqLabels(
         regions=regions.regions_with_flank,
         labels=labels,
-        inputs={'fwd_seqs': fwd_seqs, 'dnase_cov': dnase_cov[:,None,None,:]},
+        inputs={'fwd_seqs': fwd_seqs, 'dnase_cov': dnase_cov},
         task_ids=tf_ids
     )
 
@@ -935,7 +922,6 @@ def load_chipseq_data_from_DB(
     dnase_peaks_fname = list(peak_fnames['dnase'])[0]
     print "Loading base regions"
     with optional_gzip_open(dnase_peaks_fname) as fp:
-        # XXXX
         regions = build_genomic_regions_array(load_bed_regions(fp))
     # for each tf_id in the desired list, find the peak fnames and then 
     # segregate into relaxed and optimal sets 
@@ -1223,7 +1209,7 @@ def test():
     #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
     #test_sample_partitioned_data()
     #test_hash()
-    test_load_data_from_db()
+    #test_load_data_from_db()
     #test_build_chipseq_labels()
     pass
 
