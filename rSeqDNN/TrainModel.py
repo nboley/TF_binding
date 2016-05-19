@@ -29,7 +29,6 @@ from get_signal import (
     merge_sample_specific_bigwigs
 )
 from KerasModel import KerasModel, load_model, KerasModelMultitask
-from grid_search import MOESearch
 
 def parse_args():
     parser = init_prediction_script_argument_parser(
@@ -255,6 +254,7 @@ def main_train(main_args, train_args):
         print 'signal_arrays_shapes: ', signal_arrays_shapes
         print "shape of the labels: ", np.shape(fitting_labels)
         if run_grid_search:
+            from grid_search import MOESearch
             param_grid  = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
                                    [[1,5], [10, 60], [8, 30], [5,50], [0, 0.01], [0, 0.5]]))
             param_types = dict(zip(['num_conv_layers','num_conv', 'conv_width', 'maxpool_size', 'l1_decay', 'dropout'],
