@@ -539,11 +539,12 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
 
 def load_accessibility_data(fname, regions):
     import sys
-    sys.path.insert(0, "/users/nboley/src/bigWigFeaturize/")
+    sys.path.insert(0, "/users/nboley/src/bigWigFeaturize_NASA/")
     import bigWigFeaturize
+    #from bigWigFeaturize import bigWigFeaturize
     Region = namedtuple('Region', ['chrom', 'start', 'stop'])
     pk_width = regions[0]['stop'] - regions[0]['start']
-    cached_fname = "cachedaccessibility.%s.%s.obj" % (
+    cached_fname = "cachedaccessibility.%s.%s.h5" % (
         hashlib.sha1(regions[:].view(np.uint8)).hexdigest(),
         hash(tuple(fname))
      )
@@ -850,6 +851,7 @@ def build_chipseq_data_for_sample(
         dnase_signal_fname, regions.regions_with_flank)
     
     # return the object
+    print "Building data object"
     return GenomicRegionsAndChIPSeqLabels(
         regions=regions.regions_with_flank,
         labels=labels,
