@@ -120,7 +120,7 @@ def set_ambiguous_labels(labels, scores, threshold):
 
 class KerasModelBase():
     def __init__(self, arrays_shapes=None, model_fname=None,
-                 multi_mode=False, target_metric='recall_at_05_fdr',
+                 multi_mode=False, target_metric='auPRC',
                  batch_size=200, num_conv_layers=5, l1_decay=0,
                  num_conv=25, conv_height=5, conv_width=10, dropout=0.2,
                  maxpool_size=25, maxpool_stride=25, gru_size=35, tdd_size=45,
@@ -514,7 +514,7 @@ def sample_weights(y):
 
 class KerasModelMultitask():
     def __init__(self, num_tasks, arrays_shapes=None, model_fname=None,
-                 multi_mode=False, target_metric='recall_at_05_fdr',
+                 multi_mode=False, target_metric='auPRC',
                  batch_size=200, num_conv_layers=5, l1_decay=0,
                  num_conv=25, conv_height=5, conv_width=10, dropout=0.2,
                  maxpool_size=25, maxpool_stride=25, gru_size=35, tdd_size=45,
