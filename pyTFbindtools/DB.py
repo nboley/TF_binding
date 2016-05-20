@@ -56,7 +56,7 @@ def find_or_insert_ENCODE_experiment(
     
     # add the experiment data
     query = "INSERT INTO encode_experiments " \
-          + "(encode_experiment_id, target, sample_type, assay) " \
+          + "(encode_experiment_id, target_id, sample_type, assay) " \
           + "VALUES (%s, %s, %s, %s)"
     cur.execute(query, [
         encode_exp_id, target_id, encode_sample_type, assay])
@@ -156,6 +156,48 @@ def insert_chipseq_experiment_into_db(exp_id):
             raise
             pass
     conn.commit()
+    return
+
+
+def insert_ENCODE_peak_file_into_db(file_data):
+    """Insert ENCODE peak file into the database.
+    """
+    cur = conn.cursor()
+    # add the peak data
+    query = """
+    INSERT INTO encode_chipseq_peak_files
+    (encode_experiment_id, 
+     bsid, 
+     rep_key, 
+     file_format, 
+     file_format_type, 
+     file_output_type, 
+     remote_filename, 
+     annotation)
+    VALUES 
+    (%s, %s, %s, %s, %s, %s, %s, %s)
+    RETURNING encode_chipseq_peak_key
+    """
+    assert file_data.assembly == 'hg19'
+    try: 
+        cur.execute(query, [
+            file_data.exp_id, 
+            file_data.bsid, 
+            file_data.rep_key,
+            file_data.file_format,
+            file_data.file_format_type,
+            file_data.output_type,
+            file_data.file_loc,
+            1])
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        print "ROLLBACK", file_data.exp_id
+    else:
+        res = cur.fetchall()
+        assert len(res) == 1
+        assert len(res[0]) == 1
+        conn.commit()
+        return res[0][0]
     return
 
 def insert_ENCODE_bam_into_db(file_data):

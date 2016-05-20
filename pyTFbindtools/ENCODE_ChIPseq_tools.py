@@ -18,7 +18,7 @@ from multiprocessing import Value
 
 import psycopg2
 
-from DB import conn, find_cisbp_tfids, insert_ENCODE_bam_into_db, find_or_insert_ENCODE_experiment
+from DB import conn, find_cisbp_tfids, insert_ENCODE_bam_into_db, find_or_insert_ENCODE_experiment, insert_ENCODE_peak_file_into_db
 ExperimentFile = namedtuple('ExperimentFile', [
     'exp_id', 'assay',
     'target_id', 
@@ -293,7 +293,7 @@ def find_ENCODE_DNASE_experiment_ids(assemblies):
     # rather than the string iterator
     if isinstance(assemblies, str): assemblies = [assemblies,]
     
-    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=DNase-seq&award.project=ENCODE&{}&limit=all&format=json&files.file_type=bam".format(
+    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=DNase-seq&{}&limit=all".format(
         "&".join("assembly=%s"%x for x in assemblies) )
     response = requests.get(URL, headers={'accept': 'application/json'})
     response_json_dict = response.json()
@@ -479,7 +479,7 @@ def add_chipseq_controls():
     query = "select distinct encode_experiment_id from encode_chipseq_bam_files NATURAL JOIN encode_chipseq_experiments where control is NULL and target not IN (select chipseq_target_id from chipseq_targets where tf_name = 'Control');"
     cur.execute(query, [])
     experiment_ids = [ x[0] for x in cur.fetchall()]
-    for exp_index, experiment_id in enumerate(experiment_ids): #find_ENCODE_chipseq_experiment_ids('hg19'):
+    for exp_index, experiment_id in enumerate(experiment_ids):
         print exp_index, len(experiment_ids), experiment_id
         for control in find_ENCODE_DCC_experiment_controls(experiment_id):
             try: files_data = list(find_ENCODE_DCC_bams(control))
@@ -545,25 +545,31 @@ def add_chipseq_controls():
 
 
 def sync_dnase_assays(annotation):
-    exp_ids = list(find_ENCODE_DNASE_experiment_ids(annotation))
+    exp_ids = list(find_ENCODE_DNASE_experiment_ids(annotation)) + list(
+        find_ENCODE_chipseq_experiment_ids(annotation))
     for i, exp_id in enumerate(exp_ids):
-        files_data = list(find_ENCODE_DCC_bams(exp_id))
+        files_data = list(find_ENCODE_DCC_experiment_files(exp_id))
         print i, len(exp_ids), exp_id
         for file_data in files_data:
             if file_data.assembly != annotation: continue
-            if file_data.file_format != 'bam': continue
             assert file_data.exp_id == exp_id
             exp_id = find_or_insert_ENCODE_experiment(
                 exp_id, file_data.sample_type, file_data.assay, file_data.target_id)
-            try: insert_ENCODE_bam_into_db(file_data)
-            except psycopg2.IntegrityError: pass
-
+            if file_data.file_format == 'bam': 
+                try: insert_ENCODE_bam_into_db(file_data)
+                except psycopg2.IntegrityError: pass
+            elif file_data.output_type in (
+                    'peaks', 'optimal idr thresholded peaks'):
+                if file_data.file_format == 'bed':
+                    insert_ENCODE_peak_file_into_db(file_data)
+        
         controls = find_ENCODE_DCC_experiment_controls(exp_id)
 
 from DB import sync_ENCODE_bam_files
 def main():
-    #sync_dnase_assays('hg19')
-    sync_ENCODE_bam_files()
+    annotation = 'hg19'
+    sync_dnase_assays('hg19')
+    #sync_ENCODE_bam_files()
 
 if __name__ == '__main__':
     main()
