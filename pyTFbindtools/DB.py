@@ -7,6 +7,55 @@ from itertools import chain
 
 ################################################################################
 #
+# Find metadata about ENCODE ChIP-Seq Targets
+#
+################################################################################
+import requests, json
+import urllib2
+import re
+TargetInfo = namedtuple('TargetInfo', [
+    'target_id', 
+    'organism',
+    'tf_name', 
+    'uniprot_ids',
+    'gene_name',
+    'ensemble_ids',
+    'cisbp_id'])
+
+def find_target_info(target_id):
+    URL = "https://www.encodeproject.org/{}?format=json".format(target_id)
+    response = requests.get(URL, headers={'accept': 'application/json'})
+    response_json_dict = response.json()
+    organism = response_json_dict['organism']['scientific_name'].replace(" ", "_")
+    tf_name = response_json_dict['label']
+    uniprot_ids = [x[10:] for x in response_json_dict['dbxref']
+                   if x.startswith("UniProtKB:")]
+    gene_name = response_json_dict['gene_name']
+    ensemble_ids = sorted(
+        get_ensemble_genes_associated_with_uniprot_id(uniprot_id) 
+        for uniprot_id in uniprot_ids)
+    cisbp_ids = find_cisbp_tfids(organism, tf_name, uniprot_ids, ensemble_ids)
+    if len(cisbp_ids) == 0:
+        cisbp_id = None
+    else:
+        assert len(cisbp_ids) == 1
+        cisbp_id = cisbp_ids[0]
+    rv = TargetInfo(target_id, organism, 
+                    tf_name, uniprot_ids, 
+                    gene_name, ensemble_ids, 
+                    cisbp_id)
+    return rv
+
+def get_ensemble_genes_associated_with_uniprot_id(uniprot_id):
+    ens_id_pat = '<property type="gene ID" value="(ENS.*?)"/>'
+    res = urllib2.urlopen(
+        "http://www.uniprot.org/uniprot/%s.xml" % uniprot_id)
+    #print( res.read().decode('utf-8') )
+    gene_ids = set(re.findall(ens_id_pat, res.read().decode('utf-8')))
+    return sorted(gene_ids)
+
+################################################################################
+#
 # Insert ENCODE meta-data into the local database
 #
 ################################################################################
@@ -30,7 +79,7 @@ def find_or_insert_ENCODE_experiment(
     # find target id 
     if encode_target_id is not None:
         query = """
-        SELECT chipseq_target_id 
+        SELECT target_id 
           FROM chipseq_targets
          WHERE encode_target_id = %s
         """
@@ -41,7 +90,7 @@ def find_or_insert_ENCODE_experiment(
         # XXX this section is untested
         if len(res) == 0:
             target_info = find_target_info(encode_target_id)
-            query = "INSERT INTO chipseq_targets (encode_target_id, tf_id, organism, tf_name, uniprot_ids, ensemble_gene_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING chipseq_target_id"
+            query = "INSERT INTO chipseq_targets (encode_target_id, tf_id, organism, tf_name, uniprot_ids, ensemble_gene_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING target_id"
             cur.execute(query, [encode_target_id, 
                                 target_info.cisbp_id, 
                                 target_info.organism,
