@@ -18,11 +18,13 @@ from multiprocessing import Value
 
 import psycopg2
 
-from DB import conn, find_cisbp_tfids, insert_ENCODE_bam_into_db, find_or_insert_ENCODE_experiment, insert_ENCODE_peak_file_into_db
+from DB import conn, find_cisbp_tfids, insert_ENCODE_bam_into_db, \
+    find_or_insert_ENCODE_experiment, insert_ENCODE_peak_file_into_db
 ExperimentFile = namedtuple('ExperimentFile', [
     'exp_id', 'assay',
     'target_id', 
     'sample_type', 'rep_key', 'bsid', 
+    'paired_end', 'paired_with',
     'assembly',
     'file_format', 'file_format_type', 'output_type', 'file_loc'])
 
@@ -52,11 +54,10 @@ def find_ENCODE_DCC_experiment_metadata(experiment_id):
     treatment_term_names = set()
     for treatment in treatments:
         treatment_term_names.update(x['treatment_term_name'] for x in treatment)
-    assert len(treatment_term_names) <= 1
     return ( response_json_dict['lab'], 
              response_json_dict['description'], 
-             (next(iter(treatment_term_names)) 
-              if len(treatment_term_names) ==1 
+             (sorted(treatment_term_names) 
+              if len(treatment_term_names) > 0 
               else None)
             )
 
@@ -91,7 +92,7 @@ def find_ENCODE_DCC_experiment_files(experiment_id):
     response_json_dict = response.json()
 
     assay = response_json_dict['assay_term_name']
-    
+
     try: target_id = response_json_dict['target']['@id']
     except KeyError: target_id = None
 
@@ -120,11 +121,15 @@ def find_ENCODE_DCC_experiment_files(experiment_id):
         file_loc = file_rec['href']
         try: assembly = file_rec['assembly']
         except KeyError: assembly = None 
-            
+        try: read_pair = file_rec['paired_end']
+        except KeyError: read_pair=None
+        try: paired_with = file_rec['paired_with']
+        except KeyError: paired_with=None
         yield ExperimentFile(
             experiment_id, assay,
             target_id, 
             sample_type, rep_key, bsid,
+            read_pair, paired_with,
             assembly,
             file_format, file_format_type, output_type, file_loc)
 
@@ -141,6 +146,36 @@ def find_ENCODE_DCC_bams(experiment_id):
         if experiment_file.file_format == 'bam':
             yield experiment_file
     return
+
+def find_ENCODE_DCC_fastqs(experiment_id):
+    """Iterate over all bams associated with an ENCODE experiment.
+
+    Arguments:
+    experiment_id: ENCODE experiment to find bams for. 
+    Returns: iterator yielding ExperimentFile objects
+    """
+    single_end = {}
+    pair1 = {}
+    pair2 = {}
+    try: 
+        experiment_files = list(find_ENCODE_DCC_experiment_files(experiment_id))
+    except Exception:
+        print >> sys.stderr, experiment_id
+        raise
+    for experiment_file in experiment_files:
+        if experiment_file.file_format == 'fastq':
+            if experiment_file.paired_end is None:
+                single_end[experiment_file.file_loc.split("/")[2]] = experiment_file
+            elif experiment_file.paired_end == '1':
+                pair1[experiment_file.file_loc.split("/")[2]] = experiment_file
+            elif experiment_file.paired_end == '2':
+                pair2[experiment_file.file_loc.split("/")[2]] = experiment_file
+            else:
+                assert False
+    pair1 = sorted(pair1.values())
+    pair2 = [pair2[x.paired_with.split("/")[2]] for x in pair1]
+    data = (sorted(single_end.values()), pair1, pair2)
+    return data
 
 def find_ENCODE_DCC_peaks(experiment_id):
     """Iterate over all bed peak files associated with an experiment.
@@ -459,10 +494,103 @@ def sync_dnase_assays(annotation):
         
         controls = find_ENCODE_DCC_experiment_controls(exp_id)
 
+def sync_treatments(exp_ids):
+    from DB import conn
+    cur = conn.cursor()
+    query = "INSERT INTO treatments VALUES (%s, %s)"
+    for i, exp_id in enumerate(exp_ids):
+        _, _, treatments = find_ENCODE_DCC_experiment_metadata(exp_id)
+        print i, len(exp_ids), exp_id, treatments
+        if treatments is None: continue
+        for treatment in treatments:
+            cur.execute(query, [exp_id, treatment])
+    conn.commit()
+
+def build_fastq_str(all_file_objs):
+    rv = [[], [], []]
+    for file_objs in all_file_objs:
+        for i, data in enumerate(file_objs):
+            rv[i].extend(BASE_URL[:-1] + x.file_loc for x in data)
+    return ";".join(",".join(x) for x in rv)
+
+def build_anshuls_list(annotation):
+    from DB import conn
+    cur = conn.cursor()
+    query = """
+    SELECT tf_name, 
+           family_name,
+           sample_type, 
+           treatments, 
+           encode_experiment_id, 
+           dnase_encode_experiment_ids
+      FROM encode_chipseq_experiments_with_dnase NATURAL JOIN tfs NATURAL JOIN tf_families;
+    """
+    cur.execute(query, [])
+    res = cur.fetchall()
+    for i, (tf_name,
+         family_name,
+         sample_type, 
+         treatments, 
+         chipseq_exp_id, 
+         dnase_encode_experiment_ids) in enumerate(res):
+        print >> sys.stderr, i, len(res), chipseq_exp_id
+        try:
+            #if treatments[0] is None: continue
+            #print chipseq_exp_id,
+            lab, _, _ = find_ENCODE_DCC_experiment_metadata(chipseq_exp_id)
+            input_exp_ids = find_ENCODE_DCC_experiment_controls(chipseq_exp_id)
+            #1. TF name -- tfname
+            #2. TF family name -- family_name
+            #3. Cell type -- sample_type
+            #4. Treatment -- dont have
+            #5. Lab -- dont have
+            #6. comma separated URLs to all ChIP FASTQs
+            #7. comma separated URLs to all Input FASTQs
+            #8. comma separated URLs to DNase FASTQs
+            #9. ChIP sample ENCODE ID -- chipseq_exp_id
+            #10. Input sample ENCODE ID -- controls_exp_ids
+            #11. DNase sample ENCODE ID -- dnase_exp_id (w/ matching cell_type)
+            assert len(treatments) == 1
+            treatments_str = (
+                'None' if treatments[0] is None 
+                else treatments[0].decode('utf-8'))
+            chipseq_fastqs_str = build_fastq_str(
+                [find_ENCODE_DCC_fastqs(chipseq_exp_id),])        
+            input_fastqs_str = build_fastq_str(
+                find_ENCODE_DCC_fastqs(exp_id)
+                for exp_id in input_exp_ids
+            )
+            dnase_fastqs_str = build_fastq_str(
+                find_ENCODE_DCC_fastqs(exp_id)
+                for exp_id in dnase_encode_experiment_ids
+            )
+            data = [
+                tf_name,
+                family_name,
+                sample_type, 
+                treatments_str, 
+                lab['title'], 
+                chipseq_fastqs_str, 
+                input_fastqs_str, 
+                dnase_fastqs_str, 
+                chipseq_exp_id, 
+                ",".join(input_exp_ids), 
+                ",".join(dnase_encode_experiment_ids)
+            ]
+            print u"\t".join(data)
+        except:
+            continue
+        #break
+
 from DB import sync_ENCODE_bam_files
 def main():
     annotation = 'hg19'
-    sync_dnase_assays('hg19')
+    #sync_treatments(
+    #    list(find_ENCODE_DNASE_experiment_ids(annotation)) + 
+    #    list(find_ENCODE_chipseq_experiment_ids(annotation)) 
+    #)
+    build_anshuls_list(annotation)
+    #sync_dnase_assays('annotation')
     #sync_ENCODE_bam_files()
 
 if __name__ == '__main__':
