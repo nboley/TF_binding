@@ -3,7 +3,7 @@ random.seed(1701)
 import os
 import numpy as np
 from collections import OrderedDict
-from pysam import FastaFile
+from pysam import Fastafile
 
 try:
     from rSeqDNN import init_prediction_script_argument_parser
@@ -72,7 +72,7 @@ def parse_args():
                     help='treat different features as separate modes')
     train_parser.add_argument('--jitter-peaks-by', type=str, default=None,
                               help='10,-15,5 will jitter peaks by 10, -15, and 5 ')
-    train_parser.add_argument('--target-metric', type=str, default='recall_at_05_fdr',
+    train_parser.add_argument('--target-metric', type=str, default='auPRC',
                               help='metric used for model selection. '\
                               'supported options: auROC, auPRC, F1, recall_at_05_fdr'\
                               'recall_at_10_fdr, recall_at_05_fdr.')
@@ -100,7 +100,7 @@ def parse_args():
     if args.genome_fasta is None:
         assert args.annotation_id is not None
         from pyTFbindtools.DB import load_genome_metadata
-        genome_fasta = FastaFile(
+        genome_fasta = Fastafile(
             load_genome_metadata(args.annotation_id).filename) 
     else:
         genome_fasta = args.genome_fasta
@@ -284,7 +284,7 @@ def main_train(main_args, train_args):
                     model = KerasModelMultitask(np.shape(fitting_labels)[-1], signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
                 else:
                     model = KerasModel(signal_arrays_shapes, target_metric=target_metric, multi_mode=multi_mode)
-            model_ofname_infix = valid.samples[0] if len(peaks_and_labels.samples[0])>0 else str(fold_index+1)
+            model_ofname_infix = "%s.%s.%s" % (valid.samples[0], '_'.join(valid.contigs), '_'.join(stopping_data.contigs))
             fit_model = model.train(
                 fitting_signal_arrays, fitting_labels, fitting_scores,
                 stopping_signal_arrays, stopping_labels, stopping_scores,
