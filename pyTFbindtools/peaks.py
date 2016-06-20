@@ -10,7 +10,7 @@ import multiprocessing
 import numpy as np
 from sklearn.cross_validation import StratifiedKFold
 
-from pysam import TabixFile, tabix_index
+from pysam import Tabixfile, tabix_index
 from pybedtools import Interval, BedTool
 
 
@@ -529,13 +529,13 @@ def label_and_score_peak_with_chipseq_peaks(
             fp = chipseq_peaks_tabix_file_cache[(pid, fname)]
         except KeyError:
             try:
-                fp = TabixFile(fname)
+                fp = Tabixfile(fname)
             except IOError:
                 unzipped_fname = '.'.join(
                     fname.split('.')[:-1]) if fname.endswith('.gz') else fname
                 sorted_bed = BedTool(fname).sort().saveas(unzipped_fname)
                 tabix_fname = tabix_index(unzipped_fname, preset="bed", force=True)
-                fp = TabixFile(tabix_fname)
+                fp = Tabixfile(tabix_fname)
             chipseq_peaks_tabix_file_cache[(pid, fname)] = fp
 
         # if the contig isn't in the contig list, then it
