@@ -6,15 +6,19 @@ from itertools import izip, chain
 import random
 import cPickle as pickle
 import hashlib
+import h5py
+import tempfile
 
 import numpy as np
-
 
 from sklearn.cross_validation import StratifiedKFold
 
 from pysam import Tabixfile, FastaFile
 
+import pybedtools
+
 from pyDNAbinding.sequence import one_hot_encode_sequence
+from pyDNAbinding.deeplearning import GenomicRegionsAndLabels
 
 from grit.lib.multiprocessing_utils import Counter
 from grit.files.reads import ChIPSeqReads, DNASESeqReads, MergedReads
@@ -22,9 +26,20 @@ from grit.files.reads import ChIPSeqReads, DNASESeqReads, MergedReads
 from cross_validation import iter_train_validation_splits
 
 from pyDNAbinding.misc import optional_gzip_open, load_fastq
-from pyDNAbinding.binding_model import FixedLengthDNASequences
+from pyDNAbinding.deeplearning import Data, SamplePartitionedData
 
-from pyTFbindtools.DB import load_tf_ids, load_tf_names_for_sample
+import hashlib
+def hashfile(afile, hasher=None, blocksize=65536):
+    if hasher is None: hasher = hashlib.md5()
+    buf = afile.read(blocksize)
+    while len(buf) > 0:
+        hasher.update(buf)
+        buf = afile.read(blocksize)
+    return hasher.hexdigest()
+
+def hash_bed_file(bed_fp):
+    with open(bed_fp.fn) as fp:
+        return hashfile(fp)
 
 def getFileHandle(filename, mode="r"):
     if filename.endswith('.gz') or filename.endswith('.gzip'):
@@ -39,22 +54,18 @@ NarrowPeakData = namedtuple(
                    'score', 'signalValue', 'pValue', 'qValue', 'idrValue', 'seq'])
 NarrowPeakData.__new__.__defaults__ = (None,) * len(NarrowPeakData._fields)
 
-def encode_peaks_sequence_into_binary_array(peaks, fasta):
-    # find the peak width
-    pk_width = peaks[0].pk_width
-    # make sure that the peaks are all the same width
-    assert all(pk.pk_width == pk_width for pk in peaks)
-    data = 0.25 * np.ones((len(peaks), pk_width, 4), dtype='float32')
-    for i, pk in enumerate(peaks):
-        if pk.seq is not None:
-            seq = pk.seq
-        else:
-            seq = fasta.fetch(pk.contig, pk.start, pk.stop)
-        # skip sequences overrunning the contig boundary
-        if len(seq) != pk_width: continue
-        coded_seq = one_hot_encode_sequence(seq)
-        data[i,:,:] = coded_seq
-    return data
+def count_num_lines(filename):
+    f = getFileHandle(filename)                  
+    n_lines = 0
+    buf_size = 1024*1024
+    read_f = f.read # loop optimization
+
+    buf = read_f(buf_size)
+    while buf:
+        n_lines += buf.count('\n')
+        buf = read_f(buf_size)
+
+    return n_lines
 
 class NarrowPeak(NarrowPeakData):
     @property
@@ -81,6 +92,87 @@ def iter_summit_centered_peaks(original_peaks, half_peak_width):
         yield centered_peak
 
     return
+
+def iter_expanded_regions(regions, min_size):
+    """Expand regions to cover at least min_size bases.
+
+    """
+    for region in regions:
+        start, stop = region[1], region[2]
+        pk_width = stop-start
+        if pk_width < min_size:
+            start = max(0, start-(pk_width-min_size)/2)
+            stop = start+min_size
+        yield NarrowPeak(region[0], start, stop)
+    return
+
+def iter_rounded_regions(regions, min_block_size):
+    """Expand regions so that region_size.(start/stop)%block_size == 0.
+
+    This is used to ensure that tiled regions dont intersect. 
+    """
+    for region in regions:
+        start, stop = region[1], region[2]
+        start = min_block_size*(start//min_block_size)
+        if stop%min_block_size > 0:
+            stop += (min_block_size - stop%min_block_size)
+        yield NarrowPeak(region[0], start, stop)
+    return
+
+def build_genomic_regions_array(regions):
+    interval_types = ('S64', 'i4', 'i4')
+    return np.array(
+        [(str(x[0]), int(x[1]), int(x[2])) for x in regions], 
+        dtype=zip(('contig', 'start', 'stop'), interval_types)
+    )
+
+def build_genomic_regions_array_from_bed(regions):
+    return build_genomic_regions_array(regions)
+
+def build_tiled_regions(regions, core_size, flank_size, offset_size):
+    """Expand and iterate tiled regions.
+    
+    """
+    assert core_size%offset_size == 0
+    new_region_size = core_size + 2*flank_size
+    assert new_region_size%offset_size == 0
+    regions_str = "\n".join(
+        "\t".join(map(str, x[:3])) 
+        for x in iter_rounded_regions(
+            iter_expanded_regions(regions, new_region_size),
+            offset_size
+        )
+    )
+    regions_bed = pybedtools.BedTool(regions_str, from_string=True)
+    regions_bed = regions_bed.sort()
+    regions_bed = regions_bed.merge()
+    tiled_regions = []
+    tiled_regions_with_flank = []
+    for region in regions_bed:
+        region_size = region.stop-region.start
+        assert region_size%offset_size == 0
+        num_offsets = region_size//offset_size
+        for i in xrange(num_offsets):
+            start = region.start-flank_size+i*offset_size
+            if start < 0: continue
+            stop = region.start+core_size+flank_size+i*offset_size
+            tiled_regions_with_flank.append(NarrowPeak(region[0], start, stop))
+            tiled_regions.append(
+                NarrowPeak(region[0], start+flank_size, stop-flank_size))
+
+    regions_str = "\n".join(
+        ["\t".join(map(str, x[:3])) for x in tiled_regions])
+    regions_bed = pybedtools.BedTool(regions_str, from_string=True)
+    regions_bed = regions_bed.sort()
+
+    regions_w_flank_str = "\n".join(
+        ["\t".join(map(str, x[:3])) for x in tiled_regions_with_flank])
+    regions_w_flank_bed = pybedtools.BedTool(regions_w_flank_str, from_string=True)
+    regions_w_flank_bed = regions_w_flank_bed.sort()
+    return Regions(
+        build_genomic_regions_array_from_bed(regions_bed), 
+        build_genomic_regions_array_from_bed(regions_w_flank_bed)
+    )
 
 def iter_narrow_peaks(fp, max_n_peaks=None):
     if isinstance(fp, str):
@@ -115,6 +207,13 @@ def iter_narrow_peaks(fp, max_n_peaks=None):
             score, signalValue, pValue, qValue, idrValue, seq)
 
     return
+
+def iter_bed_regions(fp, max_n_regions=None):
+    for pk in iter_narrow_peaks(fp, max_n_regions):
+        yield pk
+
+def load_bed_regions(fp, max_n_regions=None):
+    return list(iter_bed_regions(fp, max_n_regions))
 
 def load_labeled_peaks_from_beds(
         pos_regions_fp, neg_regions_fp, 
@@ -312,7 +411,7 @@ def load_or_build_peaks_and_labels_mat_from_DB(
         all_labels.append(labels)
 
     pk_record_type = type(pks[0])
-    pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S')
+    pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S64')
     pks = np.array(pks, dtype=zip(pks[0]._fields, pk_types))
 
     return pks, sorted(peak_fnames.keys()), all_labels
@@ -438,36 +537,30 @@ def load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
         pickle.dump(peaks_and_labels, ofp)
     return peaks_and_labels
 
-
-def load_accessibility_data(sample_id, pks):
+def load_accessibility_data(fname, regions):
     import sys
-    sys.path.insert(0, "/users/nboley/src/bigWigFeaturize/")
+    sys.path.insert(0, "/users/nboley/src/bigWigFeaturize_NASA/")
     import bigWigFeaturize
+    #from bigWigFeaturize import bigWigFeaturize
     Region = namedtuple('Region', ['chrom', 'start', 'stop'])
-    fname = '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(sample_id)
-    pk_width = pks[0]['stop'] - pks[0]['start']
-    cached_fname = "cachedaccessibility.%s.%s.obj" % (
-        hashlib.sha1(pks.view(np.uint8)).hexdigest(),
+    pk_width = regions[0]['stop'] - regions[0]['start']
+    cached_fname = "cachedaccessibility.%s.%s.h5" % (
+        hashlib.sha1(regions[:].view(np.uint8)).hexdigest(),
         hash(tuple(fname))
      )
     try:
-        raise IOError, 'DONT CACHE'
-        with open(cached_fname) as fp:
-            print "Loading cached accessibility data"
-            rv = np.load(fp)
+        fp = h5py.File(cached_fname, 'r')
+        return fp['data']
     except IOError:
         rv = bigWigFeaturize.new(
             [fname,],
             pk_width, 
             intervals=[
-                Region(pk['contig'], pk['start'], pk['stop']) for pk in pks
+                Region(pk['contig'], pk['start'], pk['stop']) for pk in regions
             ]
         )[:,0,0,:]
-
-        with open(cached_fname, "w") as ofp:
-            print "Saving accessibility data"
-            np.save(ofp, rv)
-    
+        fp = h5py.File(cached_fname, "w")
+        rv = fp.create_dataset("data", rv.shape, dtype='float32')    
     return rv
 
 def load_chipseq_coverage(sample_id, tf_id, peaks):
@@ -549,314 +642,32 @@ def load_DNASE_coverage(sample_id, peaks):
     return rv[0,:,:]
 
 def one_hot_encode_peaks_sequence(pks, genome_fasta, cache_seqs=True):
+    pk_width = pks[0][2] - pks[0][1]
+    shape = (len(pks), 1, 4, pk_width)
     if cache_seqs is True:
-        cached_fname = "cachedseqs.%s.obj" % hashlib.sha1(
-            pks.view(np.uint8)).hexdigest()
+        print "Loading cached one-hot encoded sequences...",
+        cached_fname = "cachedseqs.%s.h5" % hashlib.sha1(
+            pks[:].view(np.uint8)).hexdigest()
         try:
-            with open(cached_fname) as fp:
-                print "Loading cached seqs", cached_fname
-                return np.load(fp)
+            fp = h5py.File(cached_fname, 'r')
+            print "SUCEEDED"
+            return fp['seqs']
         except IOError:
+            print "FAILED"
             pass
 
-    pk_width = pks[0][2] - pks[0][1]
-    rv = 0.25 * np.ones((len(pks), pk_width, 4), dtype='float32')
+    fp = h5py.File(cached_fname, "w")
+    rv = fp.create_dataset("seqs", shape, dtype='float32', fillvalue=0.25)
     for i, data in enumerate(pks):
-        assert pk_width == data[2] - data[1]
+        if i%100000 == 0: print "Coded %i/%i peaks" % (i, len(pks))
+        assert pk_width == data[2] - data[1], str((pk_width, data))
         seq = genome_fasta.fetch(str(data[0]), data[1], data[2])
         if len(seq) != pk_width: continue
         coded_seq = one_hot_encode_sequence(seq)
-        rv[i,:,:] = coded_seq
-
-    # add the extra dimension for theano
-    rv = np.swapaxes(rv, 1, 2)[:,None,:,:]
-
-    if cache_seqs is True:
-        with open(cached_fname, "w") as ofp:
-            print "Saving seqs"
-            np.save(ofp, rv)
-
+        rv[i,0,:,:] = coded_seq.swapaxes(0,1)
+    fp.flush()
+    # flush and close the mmapped file, and then re-open
     return rv
-
-class Data(object):
-    """Store and iterate through data from a deep learning model.
-
-    """
-    def _save_sequential(self, f):
-        raise NotImplementedError
-        assert self._data_type = 'sequential'
-        f.attrs['data_type'] = self._data_type
-        inputs = f.create_dataset("inputs", data=self.inputs)
-        outputs = f.create_dataset("outputs", data=self.outputs)
-        task_ids = f.create_dataset("task_ids", data=self.task_ids)
-        return
-
-    def _save_graph(self, f):
-        assert self._data_type = 'graph'
-        f.attrs['data_type'] = self._data_type
-        inputs = f.create_group("inputs")
-        for key, val in self.inputs.iteritems():
-            inputs.create_dataset(key, data=val)        
-        outputs = f.create_group("outputs")
-        for key, val in self.outputs.iteritems():
-            outputs.create_dataset(key, data=val)
-        task_ids = f.create_group("task_ids")
-        for key, val in self.task_ids.iteritems():
-            task_ids.create_dataset(key, data=val)
-        return
-    
-    def save(self, fname):
-        """Save the data into an h5 file.
-
-        """
-        with h5py.File(fname, "w") as f:
-            if self._data_type == 'sequential':
-                self._save_sequential(f)
-            elif self._data_type == 'graph':
-                self._save_graph(f)
-            else:
-                raise ValueError, "Unrecognized data type '{}'".format(
-                    self._data_type)
-    
-    @staticmethod
-    def load(fname):
-        """Load data from an h5 file.
-
-        """
-        raise NotImplementedError, "Not implemented"
-
-    def __init__(self, inputs, outputs, task_ids=None):
-        # if inputs is an array, then we assume that this is a sequential model
-        if isinstance(inputs, np.ndarray):
-            if not isinstance(outputs, np.ndarray):
-                raise ValueError, "If the input is a numpy array, then the output is also expected to be a numpy array.\nHint: You can use multiple inputs and outputs by passing a dictionary keyed by the dtaa type name."
-            self._data_type = "sequential"
-            self.num_observations = inputs.shape[0]
-            assert self.num_observations == output.shape[0]
-            # if no task ids are set, set them to indices
-            if task_ids is not None:
-                assert len(task_ids) == outputs.shape[1]
-            else:
-                task_ids = [str(x) for x in xrange(1, outputs.shape[1]+1)]
-        # otherwise assume that this is a graph type model
-        else:
-            self.num_observations = inputs.values()[0].shape[0]
-            # make sure that all of that data are arrays and have the same
-            # number of observations
-            for key, val in chain(inputs.iteritems(), outputs.iteritems()):
-                assert isinstance(val, np.ndarray)
-                assert self.num_observations == val.shape[0], \
-                    "The number of observations ({}) is not equal to the first shape dimension of {} ({})".format(
-                        self.num_observations, key, val.shape[0])
-            # make sure that task id length match up. If a task id key doesnt
-            # exist, then default to sequential numbers
-            for key in outputs.iterkeys():
-                if key in task_ids:
-                    if len(task_ids[key]) != outputs[key].shape[1]:
-                        raise ValueError, "The number of task ids for key '{}' does not match the output shape".format()
-                pass            
-            self._data_type = "graph"
-
-        self.task_ids = task_ids
-        self.inputs = inputs
-        self.outputs = outputs
-    
-    def build_label_balanced_indices(self, label_key=None, task_id=None):
-        # figure out the labels to sample from
-        if self._data_type == "sequential":
-            assert task_id is None
-            labels = self.outputs
-        else:
-            if label_name is None and len(self.outputs) == 1:
-                label_name = next(self.inputs.iterkeys())
-            else:
-                assert task_id is not None
-                labels = self.inputs[task_id]
-
-        if labels.shape[1] == 1:
-            assert (task_id is None) or (task_id in self.task_ids), \
-                "The specified task_id ({}) does not exist".format(task_id)
-            labels = labels[:,0]
-        else:
-            assert task_id is not None, "Must choose the task id to balance on in the multi-task setting"
-            labels = labels[:,self.task_ids.index(task_id)]
-
-        one_indices = np.random.choice(
-            np.nonzero(labels == 1)[0], size=len(labels)/2)
-        zero_indices = np.random.choice(
-            np.nonzero(labels == 0)[0], size=len(labels)/2)
-        permutation = np.concatenate((one_indices, zero_indices), axis=0)
-        np.random.shuffle(permutation)
-        return permutation
-
-    def build_shuffled_indices(self):
-        return np.random.permutation(self.num_observations)
-
-    def build_ordered_indices(self):
-        return np.arange(self.num_observations)
-
-    def iter_batches_from_indices_generator(
-            self, batch_size, repeat_forever, indices_generator):
-        i = 0
-        n = int(math.ceil(self.num_observations/float(batch_size)))
-        permutation = None
-        while repeat_forever is True or i<n:
-            if i%n == 0:
-                permutation = indices_generator()
-            # yield a subset of the data
-            subset = slice((i%n)*batch_size, (i%n+1)*batch_size)
-            indices = permutation[subset]
-            if self._data_type == 'sequential':
-                rv = (self.inputs[indices], self.outputs[indices])
-            else:
-                rv = {}
-                for key, val in self.inputs.iteritems():
-                    rv[key] = val
-                for key, val in self.outputs.iteritems():
-                    rv[key] = val                
-            yield rv
-            i += 1
-        return
-    
-    def iter_batches(self, 
-                     batch_size, 
-                     repeat_forever, 
-                     balanced=False, 
-                     shuffled=False, 
-                     **kwargs):
-        if balanced:
-            indices_generator = self.build_balanced_indices
-        elif shuffled:
-            indices_generator = self.build_shuffled_indices
-        else:
-            indices_generator = self.build_ordered_indices
-        
-        return self.iter_batches_from_indices_generator(
-            batch_size, 
-             repeat_forever, 
-            indices_generator,
-            **kwargs
-        )
-
-    def subset_observations(self, observation_indices=slice(None)):
-        """Return a copy containing only the observations specified by indices
-
-        indices: numpy array of indices to select
-        """
-        if self._data_type == 'sequential':
-            assert isinstance,(self.inputs, np.ndarray)
-            new_inputs = self.inputs[observation_indices]
-            assert isinstance,(self.outputs, np.ndarray)
-            new_outputs = self.outputs[observation_indices]
-        elif self._data_type == 'graph':
-            new_inputs = {}
-            for key, data in self.inputs.iteritems():
-                assert isinstance(data, np.ndarray)
-                new_inputs[key] = data[observation_indices]
-            new_outputs = {}
-            for key, data in self.outputs.iteritems():
-                assert isinstance(data, np.ndarray)
-                new_outputs[key] = data[observation_indices]
-        else:
-            assert False,"Unrecognized model type '{}'".format(self._data_type)
-
-        rv = Data(new_inputs, new_outputs, self.task_ids)
-        rv.__class__ = self.__class__
-        return rv
-    
-    def balance_data(self, task_id=None):
-        indices = self.build_label_balanced_indices(task_id=task_id)
-        return self.subset_observations(indices)
-    
-    def subset_tasks(self, desired_task_ids):
-        """Return a copy of self that only contains desired_task_ids.
-
-        """
-        # make chained filtering more convenient by defaulting to 
-        # all tfs if none is passed
-        if desired_task_ids is None:
-            return self
-        
-        new_outputs = {}
-        for task_key, data in self.outputs.iteritems():
-            task_indices = []
-            for task_id in desired_task_ids[task_key]:
-                try: task_indices.append(self.task_ids[task_key].index(task_id))
-                except ValueError: task_indices.append(-1)
-            task_indices = np.array(task_indices)
-
-            new_data = np.insert(data, 0, -1, axis=1)
-            new_outputs[task_key] = new_data[:, task_indices+1]
-
-        rv = Data(self.inputs, new_outputs, task_ids=desired_task_ids)
-        rv.__class__ = self.__class__
-        return rv
-
-class GenomicRegionsAndLabels(Data):
-    """Subclass Data to handfle the common case where the input is a set of 
-       genomic regions and the output is a single labels matrix. 
-    
-    """
-    
-    @property
-    def label_ids(self):
-        return self.task_ids['labels']
-
-    @property
-    def regions(self):
-        return self.inputs['regions']
-
-    @property
-    def labels(self):
-        return self.outputs['labels']
-
-    def subset_pks_by_rank(self, max_num_peaks, use_top_accessible, seed=0):
-        """Return a copy of self containing at most max_num_peaks peaks.
-
-        max_num_peaks: the maximum number of peaks to return
-        use_top_accessible: return max_num_peaks most accessible peaks
-        """
-        if max_num_peaks is None:
-            max_num_peaks = len(self.regions)
-        
-        # sort the peaks by accessibility
-        if use_top_accessible:
-            indices = np.lexsort(
-                (self.regions['start'], -self.regions['signalValue'])
-            )
-        # sort the peaks randomly
-        else:
-            # set a seed so we can use cached peaks between debug rounds
-            np.random.seed(seed)
-            indices = np.argsort(np.random.random(len(self.regions)))
-        return self.subset_observations(indices[:max_num_peaks])
-    
-    def subset_pks_by_contig(
-            self, contigs_to_include=None, contigs_to_exclude=None):
-        assert (contigs_to_include is None) != (contigs_to_exclude is None), \
-            "Either contigs_to_include or contigs_to_exclude must be specified"
-        # case these to sets to speed up the search a little
-        if contigs_to_include is not None:
-            contigs_to_include = set(contigs_to_include)
-        if contigs_to_exclude is not None:
-            contigs_to_exclude = set(contigs_to_exclude)
-        indices = np.array([
-            i for i, pk in enumerate(self.regions) 
-            if (contigs_to_exclude is None or pk[0] not in contigs_to_exclude)
-            and (contigs_to_include is None or pk[0] in contigs_to_include)
-        ])
-        return self.subset_observations(indices)
-    
-    @property
-    def n_samples(self):
-        return len(self.regions)
-
-    def __init__(self, regions, labels, inputs={}, task_ids=None):
-        # add regions to the input
-        if 'regions' in inputs:
-            raise ValueError, "'regions' input is passed as an argument and also specified in inputs"
-        inputs['regions'] = regions
-        Data.__init__(self, inputs, {'labels': labels}, {'labels': task_ids})
 
 class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     @property
@@ -879,84 +690,385 @@ class GenomicRegionsAndChIPSeqLabels(GenomicRegionsAndLabels):
     def subset_tfs(self, tf_ids):
         return self.subset_tasks({'labels': tf_ids})
 
-def load_chipseq_data(
+def _build_regions_labels_from_beds(
+        regions_bed, regions_w_flank_bed, feature_bed):
+    # we assume that regions_bed and regions_w_flank_bed are sorted
+    feature_bed = feature_bed.sort()
+    print "Feature bed", feature_bed.fn
+    print "Regions bed", regions_bed.fn
+    print "Building labels ...",
+    core_labels = []
+    for item in regions_bed.intersect(
+            b=feature_bed, c=True, f=0.5, F=0.5, e=True):
+        core_labels.append(int(item[3]))
+    core_labels = np.array(core_labels)
+
+    flank_labels = []
+    for item in regions_w_flank_bed.intersect(
+            b=feature_bed, c=True, f=1e-12, F=1e-12, e=True):
+        flank_labels.append(int(item[3]))
+    flank_labels = np.array(flank_labels)
+
+    labels = core_labels.copy()
+    labels[np.abs(core_labels - flank_labels) < 1e-6] = -1
+    print "FINISHED Building labels"
+    return labels
+
+def load_cached_or_build_tiled_genomic_regions(
+        regions, core_size, flank_size, offset_size):
+    assert isinstance(regions, np.ndarray)
+    #regions_array = build_genomic_regions_array(regions)
+    regions_sha1_key = hashlib.sha1(regions_array.view(np.uint8)).hexdigest()
+    regions_cache_fname = "cachedregions.%s.h5" % regions_sha1_key
+    try:
+        regions = Regions.load(regions_cache_fname)
+    except IOError:
+        # Build a bed tools with the sorted regions
+        regions = build_tiled_regions(
+            regions, core_size, flank_size, offset_size)
+        regions.save(regions_cache_fname)
+    return regions
+
+def load_cached_or_build_chipseq_labels(regions, peak_fname):
+    fp = pybedtools.BedTool(peak_fname)
+    data_hash = abs(hash((hash_bed_file(fp), 
+                          hash_bed_file(regions.regions_bed), 
+                          hash_bed_file(regions.regions_with_flank_bed))))
+    cached_fname = "cachedlabels.%s.npy" % data_hash
+    try:
+        return np.load(cached_fname)
+    except IOError:
+        labels = _build_regions_labels_from_beds(
+            regions.regions_bed, regions.regions_with_flank_bed, fp)
+        with open(cached_fname, "w") as ofp: 
+            np.save(ofp, labels)
+        return labels
+
+def load_regions_genome_wide(genome_fasta_fname, bin_width, stride, flank_size):
+    """Returns regions record array.
+
+    """
+    raise NotImplementedError
+
+def save_regions_array_to_bedtool(regions):
+    bed_fp = tempfile.NamedTemporaryFile("w", dir="./", delete=False, suffix=".bed")
+    np.savetxt(bed_fp, regions, fmt="%s\t%i\t%i")
+    bed_fp.flush()
+    return pybedtools.BedTool(bed_fp.name)
+
+class Regions(object):
+    def save(self, ofname):        
+        with h5py.File(ofname, "w") as f:
+            f['regions'] = self.regions
+            f['regions_with_flank'] = self.regions_with_flank
+        return
+
+    @classmethod
+    def load(cls, fname):
+        f = h5py.File(fname, 'r')
+        return cls(f['regions'], f['regions_with_flank'])
+
+    def __init__(self, regions, regions_with_flank=None):
+        assert isinstance(regions, (np.ndarray, h5py._hl.dataset.Dataset))
+        self.regions = regions
+        # build a bedtool corresponding to these regions 
+        self.regions_bed = save_regions_array_to_bedtool(self.regions)
+        # if regions with flanks aren't specified, then set them to the 
+        # full region set
+        if regions_with_flank is None:
+            self.regions_with_flank = self.regions
+            self.regions_with_flank_bed = self.regions_bed
+        else:
+            self.regions_with_flank = regions_with_flank
+            self.regions_with_flank_bed = save_regions_array_to_bedtool(
+                self.regions_with_flank)
+        return
+
+def build_chipseq_data_for_sample(
+        regions, 
+        genome_fasta_fname,
+        chipseq_peaks_fnames, # indexed by tf name
+        dnase_signal_fname=None,
+        chipseq_relaxed_peaks_fnames=None, # indexed by tf name
+        bin_size=400, 
+        flank_size=800, 
+        offset_size=50
+    ):
+    """Build a GenomicRegionsAndChIPSeqLabels data object. 
+
+    - one hot encode sequence
+    - extracts DNASE signal for region
+    - labels peaks
+    """
+    tiled_regions_cached_fname = "cachedtiledregions.%s.h5" % (
+        hashlib.sha1(regions.view(np.uint8)).hexdigest())
+    try: 
+        print "Loading cached classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})... ".format(
+            bin_size, flank_size, offset_size),
+        regions = Regions.load(tiled_regions_cached_fname)
+    except IOError:
+        print " FAILED",
+        print "Building classification region set (core_bin_size: {}   flank_size: {}   offset_size: {})".format(
+            bin_size, flank_size, offset_size),
+        regions = build_tiled_regions(regions, bin_size, flank_size,offset_size)
+        regions.save(tiled_regions_cached_fname)
+    else:
+        print " SUCCEEDED"
+    
+    tf_ids = sorted(chipseq_peaks_fnames)
+    if (chipseq_relaxed_peaks_fnames is not None and
+        sorted(chipseq_relaxed_peaks_fnames.iterkeys()) != tf_ids):
+        raise ValueError, "The relaxed and optimal peak ids are different."
+
+    # one hot encode sequences
+    print "Encoding sequence" 
+    genome_fasta = FastaFile(genome_fasta_fname)
+    fwd_seqs = one_hot_encode_peaks_sequence(
+        regions.regions_with_flank, genome_fasta)
+
+    print "Building ChIP-seq labels"     
+    # build the chipseq labels
+    labels = {}
+    for tf_id, fname in chipseq_peaks_fnames.iteritems():
+        labels[tf_id] = load_cached_or_build_chipseq_labels(regions, fname)
+        # we've already tested to make sure that the tf ids match
+        if chipseq_relaxed_peaks_fnames is not None:
+            relaxed_labels = load_cached_or_build_chipseq_labels(
+                regions, chipseq_relaxed_peaks_fnames[tf_id])
+            ambiguous_pks_mask = (
+                (labels[tf_id] < -0.5)
+                | (relaxed_labels < -0.5)
+                | (labels[tf_id] != relaxed_labels)
+            )
+            labels[tf_id][ambiguous_pks_mask] = -1
+    # concatanate the tf label arrays into a matrix
+    labels = np.concatenate([labels[tf_id] for tf_id in tf_ids], axis=0)
+    if len(labels.shape) == 1: labels = labels[:,None]
+
+    # extract DNASE signal
+    print "Loading accessibility data"
+    dnase_cov = load_accessibility_data(
+        dnase_signal_fname, regions.regions_with_flank)
+    
+    # return the object
+    print "Building data object"
+    return GenomicRegionsAndChIPSeqLabels(
+        regions=regions.regions_with_flank,
+        labels=labels,
+        inputs={'fwd_seqs': fwd_seqs, 'dnase_cov': dnase_cov},
+        task_ids=tf_ids
+    )
+
+def load_chipseq_data_for_samples(
+        # if regions is a dictionary, then we assume that keys are sample_ids
+        # and we match regions with sample ids. Otherwise, we use the same
+        # regions for all samples
+        regions, 
+        # fasta fname
+        genome_fasta_fname,
+        # dictionary of dictionaries indexed by sample_id, then tf_name
+        chipseq_peaks_fnames,
+        # dictionary indexed by sample_id 
+        dnase_signal_fnames=None,
+        # dictionary of dictionaries indexed by sample_id, then tf_name
+        chipseq_relaxed_peaks_fnames=None
+    ):
+    raise NotImplementedError
+    # find the sample ids
+    # assert that there the same
+    assert isinstance(regions, Regions)
+
+    data = {}
+    print "Building tiled regions"
+    regions = build_tiled_regions(
+        regions, core_size=400, flank_size=800, offset_size=50)
+    # fix regions to make it accept and index if it's not a dict
+    for sample_id in sample_ids:
+        data[sample_id] = build_chipseq_data_for_sample(
+            regions, 
+            genome_fasta_fname, 
+            chipseq_peaks_fnames[sample_id], 
+            (None if dnase_signal_fnames 
+             is None else dnase_signal_fname[sample_id]),
+            (None if chipseq_relaxed_peaks_fnames is None 
+             else chipseq_relaxed_peaks_fnames[sample_id]),
+        )
+    return SamplePartitionedData(data)
+
+def load_chipseq_data_from_DB(
         roadmap_sample_id,
         factor_names,
         max_n_samples,
         annotation_id,
-        half_peak_width):
-    # XXX search for cached data
-    (pks, tf_ids, (idr_optimal_labels, relaxed_labels)
-        ) = load_or_build_peaks_and_labels_mat_from_DB(
-            annotation_id, roadmap_sample_id, half_peak_width)
-    print "Coding peaks"
+        bin_size=400,
+        flank_size=800,
+        offset_size=50):
+    cached_fname = "cachedDBchipseq.%i.h5" % abs(hash((
+        roadmap_sample_id, 
+        tuple(factor_names), 
+        max_n_samples, 
+        annotation_id,
+        bin_size,
+        flank_size,
+        offset_size)))
+    try:
+        return GenomicRegionsAndChIPSeqLabels.load(cached_fname)
+    except IOError:
+        print "Loading cached file failed... building data set"
+
+    # load the DNASE regions and ChIP-seq peak filenames
+    print "Loading peak filenames"
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db, load_tf_ids
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
+    dnase_peaks_fname = list(peak_fnames['dnase'])[0]
+    print "Loading base regions"
+    with optional_gzip_open(dnase_peaks_fname) as fp:
+        regions = build_genomic_regions_array(load_bed_regions(fp))
+    # for each tf_id in the desired list, find the peak fnames and then 
+    # segregate into relaxed and optimal sets 
+    optimal_peaks_fnames = defaultdict(list)
+    relaxed_peaks_fnames = defaultdict(list)
+    for tf_id in load_tf_ids(factor_names):
+        for peak_type, fname in peak_fnames[tf_id]:
+            if peak_type == 'optimal idr thresholded peaks':
+                optimal_peaks_fnames[tf_id].append(fname)
+            else:
+                relaxed_peaks_fnames[tf_id].append(fname)
+
+    print "Organizing ChIP-seq peak files"
+    # make sure there is only one unique optimal peak per tf_id. If there
+    # are multiple, we take the peak file with the most peaks
+    for key, fnames in optimal_peaks_fnames.items():
+        # if there's more than one file, choose the one with the most of peaks
+        if len(fnames) > 1:
+            line_cnts = [count_num_lines(fname) for fname in fnames]
+            fname = fnames[line_cnts.index(max(line_cnts))]
+        else:
+            assert len(fnames) == 1
+            fname = fnames[0]
+        optimal_peaks_fnames[key] = fname
+    # convert the default dict into a standard dict
+    optimal_peaks_fnames = dict(optimal_peaks_fnames)
+    # merge all of the relaxed peaks into a single peak file
+    for key, fnames in relaxed_peaks_fnames.items():
+        if len(fnames) == 1:
+            relaxed_peaks_fnames[key] = fnames[0]
+        else:
+            assert len(fnames) > 1
+            bed_fps = [pybedtools.BedTool(fname).sort() for fname in fnames]
+            merged_bed = bed_fps[0].cat(*bed_fps[1:]).sort().merge()
+            relaxed_peaks_fnames[key] = merged_bed.fn
+    # convert the default dict into a standard dict
+    relaxed_peaks_fnames = dict(relaxed_peaks_fnames)
+    
+    # load the genome fasta filename
     from pyDNAbinding.DB import load_genome_metadata
-    genome_fasta = FastaFile("hg19.genome.fa")
-    #load_genome_metadata(annotation_id).filename)
-    fwd_seqs = one_hot_encode_peaks_sequence(pks, genome_fasta)
-    dnase_cov = load_accessibility_data(roadmap_sample_id, pks)
+    genome_fasta_fname = load_genome_metadata(annotation_id).filename
 
-    # set the ambiguous labels to -1
-    ambiguous_pks_mask = (
-        (idr_optimal_labels < -0.5)
-        | (relaxed_labels < -0.5)
-        | (idr_optimal_labels != relaxed_labels)
-    )
-    idr_optimal_labels[ambiguous_pks_mask] = -1
-    labels = idr_optimal_labels
+    # load the DNASE signal fname
+    dnase_fname = \
+        '/mnt/lab_data/kundaje/jisraeli/DNase/unsmoothed_converage/bigwigs/{}-DNase.bw'.format(
+            roadmap_sample_id)
 
-    print "Filtering Peaks"    
-    data = GenomicRegionsAndChIPSeqLabels(
-        regions=pks,
-        labels=labels,
-        inputs={'fwd_seqs': fwd_seqs, 'dnase_cov': dnase_cov[:,None,None,:]},
-        task_ids=tf_ids
+    # load the chipseq peak fname
+    data = build_chipseq_data_for_sample(
+        regions, 
+        genome_fasta_fname,
+        optimal_peaks_fnames, # indexed by tf name
+        dnase_signal_fname=dnase_fname,
+        chipseq_relaxed_peaks_fnames=relaxed_peaks_fnames, # indexed by tf name
+        bin_size=400, 
+        flank_size=800, 
+        offset_size=50
     )
-    data = data.subset_pks_by_rank(
-        max_num_peaks=max_n_samples, use_top_accessible=False
-    )
-    data = data.subset_tfs(factor_names)
+    data.save(cached_fname)
     return data
 
 class PartitionedSamplePeaksAndChIPSeqLabels():
-    def cache_key(self, sample_id):
+    @property
+    def cache_key(self):
         return hashlib.sha1(str((
-            sample_id, 
+            tuple(sorted(self.sample_ids)), 
+            None if self.validation_sample_ids \
+                is None else tuple(sorted(self.validation_sample_ids)), 
             tuple(sorted(self.factor_names)), 
             self.n_samples, 
             self.annotation_id, 
             self.half_peak_width
         ))).hexdigest()
 
-    @staticmethod
-    def _load_cached(cached_fname):
-        raise NotImplementedError, "Still ned to do this"
-        pass
+    @property
+    def cache_fname(self):
+        return "cachedTFdata.%s.h5" % self.cache_key
     
-    def _save_cached(self):
-        raise NotImplementedError, "working..."
-        return
-    
-    def _load_cached(self, sample_id):
-        self.tf_ids = load_tf_ids(self.factor_names)
-        self.data[sample_id] = None
-        #SamplePeaksAndLabels.load(
-        #    self.cache_key + ".data.obj", sample_id, tf_ids)
-        self.train[sample_id] = SamplePeaksAndLabels.load(
-            self.cache_key(sample_id)+".train.obj", sample_id, self.tf_ids)
-        self.validation[sample_id] = SamplePeaksAndLabels.load(
-            self.cache_key(sample_id)+".validation.obj", sample_id, self.tf_ids)
-        assert (self.train[sample_id].factor_names 
-                == self.validation[sample_id].factor_names)
-        assert (self.train[sample_id].tf_ids 
-                == self.validation[sample_id].tf_ids)
+    @classmethod
+    def load(cls, fname):
+        with h5py.File(fname, 'r') as f:
+            roadmap_sample_ids = f.attrs['roadmap_sample_ids']
+            factor_names = f.attrs['factor_names']
+            max_n_samples = f.attrs['max_n_samples']
+            if max_n_samples == 'NONE': max_n_samples = None
+            validation_sample_ids = f.attrs['validation_sample_ids']
+            if validation_sample_ids == 'NONE': validation_sample_ids = None
+            annotation_id = f.attrs['annotation_id']
+            half_peak_width = f.attrs['half_peak_width']
 
+        return cls(roadmap_sample_ids, 
+                   factor_names, 
+                   max_n_samples, 
+                   validation_sample_ids, 
+                   annotation_id, 
+                   half_peak_width)
+
+    def _load_cached_data(self, f=None):
+        print "Loading cached data from '%s'" % self.cache_fname
+        if f is None:
+            f = h5py.File(self.cache_fname, 'r')
+        
+        train_data = {}
+        for key, val in f['train'].items():
+            train_data[key] = Data(*val.values())
+        self.train = SamplePartitionedData(train_data)
+
+        validation_data = {}
+        for key, val in f['validation'].items():
+            validation_data[key] = Data(*val.values())
+        self.validation = SamplePartitionedData(validation_data)
+        return
+        
+    def save(self, fname):
+        with h5py.File(fname, "w") as f:
+            # save the attributes
+            f.attrs['roadmap_sample_ids'] = sorted(self.sample_ids)
+            f.attrs['factor_names'] = sorted(self.factor_names)
+            f.attrs['max_n_samples'] = (
+                'NONE' if self.max_n_samples is None 
+                else self.max_n_samples )
+            f.attrs['validation_sample_ids'] = (
+                'NONE' if self.validation_sample_ids is None else 
+                sorted(self.validation_sample_ids)
+            )
+            f.attrs['annotation_id'] = self.annotation_id
+            f.attrs['half_peak_width'] = self.half_peak_width
+            
+            # link to the data 
+            f['train'] = h5py.ExternalLink(self.train.cache_to_disk(), "/")
+            f['validation'] = h5py.ExternalLink(self.validation.cache_to_disk(), "/")
+
+        return fname
+
+    def cache_to_disk(self):
+        return self.save(self.cache_fname)
+    
     def __init__(self, 
                  roadmap_sample_ids, 
                  factor_names, 
                  max_n_samples=None,
+                 validation_contig_ids=['chr8', 'chr9'],
                  validation_sample_ids=None,
-                 annotation_id=1, 
+                 test_contig_ids=['chr1', 'chr2'],
+                 annotation_id=1,
                  half_peak_width=500):
         # make sure that validation sample id is loaded
         if validation_sample_ids is not None:
@@ -965,118 +1077,143 @@ class PartitionedSamplePeaksAndChIPSeqLabels():
 
         self.sample_ids = roadmap_sample_ids
         self.validation_sample_ids = validation_sample_ids
+        
+        # if we aren't provided tf names, then load them from 
+        # the database
         if factor_names is None:
+            from pyTFbindtools.DB import load_tf_names_for_sample
             factor_names = set()
             for x in map(load_tf_names_for_sample, roadmap_sample_ids):
                 factor_names.update(x)
         self.factor_names = sorted(factor_names)
+        
+        # set the other meta data
+        self.max_n_samples = max_n_samples
         self.n_samples = max_n_samples
         self.annotation_id = annotation_id
         self.half_peak_width = half_peak_width
         self.seq_length = 2*half_peak_width
 
-        self.data = {}
+        try:
+            self._load_cached_data()
+            return
+        except IOError:
+            print "Can not find cached filename '%s'. Building data." % self.cache_fname
+        
         self.train = {}
         self.validation = {}
         
         for sample_id in self.sample_ids:
-            self.data[sample_id] = load_chipseq_data(
+            data = load_chipseq_data_from_DB(
                 sample_id,
                 factor_names,
                 max_n_samples,
                 annotation_id,
                 half_peak_width)
-                                
-            assert self.data[sample_id].seq_length == self.seq_length
-            print "Splitting out train data"        
+            fname = data.cache_to_disk()
+            
+            assert data.seq_length == self.seq_length
+            print "Splitting out train data"
             if ( validation_sample_ids is None 
                  or sample_id not in validation_sample_ids ):
-                self.train[sample_id] = self.data[
-                    sample_id].subset_pks_by_contig(
-                        contigs_to_exclude=('chr1', 'chr2', 'chr8', 'chr9')
+                self.train[sample_id] = data.subset_pks_by_contig(
+                        contigs_to_exclude=(
+                            list(test_contig_ids) + list(validation_contig_ids))
                     )
                 
             print "Splitting out validation data"        
             if ( validation_sample_ids is None 
                  or sample_id in validation_sample_ids ):
-                self.validation[sample_id] = self.data[
-                    sample_id].subset_pks_by_contig(
-                        contigs_to_include=('chr8', 'chr9')
+                self.validation[sample_id] = data.subset_pks_by_contig(
+                        contigs_to_include=validation_contig_ids
                     )
 
-    def iter_batches( # sample_balanced
-            self, batch_size, data_subset, repeat_forever, **kwargs):
-        if data_subset == 'train':
-            data_subset = self.train
-        elif data_subset == 'validation':
-            data_subset = self.validation
-        else:
-            raise ValueError, "Unrecognized data_subset type '%s'" % data_subset
-
-        ## find the number of observations to sample from each batch
-        # To make this work, I would need to randomly choose the extra observations
-        assert batch_size >= len(data_subset), \
-            "Cant have a batch size smaller than the number of samples"
-        fractions = np.array([x.n_samples for x in data_subset.values()], dtype=float)
-        fractions = fractions/fractions.sum()
-        inner_batch_sizes = np.array(batch_size*fractions, dtype=int)
-        # accounting for any rounding from the previous step 
-        for i in xrange(batch_size - inner_batch_sizes.sum()):
-            inner_batch_sizes[i] += 1
-
-        iterators = OrderedDict(
-            (sample_id, 
-             data.iter_batches(
-                 i_batch_size, repeat_forever, **kwargs) )
-            for i_batch_size, (sample_id, data) in zip(
-                    inner_batch_sizes, data_subset.iteritems())
-        )
-
-        def f():
-            while True:
-                grpd_res = defaultdict(list)
-                cnts = []
-                for sample_id in self.sample_ids:
-                    if sample_id not in iterators:
-                        cnts.append(0)
-                    elif sample_id in iterators:
-                        iterator = iterators[sample_id]
-                        data = next(iterator)
-                        cnt = None
-                        for key, vals in data.iteritems():
-                            grpd_res[key].append(vals)
-                            if cnt == None: cnt = vals.shape[0]
-                            assert cnt == vals.shape[0]
-                        cnts.append(cnt)
-                    else:
-                        assert False
-                
-                for key, vals in grpd_res.iteritems():
-                    grpd_res[key] = np.concatenate(grpd_res[key], axis=0)
-                    
-                # build the sample labels
-                cnts = np.array(cnts)
-                sample_labels = np.zeros(
-                    (cnts.sum(), len(self.sample_ids)), dtype='float32')
-                for i in xrange(len(cnts)):
-                    start_index = (0 if i == 0 else np.cumsum(cnts)[i-1])
-                    stop_index = np.cumsum(cnts)[i]
-                    sample_labels[start_index:stop_index,i] = 1                
-                assert 'sample_ids' not in grpd_res
-                grpd_res['sample_ids'] = sample_labels
-                
-                # cast thios to a normal dict (rather than a default dict)
-                yield dict(grpd_res)
-            return
+        self.train = SamplePartitionedData(self.train)
+        self.validation = SamplePartitionedData(self.validation)
         
-        return f()
+        self.fname = self.cache_to_disk()
 
+def test_read_data():
+    data = load_chipseq_data('E123', ['CTCF',], 5000, 1, 500)
+    fname = data.cache_to_disk()
+    data2 = Data.load(fname)
+    for x in data2.iter_batches(10):
+        break
 
-    def iter_train_data(
-            self, batch_size, repeat_forever=False, **kwargs):
-        return self.iter_batches(batch_size, 'train', repeat_forever, **kwargs)
+def test_rec_array():
+    from DB import load_all_chipseq_peaks_and_matching_DNASE_files_from_db
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        1, roadmap_sample_id='E114')['E114']
+    fname = next(iter(peak_fnames.values()[0]))[1]
+    with optional_gzip_open(fname) as fp:
+        pks = list(iter_summit_centered_peaks(
+            iter_narrow_peaks(fp), 500))
+        pk_record_type = type(pks[0])
+        pk_types = ('S64', 'i4', 'i4', 'i4', 'f4', 'f4', 'f4', 'f4', 'f4', 'S64')
+        pks = np.array(pks, dtype=zip(pks[0]._fields, pk_types))
+    with h5py.File('tmp.h5', "w") as f:
+        f.create_dataset('test', data=pks)
+        print f['test'][1]
+    print fname
 
-    def iter_validation_data(
-            self, batch_size, repeat_forever=False, **kwargs):
-        return self.iter_batches(
-            batch_size, 'validation', repeat_forever, **kwargs)
+def test_load_data_from_db():
+    print "Testing loading data."
+    rv = load_chipseq_data_from_DB(
+        roadmap_sample_id='E123',
+        factor_names=['CTCF',],
+        max_n_samples=5000,
+        annotation_id=1,
+        bin_size=400,
+        flank_size=800,
+        offset_size=50
+    )
+    #rv = PartitionedSamplePeaksAndChIPSeqLabels(['E123',], ['CTCF',])
+    print rv.train
+    for x in rv.iter_train_data(10):
+        for k, v in x.iteritems():
+            print k, v.shape
+            print v
+        break
+    return
+
+def test_build_chipseq_labels():
+    annotation_id = 1
+    roadmap_sample_id='E123'
+    tf_id='T153674_1.02'
+    from DB import (
+        load_all_chipseq_peaks_and_matching_DNASE_files_from_db, 
+        load_genome_metadata )
+    peak_fnames = load_all_chipseq_peaks_and_matching_DNASE_files_from_db(
+        annotation_id, roadmap_sample_id=roadmap_sample_id)[roadmap_sample_id]
+    dnase_peaks_fname = list(peak_fnames['dnase'])[0]
+    peak_fnames = [fname for pk_type, fname in peak_fnames[tf_id] 
+                      if pk_type == 'optimal idr thresholded peaks']
+    with optional_gzip_open(dnase_peaks_fname) as fp:
+        regions = load_bed_regions(fp)[:5000]
+    print "Building tiled regions"
+    regions = build_tiled_regions(
+        regions, core_size=400, flank_size=800, offset_size=50)
+    genome_fasta_fname = load_genome_metadata(annotation_id).filename
+    genome_fasta = FastaFile("hg19.genome.fa")
+    fwd_seqs = one_hot_encode_peaks_sequence(
+        regions.regions_with_flank, genome_fasta)
+    assert False
+    bin_size, flank_size, offset_size = 400, 800, 50
+    labels = load_cached_or_build_chipseq_labels(
+        regions, peak_fnames[0], bin_size, flank_size, offset_size)
+    return
+
+def test():
+    #test_rec_array()
+    #test_read_data()
+    #test_load_and_save(np.zeros((10000, 50)), np.zeros((10000, 1)))
+    #test_load_and_save(
+    #    {'seqs': np.zeros((10000, 50))}, {'labels': np.zeros((10000, 1))})
+    #test_sample_partitioned_data()
+    #test_hash()
+    #test_load_data_from_db()
+    #test_build_chipseq_labels()
+    pass
+
+if __name__ == '__main__':
+    test()
