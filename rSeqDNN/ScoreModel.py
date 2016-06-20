@@ -271,8 +271,7 @@ def plot_convolutions(model, ofname, rank_dictionary=None, hit_names=None):
                        bbox_inches='tight')
     return
 
-def get_sequence_dl_scores(model, X,
-                           batch_size=200, score_type_name='deepLIFT'):
+def get_sequence_dl_scores(model, X, batch_size=200, num_tasks=1):
     """
     Assumes single task Sequential keras model with final activation layer.
 
@@ -288,25 +287,10 @@ def get_sequence_dl_scores(model, X,
     from keras.layers.core import Activation
     assert isinstance(model.layers[-1], Activation), \
     "scoring requires final activation layer!"
-    scripts_dir = os.environ.get("ENHANCER_SCRIPTS_DIR")
-    os.sys.path.insert(0, "%s/featureSelector/deepLIFFT/kerasBasedBackprop" % scripts_dir)
-    from deepLIFTonGPU import ScoreTypes, Activations_enum, OutLayerInfo, getScoreFunc
+    from deeplift import keras_conversion as kc
 
-    layers_to_score = [0]
-    output_layers = [OutLayerInfo(outLayNoAct=model.layers[-2],
-                                  activation=Activations_enum.sigmoid)]
-    scoring_function = getScoreFunc(model, layers_to_score, output_layers,
-                                    [getattr(ScoreTypes, score_type_name, )])
-    
-    deepLifft_score_list = []
-    for start in xrange(0, len(X), batch_size):
-        if (start+batch_size)>len(X):
-                end  = len(X)
-        else:
-                end = start + batch_size
-        scores = scoring_function([X[start:end, :, :, :]])
-        deepLifft_scores = scores[score_type_name][0][0][0]
-        deepLifft_score_list.append(deepLifft_scores)
-    input_scores = np.concatenate(tuple(deepLifft_score_list))
-
-    return input_scores
+    kc.mean_normalise_first_conv_layer_weights(model)
+    deeplift_model = kc.convert_sequential_model(model)
+    target_contribs_func = deeplift_model.get_target_contribs_func(input_layer_idx=0)
+    return np.asarray(target_contribs_func(task_idx=2, input_data_list=[X],
+                                            batch_size=batch_size, progress_update=10000))
