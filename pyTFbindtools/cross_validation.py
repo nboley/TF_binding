@@ -10,6 +10,7 @@ from sklearn import cross_validation
 from sklearn.metrics import roc_auc_score, f1_score, precision_recall_curve, auc
 
 from grit.lib.multiprocessing_utils import Counter
+from pyTFbindtools.prg import create_prg_curve, calc_auprg
 
 TEST_CHRS = [1,2]
 SINGLE_FOLD_VALIDATION_CHRS = range(3,5)
@@ -21,6 +22,9 @@ def recall_at_fdr(y_true, y_score, fdr_cutoff=0.05):
     cutoff_index = next(i for i, x in enumerate(fdr) if x <= fdr_cutoff)
     return recall[cutoff_index]
 
+def auPRG(labels, predictions):
+    return calc_auprg(create_prg_curve(labels, predictions))
+
 ClassificationResultData = namedtuple('ClassificationResult', [
     'is_cross_celltype',
     'sample_type', # should be validation or test
@@ -30,7 +34,7 @@ ClassificationResultData = namedtuple('ClassificationResult', [
     'validation_chromosomes',
     'validation_samples', 
 
-    'auROC', 'auPRC', 'F1', 
+    'auROC', 'auPRC', 'auPRG', 'F1',
     'recall_at_25_fdr', 'recall_at_10_fdr', 'recall_at_05_fdr',
     'num_true_positives', 'num_positives',
     'num_true_negatives', 'num_negatives'])
@@ -79,6 +83,7 @@ class ClassificationResult(object):
         precision, recall, _ = precision_recall_curve(positives, predicted_prbs)
         prc = np.array([recall,precision])
         self.auPRC = auc(recall, precision)
+        self.auPRG = auPRG(positives, predicted_prbs)
         self.F1 = f1_score(positives, predicted_labels)
         self.recall_at_50_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.50)
         self.recall_at_25_fdr = recall_at_fdr(labels, predicted_prbs, fdr_cutoff=0.25)
@@ -119,6 +124,7 @@ class ClassificationResult(object):
         rv.append("Bal Acc: %.3f" % self.balanced_accuracy )
         rv.append("auROC: %.3f" % self.auROC)
         rv.append("auPRC: %.3f" % self.auPRC)
+        rv.append("auPRG: %.3f" % self.auPRG)
         rv.append("F1: %.3f" % self.F1)
         rv.append("Re@0.50 FDR: %.3f" % self.recall_at_50_fdr)
         rv.append("Re@0.25 FDR: %.3f" % self.recall_at_25_fdr)
