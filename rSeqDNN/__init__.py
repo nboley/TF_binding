@@ -1,6 +1,6 @@
 import argparse
 
-from pysam import FastaFile
+from pysam import Fastafile
 from pyTFbindtools.peaks import getFileHandle
 
 import theano
@@ -50,7 +50,7 @@ def init_prediction_script_argument_parser(description):
                         help='regions labeled based on overlap with positive regions')
     parser.add_argument('--ambiguous-regions', type=getFileHandle, default=None,
                         help='regions ignored based on overlap with ambiguous regions')
-    parser.add_argument('--genome-fasta', type=FastaFile,
+    parser.add_argument('--genome-fasta', type=Fastafile,
                         help='genome file to get sequences')
 
     parser.add_argument('--half-peak-width', type=int, default=500,
