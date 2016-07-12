@@ -1,5 +1,12 @@
 import csv
 import sys
+from pyTFbindtools.peaks import (
+    load_labeled_peaks_from_beds, 
+    getFileHandle, 
+    load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
+    PeaksAndLabelsThreadSafeIterator
+)
+from pybedtools import Interval, BedTool
 
 piq_factor_dict = {}
 piq_factor_dict['MAX'] = 'MA0058.1 MAX'
@@ -54,7 +61,7 @@ piq_factor_dict['ZBTB33'] = ''
 piq_factor_dict['ZBTB7A'] = ''
 piq_factor_dict['ZNF143'] = 'MA0088.1 znf143'
 
-def create_piq_peaks_file(score_csv_file, output_peak_file):
+def create_piq_bed_file(score_csv_file, output_peak_file):
     with open(score_csv_file, "r") as f_handle:
         score_csv_reader = csv.reader(f_handle)
 
@@ -84,9 +91,18 @@ def create_piq_peaks_file(score_csv_file, output_peak_file):
                 peak_csv_writer.writerow(output_row)
 
 def main():
-    print(sys.argv[1])
-    print(sys.argv[2])
-    create_piq_peaks_file(sys.argv[1], sys.argv[2])
+    input_csv_file = sys.argv[1]
+    output_bed_file = sys.argv[2]
+    create_piq_bed_file(input_csv_file, output_bed_file)
+
+    with open('dummy_file','r+') as f_handle:
+
+        peaks_and_labels = load_labeled_peaks_from_beds(
+            output_bed_file, f_handle)
+
+        intervals = get_intervals_from_peaks(peaks_and_labels)
+        bedtool = BedTool(intervals)
+        merged_bedtool = bedtool.sort().merge()
 
 if __name__ == '__main__':
     main()
