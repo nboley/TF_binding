@@ -13,6 +13,13 @@ import subprocess
 #     load_chromatin_accessible_peaks_and_chipseq_labels_from_DB,
 #     PeaksAndLabelsThreadSafeIterator
 # )
+
+from pyTFbindtools.peaks import {
+    iter_narrow_peaks,
+    load_labeled_peaks_from_beds,
+    label_and_score_peak_with_chipseq_peaks
+}
+
 # from pybedtools import Interval, BedTool
 
 
@@ -71,11 +78,11 @@ piq_factor_dict['ZBTB7A'] = ''
 piq_factor_dict['ZNF143'] = 'MA0088.1 znf143'
 
 def create_piq_bed_file(score_csv_file, output_peak_file):
+    output_file_matrix = []
     with open(score_csv_file, "r") as f_handle:
         score_csv_reader = csv.reader(f_handle)
-
         with open(output_peak_file,"w+") as output_file:
-            peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_ALL)
+            peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_ALL, delimiter='    ')
 
             for row in score_csv_reader:
                 # Ignore the first row
@@ -95,58 +102,38 @@ def create_piq_bed_file(score_csv_file, output_peak_file):
                 output_row.append("")
                 # Score
                 output_row.append(float(row[6]))
+                # Append row to the rest of the rows
+                output_file_matrix.append(output_row)
 
-                # Write new row to output file
-                peak_csv_writer.writerow(output_row)
+    # Finally write all rows to the output file
+    peak_csv_writer.writerows(output_file_matrix)
 
 def main():
+    # CSV file with chromosome numbers, scores, etc.
     input_csv_file = sys.argv[1]
+    # Output bed file that we need to create for transformation
+    # into peak file.
     output_bed_file = sys.argv[2]
-    # piq_root_dir = sys.argv[3]
-    # bam_file_location = sys.argv[4]
 
-    # result = subprocess.call(['mkdir', piq_root_dir + 'matches'])
-    # if result == 0:
-    #     sys.exit("Error in creating matches directory for PIQ")
-    # result = subprocess.call(['mkdir', piq_root_dir + 'matches/motif.matches'])
-    # if result == 0:
-    #     sys.exit("Error in creating motif matches directory for PIQ")
-    # result = subprocess.call(['rscript', 'pwmmatch.exact.r', piq_root_dir + '/common.r', \
-    #     piq_root_dir + './pwms/jasparfix.txt', '139', piq_root_dir + './matches/motif.matches/'])
-    # if result == 0:
-    #     sys.exit("Error in step 3")
-    # result = subprocess.call(['mkdir', piq_root_dir + '/RData'])
-    # if result == 0:
-    #     sys.exit("Error in step 4")
-    # result = subprocess.call(['rscript', piq_root_dir + 'bam2rdata.r', piq_root_dir + '/common.r', \
-    #     piq_root_dir + '/RData/d0.RData', bam_file_location])
-    # if result == 0:
-    #     sys.exit("Error in step 5")
-    # result = subprocess.call(['mkdir', piq_root_dir + '/output'])
-    # if result == 0:
-    #     sys.exit("Error in step 6")
-    # result = subprocess.call('mkdir', piq_root_dir + '/tmp')
-    # if result == 0:
-    #     sys.exit("Error in step 7")
-    # result = subprocess.call(['rscript', piq_root_dir + 'pertf.r', piq_root_dir + '/common.r', \
-    #     piq_root_dir + '/matches/motif.matches', piq_root_dir + '/tmp', \
-    #     piq_root_dir + '/output', piq_root_dir + '/RData/d0.RData', '139'])
-    # if result == 0:
-    #     sys.exit("Error in step 8")
-
-    # result = subprocess.call(['bash', piq_root_dir + '/PIQScripts.sh'])
-    # if result == 0:
-    #     sys.exit("Error in executing PIQ")
-
+    # Convert our score CSV file into a bed file.
     create_piq_bed_file(input_csv_file, output_bed_file)
 
-    # python PIQPredict.py /Users/AakashRavi/Desktop/Stanford/Education/Bioinformatics/piq-single/output/130130.mm10.d0/139-MA01391CTCF-calls.csv ../../output_file /Users/AakashRavi/Desktop/Stanford/Education/Bioinformatics/piq-single /Users/AakashRavi/Desktop/Stanford/Education/Bioinformatics/bams/ENCFF001CTZ.bam
-    # python PIQPredict.py /Users/AakashRavi/Desktop/Stanford/Education/Bioinformatics/piq-single/output/130130.mm10.d0/139-MA01391CTCF-calls.csv ../../output_file /Users/AakashRavi/Desktop/Stanford/Education/Bioinformatics/piq-single
+    # Create a dummy file for holding the negative
+    # cases. 
+    with open('dummy_neg_file','r+') as f_handle:
 
-    # with open('dummy_file','r+') as f_handle:
+        # Convert our bed file into a peaks and labels file.
+        peaks_and_labels = load_labeled_peaks_from_beds(
+            output_bed_file, f_handle)
 
-    #     peaks_and_labels = load_labeled_peaks_from_beds(
-    #         output_bed_file, f_handle)
+        # Iterate through the peaks and lables file and obtain 
+        # scores for each peak.
+        for pk in iter_narrow_peaks(peaks_and_labels):
+            labels, scores = \
+            label_and_score_peak_with_chipseq_peaks("Need TF_ID",pk,)
+
+            # TODO: WHAT TO DO WITH LABELS AND SCORES? 
+
 
     #     intervals = get_intervals_from_peaks(peaks_and_labels)
     #     bedtool = BedTool(intervals)
@@ -154,6 +141,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
