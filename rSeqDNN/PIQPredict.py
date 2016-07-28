@@ -1,7 +1,7 @@
 import csv
 import sys
 import subprocess
-# sys.path.append("..")
+sys.path.append("..")
 # sys.path.append("../../pyDNABinding/")
 
 # import pyximport
@@ -77,6 +77,52 @@ piq_factor_dict['ZBTB33'] = ''
 piq_factor_dict['ZBTB7A'] = ''
 piq_factor_dict['ZNF143'] = 'MA0088.1 znf143'
 
+model_id_dict = {}
+model_id_dict['MAX'] = 'T011266_1.02' # MAX
+model_id_dict['CTCF'] = 'T044268_1.02' # CTCF
+model_id_dict['ARID3A'] = 'T007405_1.02' # ARID3A 
+model_id_dict['ATF3'] = 'T025301_1.02' # ATF3 
+model_id_dict['BCL11A'] = 'T044305_1.02' # BCL11A
+model_id_dict['BCL3'] = 'T153674_1.02' # BCL3
+model_id_dict['BCLAF1'] = 'T153671_1.02' # BCLAF1
+model_id_dict['BHLHE40'] = 'T014206_1.02' # BHLHE40
+model_id_dict['BRCA1'] = 'T077335_1.02' # BRCA1
+model_id_dict['CEBPB'] = 'T025313_1.02' # CEBPB
+model_id_dict['E2F6'] = 'T076679_1.02' # E2F6
+model_id_dict['EGR1'] = 'T044306_1.02' # EGR1
+model_id_dict['ELF1'] = 'T077988_1.02' # ELF1
+model_id_dict['ETS1'] = 'T077991_1.02' # ETS1
+model_id_dict['FOXA1'] = 'T081595_1.02' # FOXA1
+model_id_dict['GABPA'] = 'T077997_1.02' # GABPA 
+model_id_dict['GATA2'] = 'T084684_1.02' # GATA2
+model_id_dict['HNF4A'] = 'T132746_1.02' # HNF4A
+model_id_dict['JUN'] = 'T025316_1.02' # JUN
+model_id_dict['JUND'] = 'T025286_1.02' # JUND
+model_id_dict['MAFF'] = 'T025320_1.02' # MAFF
+model_id_dict['MAFK'] = 'T025323_1.02' # MAFK
+model_id_dict['MYC'] = 'T014210_1.02' # MYC
+model_id_dict['MXI1'] = 'T014191_1.02' # MXI1
+model_id_dict['NANOG'] = 'T093268_1.02' # NANOG
+model_id_dict['NFYB'] = 'T153691_1.02' # NFYB
+model_id_dict['NRF1'] = 'T153683_1.02' # NRF1
+model_id_dict['REST'] = 'T044249_1.02' # REST
+model_id_dict['RFX5'] = 'T138768_1.02' # RFX5
+model_id_dict['SIN3A'] = 'T153703_1.02' # SIN3A
+model_id_dict['SIX5'] = 'T093385_1.02' # SIX5
+model_id_dict['SP1'] = 'T044652_1.02' # SP1
+model_id_dict['SP2'] = 'T044474_1.02' # SP2
+model_id_dict['SPI1'] = 'T077981_1.02' # SPI1
+model_id_dict['TBP'] = 'T150542_1.02' # TBP
+model_id_dict['TCF12'] = 'T014212_1.02' # TCF12
+model_id_dict['TCF7L2'] = 'T144100_1.02' # TCF7L2
+model_id_dict['TEAD4'] = 'T151689_1.02' # TEAD4
+model_id_dict['USF1'] = 'T014218_1.02' # USF1
+model_id_dict['USF2'] = 'T014176_1.02' # USF2
+model_id_dict['YY1'] = 'T044261_1.02' # YY1 
+model_id_dict['ZBTB33'] = 'T044578_1.02' # ZBTB33
+model_id_dict['ZBTB7A'] = 'T044594_1.02' # ZBTB7A
+model_id_dict['ZNF143'] = 'T044468_1.02' # ZNF143
+
 def create_piq_bed_file(score_csv_file, output_peak_file):
     output_file_matrix = []
     with open(score_csv_file, "r") as f_handle:
@@ -114,6 +160,9 @@ def main():
     # Output bed file that we need to create for transformation
     # into peak file.
     output_bed_file = sys.argv[2]
+    # TF name
+    TF_name = sys.argv[3]
+    TF_id = model_id_dict[TF_name]
 
     # Convert our score CSV file into a bed file.
     create_piq_bed_file(input_csv_file, output_bed_file)
@@ -123,21 +172,46 @@ def main():
     with open('dummy_neg_file','r+') as f_handle:
 
         # Convert our bed file into a peaks and labels file.
-        peaks_and_labels = load_labeled_peaks_from_beds(
+        piq_peaks_and_labels = load_labeled_peaks_from_beds(
             output_bed_file, f_handle)
+
+        # FIX R
+        # Cell type selection -> parametrizable (need to get right bam files), TF_name parametrizable, + right csv file
+        # Method to get BAM files
+        # Loop it over cell types, and TFs.
+        # TRY MITRA
+        # remove from master, put in bin/multitask, 
+        
+        our_peaks_and_labels = 
+        load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
+            TF_id,
+            1,
+            500, 
+            None, 
+            include_ambiguous_peaks=True)
+
+        # General preprocessing
+        our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
+        # DO WE NEED THIS?
+        # our_peaks_and_labels = our_peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
+
+        # NEED TO CONVERT CELL TYPES. 
 
         # Iterate through the peaks and lables file and obtain 
         # scores for each peak.
-        for pk in iter_narrow_peaks(peaks_and_labels):
-            labels, scores = \
-            label_and_score_peak_with_chipseq_peaks("Need TF_ID",pk,)
+        y_true = our_peaks_and_labels.labels
+        y_pred = []
+        y_scores = []
+        for pk in our_peaks_and_labels.peaks:
+            # TODO: a couple extra arguments in label and score peaks?
+            predicted_labels, predicted_scores = \
+            label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
+            y_pred.append(predicted_labels[0])
+            y_scores.append(predicted_scores[0])
 
-            # TODO: WHAT TO DO WITH LABELS AND SCORES? 
-
-
-    #     intervals = get_intervals_from_peaks(peaks_and_labels)
-    #     bedtool = BedTool(intervals)
-    #     merged_bedtool = bedtool.sort().merge()
+    # Score the results
+    result = ClassificationResult(y_true, y_pred, y_scores)
+    print(result)
 
 if __name__ == '__main__':
     main()
