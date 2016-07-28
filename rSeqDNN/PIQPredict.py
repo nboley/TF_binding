@@ -14,11 +14,9 @@ sys.path.append("..")
 #     PeaksAndLabelsThreadSafeIterator
 # )
 
-from pyTFbindtools.peaks import {
-    iter_narrow_peaks,
-    load_labeled_peaks_from_beds,
-    label_and_score_peak_with_chipseq_peaks
-}
+from pyTFbindtools.peaks import iter_narrow_peaks
+from pyTFbindtools.peaks import load_labeled_peaks_from_beds
+from pyTFbindtools.peaks import label_and_score_peak_with_chipseq_peaks
 
 # from pybedtools import Interval, BedTool
 
