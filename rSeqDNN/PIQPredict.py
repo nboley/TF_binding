@@ -17,6 +17,7 @@ sys.path.append("..")
 from pyTFbindtools.peaks import iter_narrow_peaks
 from pyTFbindtools.peaks import load_labeled_peaks_from_beds
 from pyTFbindtools.peaks import label_and_score_peak_with_chipseq_peaks
+from pyTFbindtools.peaks import load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 
 # from pybedtools import Interval, BedTool
 
@@ -126,7 +127,7 @@ def create_piq_bed_file(score_csv_file, output_peak_file):
     with open(score_csv_file, "r") as f_handle:
         score_csv_reader = csv.reader(f_handle)
         with open(output_peak_file,"w+") as output_file:
-            peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_ALL, delimiter='    ')
+            peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_NONE, delimiter='\t')
 
             for row in score_csv_reader:
                 # Ignore the first row
@@ -149,8 +150,8 @@ def create_piq_bed_file(score_csv_file, output_peak_file):
                 # Append row to the rest of the rows
                 output_file_matrix.append(output_row)
 
-    # Finally write all rows to the output file
-    peak_csv_writer.writerows(output_file_matrix)
+            # Finally write all rows to the output file
+            peak_csv_writer.writerows(output_file_matrix)
 
 def main():
     # CSV file with chromosome numbers, scores, etc.
@@ -167,49 +168,49 @@ def main():
 
     # Create a dummy file for holding the negative
     # cases. 
-    with open('dummy_neg_file','r+') as f_handle:
+    with open('dummy_neg_file','w+') as f_handle:
+        with open(output_bed_file,'r') as output_handle:
+            # Convert our bed file into a peaks and labels file.
+            piq_peaks_and_labels = load_labeled_peaks_from_beds(
+                output_handle, f_handle,1)
 
-        # Convert our bed file into a peaks and labels file.
-        piq_peaks_and_labels = load_labeled_peaks_from_beds(
-            output_bed_file, f_handle)
+            # FIX R
+            # Cell type selection -> parametrizable (need to get right bam files), TF_name parametrizable, + right csv file
+            # Method to get BAM files
+            # Loop it over cell types, and TFs.
+            # TRY MITRA
+            # remove from master, put in bin/multitask, 
+            
+            our_peaks_and_labels = \
+            load_chromatin_accessible_peaks_and_chipseq_labels_from_DB( \
+                TF_id, \
+                1, \
+                500, \
+                1000, \
+                include_ambiguous_peaks=True)
 
-        # FIX R
-        # Cell type selection -> parametrizable (need to get right bam files), TF_name parametrizable, + right csv file
-        # Method to get BAM files
-        # Loop it over cell types, and TFs.
-        # TRY MITRA
-        # remove from master, put in bin/multitask, 
-        
-        our_peaks_and_labels = 
-        load_chromatin_accessible_peaks_and_chipseq_labels_from_DB(
-            TF_id,
-            1,
-            500, 
-            None, 
-            include_ambiguous_peaks=True)
+            # General preprocessing
+            our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
+            # DO WE NEED THIS?
+            # our_peaks_and_labels = our_peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
 
-        # General preprocessing
-        our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
-        # DO WE NEED THIS?
-        # our_peaks_and_labels = our_peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
+            # NEED TO CONVERT CELL TYPES. 
 
-        # NEED TO CONVERT CELL TYPES. 
+            # Iterate through the peaks and lables file and obtain 
+            # scores for each peak.
+            y_true = our_peaks_and_labels.labels
+            y_pred = []
+            y_scores = []
+            for pk in our_peaks_and_labels.peaks:
+                # TODO: a couple extra arguments in label and score peaks?
+                predicted_labels, predicted_scores = \
+                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
+                y_pred.append(predicted_labels[0])
+                y_scores.append(predicted_scores[0])
 
-        # Iterate through the peaks and lables file and obtain 
-        # scores for each peak.
-        y_true = our_peaks_and_labels.labels
-        y_pred = []
-        y_scores = []
-        for pk in our_peaks_and_labels.peaks:
-            # TODO: a couple extra arguments in label and score peaks?
-            predicted_labels, predicted_scores = \
-            label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
-            y_pred.append(predicted_labels[0])
-            y_scores.append(predicted_scores[0])
-
-    # Score the results
-    result = ClassificationResult(y_true, y_pred, y_scores)
-    print(result)
+            # Score the results
+            result = ClassificationResult(y_true, y_pred, y_scores)
+            print(result)
 
 if __name__ == '__main__':
     main()
