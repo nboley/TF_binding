@@ -146,7 +146,7 @@ def create_piq_bed_file(score_csv_file, output_peak_file):
                 output_row.append("")
                 output_row.append("")
                 # Score
-                output_row.append(float(row[6]))
+                output_row.append(float(row[5]))
                 # Append row to the rest of the rows
                 output_file_matrix.append(output_row)
 
