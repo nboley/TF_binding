@@ -204,7 +204,7 @@ def main():
             for pk in our_peaks_and_labels.peaks:
                 # TODO: a couple extra arguments in label and score peaks?
                 predicted_labels, predicted_scores = \
-                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
+                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk,score_index=5)
                 y_pred.append(predicted_labels[0])
                 y_scores.append(predicted_scores[0])
 
