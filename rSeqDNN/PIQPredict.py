@@ -179,7 +179,6 @@ def main():
             # Method to get BAM files
             # Loop it over cell types, and TFs.
             # TRY MITRA
-            # remove from master, put in bin/multitask, 
             
             our_peaks_and_labels = \
             load_chromatin_accessible_peaks_and_chipseq_labels_from_DB( \
@@ -188,6 +187,8 @@ def main():
                 500, \
                 1000, \
                 include_ambiguous_peaks=True)
+
+            return
 
             # General preprocessing
             our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
@@ -202,9 +203,8 @@ def main():
             y_pred = []
             y_scores = []
             for pk in our_peaks_and_labels.peaks:
-                # TODO: a couple extra arguments in label and score peaks?
                 predicted_labels, predicted_scores = \
-                label_and_score_peak_with_chipseq_peaks([output_handle],pk)
+                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
                 y_pred.append(predicted_labels[0])
                 y_scores.append(predicted_scores[0])
 
