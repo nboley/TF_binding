@@ -189,8 +189,6 @@ def main():
                 1000, \
                 include_ambiguous_peaks=True)
 
-            return
-            
             # General preprocessing
             our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
             # DO WE NEED THIS?
@@ -206,7 +204,7 @@ def main():
             for pk in our_peaks_and_labels.peaks:
                 # TODO: a couple extra arguments in label and score peaks?
                 predicted_labels, predicted_scores = \
-                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
+                label_and_score_peak_with_chipseq_peaks([output_handle],pk)
                 y_pred.append(predicted_labels[0])
                 y_scores.append(predicted_scores[0])
 
