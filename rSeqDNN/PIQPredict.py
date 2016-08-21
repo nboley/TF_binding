@@ -166,6 +166,8 @@ def main():
     # Convert our score CSV file into a bed file.
     create_piq_bed_file(input_csv_file, output_bed_file)
 
+    return
+
     # Create a dummy file for holding the negative
     # cases. 
     with open('dummy_neg_file','w+') as f_handle:
