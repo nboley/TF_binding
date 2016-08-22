@@ -210,7 +210,7 @@ def main():
                 y_scores.append(predicted_scores[0])
 
             # Score the results
-            result = ClassificationResult(np.array(y_true), np.array(y_pred), np.array(y_scores))
+            result = ClassificationResult(y_true, np.array(y_pred), np.array(y_scores))
             print(result)
 
 if __name__ == '__main__':
