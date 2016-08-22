@@ -19,7 +19,7 @@ from pyTFbindtools.peaks import load_labeled_peaks_from_beds
 from pyTFbindtools.peaks import label_and_score_peak_with_chipseq_peaks
 from pyTFbindtools.peaks import load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
 
-from pyTFbindtools.cross_validation import ClassificationResult
+from pyTFbindtools.cross_validation import ClassificationResults
 
 # from pybedtools import Interval, BedTool
 
@@ -209,7 +209,7 @@ def main():
                 y_scores.append(predicted_scores[0])
 
             # Score the results
-            result = ClassificationResult(y_true, y_pred, y_scores)
+            result = ClassificationResults(y_true, y_pred, y_scores)
             print(result)
 
 if __name__ == '__main__':
