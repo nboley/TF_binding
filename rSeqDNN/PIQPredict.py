@@ -142,9 +142,9 @@ def create_piq_bed_file(score_csv_file, output_peak_file):
                 # Ending position
                 output_row.append(int(row[2])+1)
                 # 3 fillers
-                output_row.append("")
-                output_row.append("")
-                output_row.append("")
+                output_row.append(".")
+                output_row.append(".")
+                output_row.append(".")
                 # Score
                 output_row.append(float(row[5]))
                 # Append row to the rest of the rows
