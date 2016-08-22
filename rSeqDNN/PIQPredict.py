@@ -188,8 +188,6 @@ def main():
                 1000, \
                 include_ambiguous_peaks=True)
 
-            return
-
             # General preprocessing
             our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
             # DO WE NEED THIS?
