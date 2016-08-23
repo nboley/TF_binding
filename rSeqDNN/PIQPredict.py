@@ -207,7 +207,7 @@ def main():
                 predicted_labels, predicted_scores = \
                 label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
                 y_pred.append(predicted_labels[0])
-                y_scores.append(predicted_scores[0])
+                y_scores.append(float(predicted_scores[0]))
 
             # Score the results
             result = ClassificationResult(y_true, np.array(y_pred), np.array(y_scores))
