@@ -202,6 +202,7 @@ def main():
             # Iterate through the peaks and lables file and obtain 
             # scores for each peak.
             y_true = our_peaks_and_labels.labels
+            print(our_peaks_and_labels.sample_ids)
             y_pred = []
             y_scores = []
             for pk in our_peaks_and_labels.peaks:
