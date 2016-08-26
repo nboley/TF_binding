@@ -18,7 +18,6 @@ from pyTFbindtools.peaks import iter_narrow_peaks
 from pyTFbindtools.peaks import load_labeled_peaks_from_beds
 from pyTFbindtools.peaks import label_and_score_peak_with_chipseq_peaks
 from pyTFbindtools.peaks import load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
-from pyTFbindtools.peaks import subset_data
 
 from pyTFbindtools.cross_validation import ClassificationResult
 import numpy as np
