@@ -18,6 +18,7 @@ from pyTFbindtools.peaks import iter_narrow_peaks
 from pyTFbindtools.peaks import load_labeled_peaks_from_beds
 from pyTFbindtools.peaks import label_and_score_peak_with_chipseq_peaks
 from pyTFbindtools.peaks import load_chromatin_accessible_peaks_and_chipseq_labels_from_DB
+from pyTFbindtools.peaks import subset_data
 
 from pyTFbindtools.cross_validation import ClassificationResult
 import numpy as np
@@ -196,13 +197,13 @@ def main():
             our_peaks_and_labels = our_peaks_and_labels.remove_ambiguous_labeled_entries()
             # DO WE NEED THIS?
             # our_peaks_and_labels = our_peaks_and_labels.filter_by_contig_edge(9000, genome_fasta) # removes peaks in contigs edges
+            our_peaks_and_labels = our_peaks_and_labels.subset_data(["E116"],our_peaks_and_labels.contigs)
 
             # NEED TO CONVERT CELL TYPES. 
 
             # Iterate through the peaks and lables file and obtain 
             # scores for each peak.
             y_true = our_peaks_and_labels.labels
-            print(our_peaks_and_labels.sample_ids)
             y_pred = []
             y_scores = []
             for pk in our_peaks_and_labels.peaks:
