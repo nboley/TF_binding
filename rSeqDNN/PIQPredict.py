@@ -188,8 +188,7 @@ def main():
             load_chromatin_accessible_peaks_and_chipseq_labels_from_DB( \
                 TF_id, \
                 1, \
-                500, \
-                1000, \
+                half_peak_width=500, \
                 include_ambiguous_peaks=True)
 
             # General preprocessing
