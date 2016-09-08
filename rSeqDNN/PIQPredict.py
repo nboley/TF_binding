@@ -142,6 +142,7 @@ def create_piq_bed_file(score_csv_file, original_bed_file, output_peak_file):
                 # if (row[1] == "chr"):
                 #     continue
 
+                print(row)
                 score_csv_row = next(score_csv_reader)
 
                 output_row = []
@@ -158,6 +159,7 @@ def create_piq_bed_file(score_csv_file, original_bed_file, output_peak_file):
                 output_row.append(row[5])
                 # Append row to the rest of the rows
                 output_file_matrix.append(output_row)
+                print(output_row)
 
             # Finally write all rows to the output file
             peak_csv_writer.writerows(output_file_matrix)
