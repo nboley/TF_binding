@@ -143,23 +143,23 @@ def create_piq_bed_file(score_csv_file, original_bed_file, output_peak_file):
                 #     continue
 
                 print(row)
-                score_csv_row = next(score_csv_reader)
+                # score_csv_row = next(score_csv_reader)
 
-                output_row = []
-                # Chromosome name
-                output_row.append(row[0])
-                # Starting position
-                output_row.append(int(row[1]))
-                # Ending position
-                output_row.append(int(row[2]))
-                # 3 fillers, dummy values
-                output_row.append(row[3])
-                # Replace the 5th column with purity
-                output_row.append(float(score_csv_row[6]))
-                output_row.append(row[5])
-                # Append row to the rest of the rows
-                output_file_matrix.append(output_row)
-                print(output_row)
+                # output_row = []
+                # # Chromosome name
+                # output_row.append(row[0])
+                # # Starting position
+                # output_row.append(int(row[1]))
+                # # Ending position
+                # output_row.append(int(row[2]))
+                # # 3 fillers, dummy values
+                # output_row.append(row[3])
+                # # Replace the 5th column with purity
+                # output_row.append(float(score_csv_row[6]))
+                # output_row.append(row[5])
+                # # Append row to the rest of the rows
+                # output_file_matrix.append(output_row)
+                # print(output_row)  
 
             # Finally write all rows to the output file
             peak_csv_writer.writerows(output_file_matrix)
