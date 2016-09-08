@@ -125,32 +125,37 @@ model_id_dict['ZBTB33'] = 'T044578_1.02' # ZBTB33
 model_id_dict['ZBTB7A'] = 'T044594_1.02' # ZBTB7A
 model_id_dict['ZNF143'] = 'T044468_1.02' # ZNF143
 
-def create_piq_bed_file(score_csv_file, output_peak_file):
+def create_piq_bed_file(score_csv_file, original_bed_file, output_peak_file):
     output_file_matrix = []
     with open(score_csv_file, "r") as f_handle:
         score_csv_reader = csv.reader(f_handle)
+        # Ignore the first row
+        next(score_csv_reader)
         with open(output_peak_file,"w+") as output_file:
             peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_NONE, delimiter='\t')
+            original_bed_reader = csv.reader(original_bed_file, quoting=csv.QUOTE_NONE, delimiter='\t')
+            # Ignore the first row
+            next(original_bed_reader)
 
-            for row in score_csv_reader:
-                # Ignore the first row
-                if (row[1] == "chr"):
-                    continue
+            for row in original_bed_reader:
+                # # Ignore the first row
+                # if (row[1] == "chr"):
+                #     continue
+
+                score_csv_row = next(score_csv_reader)
 
                 output_row = []
                 # Chromosome name
-                output_row.append(row[1])
+                output_row.append(row[0])
                 # Starting position
-                output_row.append(int(row[2]))
+                output_row.append(int(row[1]))
                 # Ending position
-                output_row.append(int(row[2])+1)
+                output_row.append(int(row[2]))
                 # 3 fillers, dummy values
-                output_row.append("0.0")
-                output_row.append("0.0")
-                output_row.append("0.0")
-                # Score
-                # output_row.append(float(row[5]))
-                output_row.append(float(row[6]))
+                output_row.append(row[3])
+                # Replace the 5th column with purity
+                output_row.append(float(score_csv_row[6])
+                output_row.append(row[5])
                 # Append row to the rest of the rows
                 output_file_matrix.append(output_row)
 
@@ -163,12 +168,14 @@ def main():
     # Output bed file that we need to create for transformation
     # into peak file.
     output_bed_file = sys.argv[2]
+    # Original bed file given by PIQ
+    original_bed_file = sys.argv[3]
     # TF name
-    TF_name = sys.argv[3]
+    TF_name = sys.argv[4]
     TF_id = model_id_dict[TF_name]
 
     # Convert our score CSV file into a bed file.
-    create_piq_bed_file(input_csv_file, output_bed_file)
+    create_piq_bed_file(input_csv_file, original_bed_file, output_bed_file)
 
     # Create a dummy file for holding the negative
     # cases. 
