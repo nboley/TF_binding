@@ -143,7 +143,7 @@ def create_piq_bed_file(score_csv_file, original_bed_file, output_peak_file):
                     # if (row[1] == "chr"):
                     #     continue
 
-                    print(row)
+                    # print(row)
                     score_csv_row = next(score_csv_reader)
 
                     output_row = []
@@ -186,7 +186,7 @@ def main():
         with open(output_bed_file,'r') as output_handle:
             # Convert our bed file into a peaks and labels file.
             piq_peaks_and_labels = load_labeled_peaks_from_beds(
-                output_handle, f_handle,1)
+                output_handle, f_handle)
 
             # FIX R
             # Cell type selection -> parametrizable (need to get right bam files), TF_name parametrizable, + right csv file
@@ -194,11 +194,12 @@ def main():
             # Loop it over cell types, and TFs.
             # TRY MITRA
             
-            our_peaks_and_labels = \
-            load_chromatin_accessible_peaks_and_chipseq_labels_from_DB( \
-                TF_id, \
-                1, \
-                half_peak_width=500, \
+            our_peaks_and_labels = 
+            load_chromatin_accessible_peaks_and_chipseq_labels_from_DB( 
+                TF_id, 
+                1, 
+                half_peak_width=500, 
+                max_n_peaks_per_sample=1000, 
                 include_ambiguous_peaks=True)
 
             # General preprocessing
@@ -216,7 +217,7 @@ def main():
             y_scores = []
             for pk in our_peaks_and_labels.peaks:
                 predicted_labels, predicted_scores = \
-                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk)
+                label_and_score_peak_with_chipseq_peaks([output_bed_file],pk,score_index=4)
                 y_pred.append(predicted_labels[0])
                 y_scores.append(float(predicted_scores[0]))
 
