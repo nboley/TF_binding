@@ -132,37 +132,38 @@ def create_piq_bed_file(score_csv_file, original_bed_file, output_peak_file):
         # Ignore the first row
         next(score_csv_reader)
         with open(output_peak_file,"w+") as output_file:
-            peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_NONE, delimiter='\t')
-            original_bed_reader = csv.reader(original_bed_file, quoting=csv.QUOTE_NONE, delimiter='\t')
-            # Ignore the first row
-            next(original_bed_reader)
+            with open(original_bed_file,"r") as original_bed_file_handle:
+                peak_csv_writer = csv.writer(output_file, quoting=csv.QUOTE_NONE, delimiter='\t')
+                original_bed_reader = csv.reader(original_bed_file_handle, quoting=csv.QUOTE_NONE, delimiter='\t')
+                # Ignore the first row
+                next(original_bed_reader)
 
-            for row in original_bed_reader:
-                # # Ignore the first row
-                # if (row[1] == "chr"):
-                #     continue
+                for row in original_bed_reader:
+                    # # Ignore the first row
+                    # if (row[1] == "chr"):
+                    #     continue
 
-                print(row)
-                # score_csv_row = next(score_csv_reader)
+                    print(row)
+                    score_csv_row = next(score_csv_reader)
 
-                # output_row = []
-                # # Chromosome name
-                # output_row.append(row[0])
-                # # Starting position
-                # output_row.append(int(row[1]))
-                # # Ending position
-                # output_row.append(int(row[2]))
-                # # 3 fillers, dummy values
-                # output_row.append(row[3])
-                # # Replace the 5th column with purity
-                # output_row.append(float(score_csv_row[6]))
-                # output_row.append(row[5])
-                # # Append row to the rest of the rows
-                # output_file_matrix.append(output_row)
-                # print(output_row)  
+                    output_row = []
+                    # Chromosome name
+                    output_row.append(row[0])
+                    # Starting position
+                    output_row.append(int(row[1]))
+                    # Ending position
+                    output_row.append(int(row[2]))
+                    # 3 fillers, dummy values
+                    output_row.append(row[3])
+                    # Replace the 5th column with purity
+                    output_row.append(float(score_csv_row[6]))
+                    output_row.append(row[5])
+                    # Append row to the rest of the rows
+                    output_file_matrix.append(output_row)
+                    print(output_row)  
 
-            # Finally write all rows to the output file
-            peak_csv_writer.writerows(output_file_matrix)
+                # Finally write all rows to the output file
+                peak_csv_writer.writerows(output_file_matrix)
 
 def main():
     # CSV file with chromosome numbers, scores, etc.
